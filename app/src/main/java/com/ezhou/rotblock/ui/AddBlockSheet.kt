@@ -142,7 +142,9 @@ private fun AppPicker(existing: Set<String>, onPick: (Chosen) -> Unit) {
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
     val apps by produceState(initialValue = emptyList<InstalledApp>(), context) {
-        value = withContext(Dispatchers.IO) { loadLaunchableApps(context.packageManager) }
+        value = withContext(Dispatchers.IO) {
+            loadLaunchableApps(context.packageManager, exclude = context.packageName)
+        }
     }
     val filtered = remember(apps, query) {
         if (query.isBlank()) apps else apps.filter { it.label.contains(query, ignoreCase = true) }
@@ -502,11 +504,17 @@ private fun CustomMinutesChip(
     }
 }
 
-private fun loadLaunchableApps(pm: PackageManager): List<InstalledApp> {
+/**
+ * [exclude] is rotblock itself. The service ignores its own package, so such a policy would never
+ * fire — it would just sit in the list looking like protection that isn't there, and offering to
+ * block the thing holding the unblock button is a confusing thing to offer at all.
+ */
+private fun loadLaunchableApps(pm: PackageManager, exclude: String): List<InstalledApp> {
     val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
     @Suppress("DEPRECATION")
     val resolved = pm.queryIntentActivities(intent, 0)
     return resolved
+        .filterNot { it.activityInfo.packageName == exclude }
         .distinctBy { it.activityInfo.packageName }
         .mapNotNull { info ->
             runCatching {

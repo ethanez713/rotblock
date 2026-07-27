@@ -18,6 +18,31 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.ezhou.rotblock.policy.BlockReason
+import com.ezhou.rotblock.policy.TargetKind
+
+/**
+ * The way out of a block that is narrower than the app it covers.
+ *
+ * A website or feed rule blocks part of something you are otherwise allowed to use, and the block
+ * screen covers the whole app -- including the address bar you would need to leave the blocked
+ * page. Without this the browser is a dead end: closing it and reopening it restores the same tab,
+ * gets blocked again, and there is no reachable way to go anywhere else. The only escape left is
+ * disabling the policy, which is precisely the behaviour rotblock exists to prevent.
+ */
+data class Escape(val label: String, val action: () -> Unit)
+
+/**
+ * The escape a block over [kind] has to offer, or null when closing the app is already a complete
+ * answer because the app *is* the target.
+ *
+ * Exhaustive on purpose: a new kind of target cannot be added without someone deciding whether it
+ * strands the user. That decision is the whole content of this function.
+ */
+fun escapeLabelFor(kind: TargetKind): String? = when (kind) {
+    TargetKind.APP -> null
+    TargetKind.FEED -> "Leave the feed"
+    TargetKind.WEBSITE -> "Leave this site"
+}
 
 /**
  * The full-screen "no" that appears over a blocked app.
@@ -58,6 +83,7 @@ class BlockOverlay(private val context: Context) {
         reason: BlockReason,
         liftsAtMs: Long?,
         onPauseRequested: () -> Unit,
+        escape: Escape? = null,
     ): Boolean {
         this.liftsAtMs = liftsAtMs
         this.onPauseRequested = onPauseRequested
@@ -67,7 +93,7 @@ class BlockOverlay(private val context: Context) {
         }
         if (!canDrawOverlays()) return false
 
-        val view = buildView(label, reason)
+        val view = buildView(label, reason, escape)
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -115,7 +141,7 @@ class BlockOverlay(private val context: Context) {
     private var reasonView: TextView? = null
 
     @SuppressLint("SetTextI18n")
-    private fun buildView(label: String, reason: BlockReason): LinearLayout {
+    private fun buildView(label: String, reason: BlockReason, escape: Escape?): LinearLayout {
         val pad = dp(28)
         return LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -164,6 +190,19 @@ class BlockOverlay(private val context: Context) {
             addView(countdownView)
 
             addView(spacer(dp(36)))
+
+            // First, because it is the one that leaves you somewhere useful. For a website or feed
+            // block, "Close" alone strands you: the app reopens on the same blocked page.
+            if (escape != null) {
+                addView(Button(context).apply {
+                    text = escape.label
+                    setOnClickListener {
+                        hide()
+                        escape.action()
+                    }
+                })
+                addView(spacer(dp(8)))
+            }
 
             addView(Button(context).apply {
                 text = "Close"

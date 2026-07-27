@@ -8,8 +8,19 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
-/** How often an in-progress session is written through to disk. */
-private const val FLUSH_INTERVAL_MS = 15_000L
+/**
+ * How often an in-progress session is written through to disk.
+ *
+ * This is the entire exposure to a process kill: the row is inserted the moment a session opens,
+ * but with `endMs == startMs`, so until the first flush the visit is on record as **zero seconds**.
+ * One UI kills sideloaded apps freely, and device data showed real visits stored as 0.0s for
+ * exactly this reason -- which reads as "the timer isn't tracking properly", because it isn't.
+ *
+ * 5s rather than 15s: the write is one indexed UPDATE on a background thread while the screen is
+ * on and an app is in the foreground, which is nothing next to the display, and it caps what a kill
+ * can silently hand back.
+ */
+private const val FLUSH_INTERVAL_MS = 5_000L
 
 /** Sessions older than this are dropped; the tail feeds the Insights charts. */
 const val USAGE_RETENTION_MS = 31L * 24 * 60 * 60 * 1000

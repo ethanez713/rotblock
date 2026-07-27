@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -17,6 +18,8 @@ import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditLog
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.block.BlockOverlay
+import com.ezhou.rotblock.block.Escape
+import com.ezhou.rotblock.block.escapeLabelFor
 import com.ezhou.rotblock.block.FeedRegistry
 import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.block.formatDuration
@@ -49,8 +52,8 @@ import kotlinx.coroutines.withContext
  * twenty-minute allowance used to cost 1200 wakeups; it now costs about 80, and the deadline is
  * still hit exactly, because the interval is never longer than the time left.
  *
- * [MAX_TICK_MS] is capped at the ledger's flush interval so a long allowance still writes through
- * to disk at roughly the cadence [UsageLedger] documents.
+ * The ceiling is not what keeps the ledger flushing -- [evaluateAndEnforce] touches it directly,
+ * because the tick legitimately may not fire for its whole interval. See [UsageLedger].
  */
 private const val MIN_TICK_MS = 1_000L
 private const val MAX_TICK_MS = 15_000L
@@ -78,6 +81,20 @@ private const val OUTAGE_PREFS = "rotblock_outage"
 private const val KEY_DOWN_SINCE = "down_since"
 private const val KEY_DOWN_REASON = "down_reason"
 private const val KEY_LAST_ALIVE = "last_alive"
+
+/**
+ * The visit in progress, carried across a rebind. See [seedForeground].
+ *
+ * Not a relaxation and not a deadline — losing these three strings is what *breaks* enforcement,
+ * so persisting them is on the same side of the invariant as everything else here.
+ */
+private const val KEY_VISIT_PACKAGE = "visit_package"
+private const val KEY_VISIT_TARGET = "visit_target"
+private const val KEY_VISIT_FRICTION_SHOWN = "visit_friction_shown"
+
+/** Attempts to read the already-open window at startup, before giving up until the next event. */
+private const val SEED_ATTEMPTS = 5
+private const val SEED_RETRY_MS = 200L
 
 /** How often the service records that it was still running. */
 private const val HEARTBEAT_MS = 60_000L
@@ -133,7 +150,17 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     private var currentPackage: String? = null
     private var currentTargetId: String? = null
+
+    /** Last values written by [persistVisit], so repeat calls do not touch disk. */
+    private var persistedPackage: String? = null
+    private var persistedTarget: String? = null
+    private var persistedFrictionShown: String? = null
+
     private var ticking = false
+
+    /** When the armed tick is due, so a re-arm can tell whether it would delay it. */
+    private var tickDueAtMs = 0L
+
     private var watchJob: Job? = null
     private var inspectorJob: Job? = null
 
@@ -156,7 +183,13 @@ class RotblockAccessibilityService : AccessibilityService() {
                     }
                     // Coming back may land on the same app with no new window event, so the
                     // session has to be restarted explicitly.
-                    Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> reEvaluateCurrent()
+                    //
+                    // USER_PRESENT only, deliberately not SCREEN_ON. The lock screen is system UI,
+                    // which is ignored, so `currentPackage` is still whatever was open underneath
+                    // it -- resuming on SCREEN_ON charges the target for every glance at the clock
+                    // and for however long the phone sits unlocked-but-not-entered. Over-charging
+                    // is the one direction the ledger may not err in.
+                    Intent.ACTION_USER_PRESENT -> reEvaluateCurrent()
                 }
             }
         }
@@ -189,6 +222,17 @@ class RotblockAccessibilityService : AccessibilityService() {
             overlay = BlockOverlay(this)
             grayscale = Grayscale(this)
             ignoredPackages = buildIgnoredPackages()
+            trace("onServiceConnected: fresh instance, state reset")
+
+            // Our own screens blind every read taken while they are up, and the app underneath
+            // resumes before they stop -- so the window-state change that would prompt a re-read
+            // arrives too early to see past us. This is the second chance.
+            Interstitial.onCleared = {
+                handler.post { guard("interstitialCleared") {
+                    trace("interstitial cleared, re-evaluating")
+                    reEvaluateCurrent()
+                } }
+            }
 
             // Undo a greyscale left on by a crash before doing anything else.
             grayscale.restoreOnStart()
@@ -204,7 +248,6 @@ class RotblockAccessibilityService : AccessibilityService() {
                     screenReceiver,
                     IntentFilter().apply {
                         addAction(Intent.ACTION_SCREEN_OFF)
-                        addAction(Intent.ACTION_SCREEN_ON)
                         addAction(Intent.ACTION_USER_PRESENT)
                     },
                     ContextCompat.RECEIVER_NOT_EXPORTED,
@@ -216,6 +259,10 @@ class RotblockAccessibilityService : AccessibilityService() {
                 ledger.load(System.currentTimeMillis())
                 ledger.prune(System.currentTimeMillis())
                 pause.refresh()
+
+                // Off the main thread on purpose: this reads the node tree, which the event
+                // callback is never allowed to do.
+                seedForegroundFromScreen()
                 launch {
                     Rotblock.settings(this@RotblockAccessibilityService).settings.collectLatest {
                         pause.refresh()
@@ -254,9 +301,12 @@ class RotblockAccessibilityService : AccessibilityService() {
 
             when (event.eventType) {
                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                    trace("WSC pkg=$pkg cls=${event.className} current=$currentPackage")
                     if (pkg != currentPackage) {
                         if (isForegroundChange(pkg, event.className?.toString())) {
                             onForegroundChanged(pkg, System.currentTimeMillis())
+                        } else {
+                            trace("  WSC ignored: not a foreground change")
                         }
                     } else {
                         requestInspect(pkg)
@@ -347,23 +397,28 @@ class RotblockAccessibilityService : AccessibilityService() {
     /** Runs on the main thread; [targetId] null means nothing here is governed by a policy. */
     private fun applyTarget(targetId: String?, nowMs: Long) {
         val policy = targetId?.let { policiesByTarget[it] }
-        trace("applyTarget($targetId) policy=${policy?.label} enabled=${policy?.enabled} known=${policiesByTarget.keys}")
+        trace("applyTarget($targetId) policy=${policy?.label} enabled=${policy?.enabled} cur=$currentTargetId shownFor=$frictionShownFor")
         if (policy == null || !policy.enabled) {
+            if (frictionShownFor != null) trace("  CLEARING frictionShownFor (no policy for $targetId)")
             currentTargetId = null
             frictionShownFor = null
             ledger.closeSession(nowMs)
             stopTicking()
             overlay.hide()
             grayscale.restore()
+            persistVisit()
             return
         }
         if (currentTargetId != targetId) {
+            trace("  target change $currentTargetId -> $targetId, re-arming friction")
             ledger.closeSession(nowMs)
             currentTargetId = targetId
             frictionShownFor = null
             grayscale.restore()
         }
         evaluateAndEnforce(targetId, nowMs)
+        // After enforcement, so a friction screen just shown is part of what gets carried over.
+        persistVisit()
     }
 
     private fun reEvaluateCurrent() {
@@ -378,16 +433,105 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     private fun appTargetFor(pkg: String): String = Policy.targetId(TargetKind.APP, pkg)
 
+    // region surviving a rebind
+
+    /**
+     * Works out what is already on screen, because a fresh instance knows nothing about it.
+     *
+     * Android rebinds this service constantly -- on reinstall, on config changes, and whenever
+     * another accessibility client attaches or fails to. Each rebind is a brand new instance with
+     * every field at its default, and the app that is already open does not fire a window-state
+     * change to announce itself. Two things then go wrong, both found on device:
+     *
+     * 1. `currentPackage` stays null, so `TYPE_WINDOW_CONTENT_CHANGED` -- the *only* signal a
+     *    browser gives while you stay inside it -- is discarded for not matching. A browser sitting
+     *    on a blocked site is simply never inspected, and nothing is enforced until you happen to
+     *    switch apps.
+     * 2. When a window-state change finally does arrive, a null `currentPackage` makes it look like
+     *    a foreground change into an app with no policy, which clears `frictionShownFor`. The next
+     *    read then resolves the website again, that reads as a *target change*, friction re-arms,
+     *    and the countdown fires again -- the loop, exactly.
+     *
+     * So the visit is persisted and restored, but only when the package on screen still matches the
+     * one it was recorded against. A rebind that happens while you are somewhere else starts clean.
+     */
+    private suspend fun seedForegroundFromScreen() {
+        repeat(SEED_ATTEMPTS) {
+            val pkg = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
+            if (pkg != null && pkg !in ignoredPackages) {
+                withContext(Dispatchers.Main) { guard("seed") { seedForeground(pkg) } }
+                return
+            }
+            // The tree is not always up yet in the first moments after binding.
+            delay(SEED_RETRY_MS)
+        }
+        trace("seed: gave up, no readable active window")
+    }
+
+    /** Main thread. [pkg] is the package that genuinely owns the active window. */
+    private fun seedForeground(pkg: String) {
+        // A real event beat us to it; it knows better than a poll does.
+        if (currentPackage != null) return
+
+        currentPackage = pkg
+        val prefs = getSharedPreferences(OUTAGE_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getString(KEY_VISIT_PACKAGE, null) == pkg) {
+            currentTargetId = prefs.getString(KEY_VISIT_TARGET, null)
+            frictionShownFor = prefs.getString(KEY_VISIT_FRICTION_SHOWN, null)
+        }
+        trace("seed: $pkg target=$currentTargetId shownFor=$frictionShownFor")
+
+        // Enforce the restored target straight away rather than waiting for the read to confirm
+        // it. If the page moved on while we were unbound the read corrects it within the second,
+        // and a moment of over-blocking is the right way round to be wrong.
+        applyTarget(currentTargetId ?: appTargetFor(pkg), System.currentTimeMillis())
+        requestInspect(pkg)
+    }
+
+    /**
+     * Records the visit so the next instance can pick it up. Cheap because it writes only on an
+     * actual change -- `applyTarget` runs on every tick and every read.
+     */
+    private fun persistVisit() {
+        if (currentPackage == persistedPackage &&
+            currentTargetId == persistedTarget &&
+            frictionShownFor == persistedFrictionShown
+        ) {
+            return
+        }
+        persistedPackage = currentPackage
+        persistedTarget = currentTargetId
+        persistedFrictionShown = frictionShownFor
+        runCatching {
+            getSharedPreferences(OUTAGE_PREFS, Context.MODE_PRIVATE).edit()
+                .putString(KEY_VISIT_PACKAGE, currentPackage)
+                .putString(KEY_VISIT_TARGET, currentTargetId)
+                .putString(KEY_VISIT_FRICTION_SHOWN, frictionShownFor)
+                .apply()
+        }
+    }
+
+    // endregion
+
     /**
      * Queues a node-tree read, if one could tell us anything.
      *
-     * Skipped while one of rotblock's own screens is covering the app: the read would only find
-     * our window, and the browser underneath goes on emitting content-change events the whole time
-     * a countdown is running.
+     * Deliberately *not* gated on [Interstitial.isShowing], though skipping reads that can only
+     * see our own window is tempting and was tried. Two reasons it has to stay ungated:
+     *
+     * - The app underneath resumes before our activity stops, so its window-state change — the one
+     *   event that reliably prompts a re-read — always lands while the gate is still shut. On a
+     *   static page nothing else follows, and the target is left as whatever the blinded read made
+     *   of it. Measured at 345ms of overlap on device; it let reddit straight through.
+     * - A gate keyed on a count that an activity killed without `onStop` never decrements would
+     *   suppress every website and feed read for the life of the service. Stuck shut is a far worse
+     *   failure than a few wasted reads.
+     *
+     * The read itself already declines to draw conclusions from the wrong window, which is where
+     * that protection belongs.
      */
     private fun requestInspect(pkg: String) {
         if (pkg !in inspectablePackages) return
-        if (Interstitial.isShowing) return
         inspectRequests.trySend(pkg)
     }
 
@@ -418,6 +562,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             }
             withContext(Dispatchers.Main) {
                 guard("applyInspected") {
+                    trace("inspected $pkg -> $resolved (current=$currentPackage)")
                     // Discard if the user has moved on since the read started.
                     if (pkg != currentPackage) return@guard
                     val targetId = when (resolved) {
@@ -438,13 +583,20 @@ class RotblockAccessibilityService : AccessibilityService() {
      * means. Everything node-shaped lives here; every fail-open judgement lives there.
      */
     private fun resolveInspectedTarget(pkg: String): Inspected {
-        val root = rootInActiveWindow ?: return Inspected.Unreadable
+        val root = rootInActiveWindow
+        if (root == null) {
+            trace("read($pkg): rootInActiveWindow null")
+            return Inspected.Unreadable
+        }
         try {
             // The active window is often not the app we were asked about -- most often it is one of
             // rotblock's own full-screen screens sitting on top of it, while the app underneath
             // keeps emitting content-change events as its page loads. Anything concluded from the
             // wrong window is noise, and acting on it drops a live target.
-            if (root.packageName?.toString() != pkg) return Inspected.Unreadable
+            if (root.packageName?.toString() != pkg) {
+                trace("read($pkg): active window is ${root.packageName}")
+                return Inspected.Unreadable
+            }
 
             val feedKey = FeedRegistry.specsFor(pkg)
                 .firstOrNull { spec -> spec.viewIdHints.any { root.hasViewId(it) } }
@@ -452,6 +604,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             val url = BrowserRegistry.specFor(pkg)
                 ?.urlBarIds
                 ?.firstNotNullOfOrNull { root.textForViewId(it) }
+            trace("read($pkg): feed=$feedKey url=${url?.let { "\"$it\"" }}")
 
             return classifyInspection(pkg, feedKey, url, websiteMatchers)
         } finally {
@@ -493,6 +646,10 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     private fun evaluateAndEnforce(targetId: String, nowMs: Long) {
         val policy = policiesByTarget[targetId] ?: return
+        // Not only from the tick. A busy page re-evaluates several times a second and the tick can
+        // legitimately not fire for its whole interval, and if the flush rode solely on the tick a
+        // process kill would record the entire visit as zero seconds.
+        ledger.touch(nowMs)
         val sessions = ledger.sessionsFor(targetId, nowMs)
         val decision = PolicyEngine.evaluate(policy, sessions, pause.pausedUntilMs, nowMs)
         trace("decision for ${policy.label}: $decision")
@@ -547,16 +704,59 @@ class RotblockAccessibilityService : AccessibilityService() {
                 detail = "${policy.label}: ${decision.reason.name.lowercase().replace('_', ' ')}",
             )
         }
+        val escape = escapeFor(policy)
         val shown = overlay.show(
             label = policy.label,
             reason = decision.reason,
             liftsAtMs = decision.liftsAtMs,
             onPauseRequested = { launchPauseRequest(policy) },
+            escape = escape,
         )
         if (!shown) {
-            // No overlay permission, or the window manager refused. Ejecting the user is blunt,
-            // but blocking has to actually block.
+            // No overlay permission, or the window manager refused. Blocking still has to block,
+            // so the user gets ejected -- but for a website or feed, ejecting alone is the dead
+            // end: the app reopens on the same page and ejects again, with no button anywhere to
+            // escape it. Move the app off the blocked page first, then leave.
+            escape?.action?.invoke()
             performGlobalAction(GLOBAL_ACTION_HOME)
+        }
+    }
+
+    /**
+     * How to get out of a block that covers more than it forbids.
+     *
+     * An app-level block needs nothing: the app *is* the target, so going home is a complete
+     * answer. A website or feed block is different -- it covers a browser or an app you are still
+     * allowed to use, including the address bar or the back gesture you would use to leave the
+     * blocked part. Reopening restores the same page and blocks again, and the only remaining way
+     * out is disabling the policy, which is the failure this whole app exists to prevent.
+     */
+    private fun escapeFor(policy: Policy): Escape? = when (policy.kind) {
+        TargetKind.APP -> null
+
+        // Backing out of a short-form player lands on the rest of the app, and if the app has
+        // nothing to go back to it closes -- reopening then starts at its normal entry point
+        // rather than back inside the feed. Either way you are out.
+        TargetKind.FEED -> Escape(escapeLabelFor(policy.kind)!!) {
+            guard("escapeFeed") { performGlobalAction(GLOBAL_ACTION_BACK) }
+        }
+
+        // Point the browser at a blank page. Back is not enough on its own: a restored tab can
+        // have no history, in which case back closes the browser and reopening lands on the same
+        // blocked page again. Loading about:blank changes what the active tab *is*, which survives
+        // the app being closed and reopened, and it touches the network for nothing.
+        TargetKind.WEBSITE -> Escape(escapeLabelFor(policy.kind)!!) {
+            guard("escapeSite") {
+                val browser = currentPackage
+                val navigated = browser != null && runCatching {
+                    startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse("about:blank"))
+                            .setPackage(browser)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }.isSuccess
+                if (!navigated) performGlobalAction(GLOBAL_ACTION_BACK)
+            }
         }
     }
 
@@ -569,7 +769,11 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     private fun maybeShowFriction(policy: Policy) {
         if (policy.frictionSeconds <= 0) return
-        if (frictionShownFor == policy.id) return
+        if (frictionShownFor == policy.id) {
+            trace("friction skipped: already shown this visit for ${policy.id}")
+            return
+        }
+        trace("friction SHOWING for ${policy.id} (was $frictionShownFor)")
         frictionShownFor = policy.id
         guard("friction") {
             startActivity(
@@ -596,19 +800,27 @@ class RotblockAccessibilityService : AccessibilityService() {
      * Arms the next re-check for [untilDeadlineMs] from now, clamped into
      * [MIN_TICK_MS]..[MAX_TICK_MS].
      *
-     * Always reschedules rather than being idempotent: the deadline moves as usage accrues, and
-     * clamping to the *shorter* of the deadline and the ceiling is what keeps a late tick from
-     * being a fail-open.
+     * Keeps an already-armed tick when it would fire no later than the one being asked for, and
+     * that is not an optimisation -- it is what stops the tick being starved. This runs from every
+     * evaluation, and a page emitting events several times a second would otherwise cancel and
+     * re-post the callback faster than it could ever come due, so the tick would simply never run.
+     *
+     * Rescheduling *earlier* is always allowed, so the soonest deadline still wins and a late tick
+     * can never become a fail-open.
      */
     private fun startTicking(untilDeadlineMs: Long) {
+        val dueAtMs = System.currentTimeMillis() + untilDeadlineMs.coerceIn(MIN_TICK_MS, MAX_TICK_MS)
+        if (ticking && tickDueAtMs in (System.currentTimeMillis() + 1)..dueAtMs) return
         ticking = true
+        tickDueAtMs = dueAtMs
         handler.removeCallbacks(tick)
-        handler.postDelayed(tick, untilDeadlineMs.coerceIn(MIN_TICK_MS, MAX_TICK_MS))
+        handler.postDelayed(tick, (dueAtMs - System.currentTimeMillis()).coerceAtLeast(0L))
     }
 
     private fun stopTicking() {
         if (!ticking) return
         ticking = false
+        tickDueAtMs = 0L
         handler.removeCallbacks(tick)
     }
 
@@ -680,7 +892,9 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     private fun teardown(reason: String) {
         val now = System.currentTimeMillis()
+        trace("teardown: $reason")
         stopTicking()
+        Interstitial.onCleared = null
         runCatching { unregisterReceiver(screenReceiver) }
         // onUnbind and onDestroy both land here; keep the first timestamp, which is when
         // enforcement actually stopped.
