@@ -70,9 +70,14 @@
             </intent-filter>
         </service>
 
+        <!--
+          exported MUST be true: the system binds this from another process, and the
+          BIND_ACCESSIBILITY_SERVICE permission is what keeps anyone else out. With exported="false"
+          the service simply never appears in Settings > Accessibility and nothing is enforced.
+        -->
         <service
             android:name=".service.RotblockAccessibilityService"
-            android:exported="false"
+            android:exported="true"
             android:label="@string/accessibility_service_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>

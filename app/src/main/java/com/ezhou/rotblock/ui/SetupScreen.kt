@@ -42,7 +42,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.data.RotblockSettings
@@ -57,7 +56,6 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
     // Re-read the permission state every time this screen is shown, since granting happens in
     // Settings and we come back to a still-composed screen.
     var refreshKey by remember { mutableStateOf(0) }
-    LocalLifecycleOwner.current // touch so recomposition is tied to the host lifecycle
     val accessibilityOn = remember(refreshKey) { isAccessibilityEnabled(context) }
     val overlayOn = remember(refreshKey) { Settings.canDrawOverlays(context) }
     val grayscaleOn = remember(refreshKey) { Grayscale(context).isAvailable }
@@ -160,6 +158,38 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
             steps = 11,
             format = { "${it.toInt()}:00" },
             onChange = { scope.launch { Rotblock.settings(context).setDayStartHour(it.toInt()) } },
+        )
+
+        Spacer(Modifier.height(20.dp))
+        Text(
+            "Loosening a rule",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "How long an edit waits before it takes effect, when that edit makes a rule weaker — " +
+                "raising a limit, turning a block off, deleting it. Tightening a rule is never " +
+                "delayed. Set it to 0 to turn the wait off entirely.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        SliderRow(
+            label = "Wait before it applies",
+            value = settings.weakeningDelayMinutes.toFloat(),
+            range = 0f..240f,
+            steps = 15,
+            format = {
+                when (val m = it.toInt()) {
+                    0 -> "off"
+                    in 1..59 -> "$m min"
+                    else -> "${m / 60}h ${m % 60}m".removeSuffix(" 0m")
+                }
+            },
+            onChange = {
+                scope.launch { Rotblock.settings(context).setWeakeningDelayMinutes(it.toInt()) }
+            },
         )
 
         Spacer(Modifier.height(28.dp))

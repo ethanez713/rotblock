@@ -3,7 +3,6 @@ package com.ezhou.rotblock.data
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
@@ -48,9 +47,6 @@ class SettingsRepository(context: Context) {
         val maxPauseMinutesPerDay = intPreferencesKey("max_pause_minutes_per_day")
         val dayStartHour = intPreferencesKey("day_start_hour")
         val weakeningDelayMinutes = intPreferencesKey("weakening_delay_minutes")
-
-        @Suppress("unused") // reserved so a stale key name is never silently reused
-        val unusedMarker = booleanPreferencesKey("_reserved")
     }
 
     val settings: Flow<RotblockSettings> = store.data.map { p ->

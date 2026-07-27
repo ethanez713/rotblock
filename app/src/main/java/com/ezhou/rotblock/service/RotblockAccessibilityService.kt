@@ -11,6 +11,7 @@ import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
+import androidx.core.content.ContextCompat
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditLog
 import com.ezhou.rotblock.audit.AuditType
@@ -144,14 +145,21 @@ class RotblockAccessibilityService : AccessibilityService() {
 
             audit.record(AuditType.SERVICE_ENABLED, detail = "Enforcement started")
 
-            registerReceiver(
-                screenReceiver,
-                IntentFilter().apply {
-                    addAction(Intent.ACTION_SCREEN_OFF)
-                    addAction(Intent.ACTION_SCREEN_ON)
-                    addAction(Intent.ACTION_USER_PRESENT)
-                },
-            )
+            // Isolated: if this throws, the outer guard would swallow it and skip everything
+            // below, leaving the service alive but never loading a single policy. Losing
+            // screen-state handling is survivable; losing enforcement is not.
+            runCatching {
+                ContextCompat.registerReceiver(
+                    this,
+                    screenReceiver,
+                    IntentFilter().apply {
+                        addAction(Intent.ACTION_SCREEN_OFF)
+                        addAction(Intent.ACTION_SCREEN_ON)
+                        addAction(Intent.ACTION_USER_PRESENT)
+                    },
+                    ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+            }.onFailure { audit.recordError("registerScreenReceiver", it) }
 
             watchJob?.cancel()
             watchJob = scope.launch {
@@ -346,10 +354,15 @@ class RotblockAccessibilityService : AccessibilityService() {
         when (val decision = PolicyEngine.evaluate(policy, sessions, pause.pausedUntilMs, nowMs)) {
             is Decision.Allow -> {
                 overlay.hide()
-                stopTicking()
                 ledger.closeSession(nowMs)
                 // A pause suspends greyscale and friction too; a pause means "get out of my way".
                 grayscale.restore()
+                // A pause ends by *elapsing*, which fires no event at all: no window change while
+                // you keep scrolling, and no settings emission for time merely passing. Without
+                // the ticker running through it, the app would stay open past the deadline until
+                // something else happened to wake us -- a fail-open, which this design does not get
+                // to have. No session is opened, so paused time still costs no quota.
+                if (decision.pausedUntilMs != null) startTicking() else stopTicking()
             }
 
             is Decision.Allowed -> {
