@@ -1,0 +1,20 @@
+*.iml
+.gradle/
+.kotlin/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.keystore
+*.jks
+
+# Security baseline: never commit secrets, even though this app has none today.
+.env*
+.secrets/
+.secrets
+*secret*.json
+token.json
