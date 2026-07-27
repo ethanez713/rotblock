@@ -5,6 +5,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditEvent
+import com.ezhou.rotblock.audit.AuditType
+import com.ezhou.rotblock.insights.DayBucket
+import com.ezhou.rotblock.insights.TargetSession
+import com.ezhou.rotblock.insights.bucketByDay
+import com.ezhou.rotblock.insights.countByDay
+import com.ezhou.rotblock.insights.recentDayStarts
 import com.ezhou.rotblock.data.PendingChange
 import com.ezhou.rotblock.data.PendingChangeQueue
 import com.ezhou.rotblock.data.RotblockSettings
@@ -20,6 +26,32 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+/** Everything the Insights screen renders, assembled in one pass. */
+data class InsightsState(
+    val days: Int,
+    val dayStarts: List<Long>,
+    val buckets: List<DayBucket>,
+    val targetLabels: Map<String, String>,
+    /** Stable series order: creation order, so a colour keeps meaning the same target. */
+    val targetOrder: List<String>,
+    val pauseCounts: List<Int>,
+    val emergencyCounts: List<Int>,
+    val totalPauseMinutes: Int,
+    val emergencyCount: Int,
+    val pauseCount: Int,
+    val weakeningCount: Int,
+) {
+    val totalUsageMs: Long get() = buckets.sumOf { it.totalMs }
+
+    /** Per-target totals over the range, largest first. Feeds the breakdown table. */
+    val totalsByTarget: List<Pair<String, Long>>
+        get() = buckets
+            .flatMap { it.perTarget.entries }
+            .groupBy({ it.key }, { it.value })
+            .map { (id, values) -> id to values.sum() }
+            .sortedByDescending { it.second }
+}
 
 /** Live per-policy usage, recomputed whenever the Blocks screen refreshes. */
 data class PolicyUsage(
@@ -151,6 +183,54 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun submit(old: Policy?, new: Policy?) {
         _lastOutcome.value = queue.submit(old, new)
         refresh()
+    }
+
+    private val _insights = MutableStateFlow<InsightsState?>(null)
+    val insights: StateFlow<InsightsState?> = _insights.asStateFlow()
+
+    /**
+     * Builds everything the Insights screen shows in one pass.
+     *
+     * Series slots are assigned by the order policies were created, never by how much time each
+     * one used -- a colour has to keep meaning the same target between refreshes, or the chart
+     * repaints itself every time the ranking shifts.
+     */
+    fun loadInsights(days: Int) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val settings = settingsRepo.current()
+            val dayStarts = recentDayStarts(now, settings.dayStartHour, days)
+            val from = dayStarts.first()
+
+            val sessions = db.usageDao().since(from)
+                .map { TargetSession(it.targetId, it.startMs, it.endMs) }
+            val buckets = bucketByDay(sessions, dayStarts, now)
+
+            val allPolicies = db.policyDao().getAll().sortedBy { it.createdAtMs }
+            val labels = allPolicies.associate { it.id to it.label }
+            val seen = buckets.flatMap { it.perTarget.keys }.toSet()
+            val order = (allPolicies.map { it.id } + seen.sorted()).distinct().filter { it in seen }
+
+            val events = db.auditDao().since(from)
+            val pauses = events.filter { it.type == AuditType.PAUSE_STARTED }
+            val emergencies = events.filter { it.type == AuditType.EMERGENCY_SKIP }
+
+            _insights.value = InsightsState(
+                days = days,
+                dayStarts = dayStarts,
+                buckets = buckets,
+                targetLabels = labels,
+                targetOrder = order,
+                pauseCounts = countByDay(pauses.map { it.tsMs }, dayStarts, now),
+                emergencyCounts = countByDay(emergencies.map { it.tsMs }, dayStarts, now),
+                totalPauseMinutes = pauses.sumOf { (it.durationSeconds ?: 0) } / 60,
+                emergencyCount = emergencies.size,
+                pauseCount = pauses.size,
+                weakeningCount = events.count {
+                    it.type == AuditType.WEAKENING_QUEUED || it.type == AuditType.POLICY_DELETED
+                },
+            )
+        }
     }
 
     suspend fun startPause(minutes: Int, emergency: Boolean, reason: String?): PauseResult =

@@ -28,7 +28,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     Blocks("Blocks", Icons.Filled.Lock),
-    Log("Log", Icons.AutoMirrored.Filled.List),
+    Insights("Insights", Icons.AutoMirrored.Filled.List),
     Setup("Setup", Icons.Filled.Settings),
 }
 
@@ -75,7 +75,7 @@ private fun RotblockApp(viewModel: RotblockViewModel) {
         Box(Modifier.padding(padding)) {
             when (tab) {
                 Tab.Blocks -> BlocksScreen(viewModel, settings)
-                Tab.Log -> LogScreen(viewModel)
+                Tab.Insights -> InsightsScreen(viewModel)
                 Tab.Setup -> SetupScreen(viewModel, settings)
             }
         }
