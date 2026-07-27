@@ -150,6 +150,11 @@ class RotblockAccessibilityService : AccessibilityService() {
                 }
                 Rotblock.database(this@RotblockAccessibilityService).policyDao().observeAll()
                     .collectLatest { list ->
+                        // Opportunistic apply: a due weakening lands the next time policies are
+                        // looked at. Late is fine; early is not.
+                        runCatching {
+                            Rotblock.changeQueue(this@RotblockAccessibilityService).applyDue()
+                        }
                         policiesByTarget = list.associateBy { it.id }
                         websiteMatchers = list
                             .filter { it.enabled && it.kind == TargetKind.WEBSITE }

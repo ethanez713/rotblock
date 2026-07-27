@@ -9,7 +9,7 @@ import com.ezhou.rotblock.audit.AuditEvent
 import com.ezhou.rotblock.policy.Policy
 
 @Database(
-    entities = [Policy::class, UsageSessionEntity::class, AuditEvent::class],
+    entities = [Policy::class, UsageSessionEntity::class, AuditEvent::class, PendingChange::class],
     version = 1,
     exportSchema = true,
 )
@@ -18,6 +18,7 @@ abstract class RotblockDatabase : RoomDatabase() {
     abstract fun policyDao(): PolicyDao
     abstract fun usageDao(): UsageDao
     abstract fun auditDao(): AuditDao
+    abstract fun pendingChangeDao(): PendingChangeDao
 
     companion object {
         @Volatile private var instance: RotblockDatabase? = null

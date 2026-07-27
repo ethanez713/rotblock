@@ -3,6 +3,7 @@ package com.ezhou.rotblock
 import android.app.Application
 import android.content.Context
 import com.ezhou.rotblock.audit.AuditLog
+import com.ezhou.rotblock.data.PendingChangeQueue
 import com.ezhou.rotblock.data.RotblockDatabase
 import com.ezhou.rotblock.data.SettingsRepository
 import com.ezhou.rotblock.pause.PauseController
@@ -29,6 +30,7 @@ object Rotblock {
     @Volatile private var ledgerRef: UsageLedger? = null
     @Volatile private var auditRef: AuditLog? = null
     @Volatile private var pauseRef: PauseController? = null
+    @Volatile private var queueRef: PendingChangeQueue? = null
 
     fun database(context: Context): RotblockDatabase =
         db ?: synchronized(this) { db ?: RotblockDatabase.get(context).also { db = it } }
@@ -55,6 +57,16 @@ object Rotblock {
                 auditDao = database(context).auditDao(),
                 audit = audit(context),
             ).also { pauseRef = it }
+        }
+
+    fun changeQueue(context: Context): PendingChangeQueue =
+        queueRef ?: synchronized(this) {
+            queueRef ?: PendingChangeQueue(
+                policyDao = database(context).policyDao(),
+                pendingDao = database(context).pendingChangeDao(),
+                settings = settings(context),
+                audit = audit(context),
+            ).also { queueRef = it }
         }
 }
 

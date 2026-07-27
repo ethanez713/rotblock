@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "1239edcc8022710710391ce54791ffa5",
+    "identityHash": "da08b022a0437bc3a10e680442feccd0",
     "entities": [
       {
         "tableName": "policies",
@@ -202,12 +202,111 @@
         },
         "indices": [],
         "foreignKeys": []
+      },
+      {
+        "tableName": "pending_changes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `targetId` TEXT NOT NULL, `createdAtMs` INTEGER NOT NULL, `applyAtMs` INTEGER NOT NULL, `description` TEXT NOT NULL, `isDeletion` INTEGER NOT NULL, `enabled` INTEGER NOT NULL, `quotaSeconds` INTEGER, `windowSeconds` INTEGER NOT NULL, `frictionSeconds` INTEGER NOT NULL, `grayscale` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetId",
+            "columnName": "targetId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMs",
+            "columnName": "createdAtMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "applyAtMs",
+            "columnName": "applyAtMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isDeletion",
+            "columnName": "isDeletion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quotaSeconds",
+            "columnName": "quotaSeconds",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "windowSeconds",
+            "columnName": "windowSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "frictionSeconds",
+            "columnName": "frictionSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "grayscale",
+            "columnName": "grayscale",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_pending_changes_targetId",
+            "unique": false,
+            "columnNames": [
+              "targetId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_pending_changes_targetId` ON `${TABLE_NAME}` (`targetId`)"
+          },
+          {
+            "name": "index_pending_changes_applyAtMs",
+            "unique": false,
+            "columnNames": [
+              "applyAtMs"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_pending_changes_applyAtMs` ON `${TABLE_NAME}` (`applyAtMs`)"
+          }
+        ],
+        "foreignKeys": []
       }
     ],
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '1239edcc8022710710391ce54791ffa5')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'da08b022a0437bc3a10e680442feccd0')"
     ]
   }
 }

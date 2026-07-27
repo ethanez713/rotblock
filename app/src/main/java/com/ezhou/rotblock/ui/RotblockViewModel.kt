@@ -5,7 +5,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditEvent
-import com.ezhou.rotblock.audit.AuditType
+import com.ezhou.rotblock.data.PendingChange
+import com.ezhou.rotblock.data.PendingChangeQueue
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.pause.BudgetStatus
 import com.ezhou.rotblock.pause.PauseResult
@@ -36,9 +37,18 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
     private val settingsRepo = Rotblock.settings(app)
     private val ledger = Rotblock.ledger(app)
     private val pauseController = Rotblock.pause(app)
+    private val queue = Rotblock.changeQueue(app)
 
     val policies: StateFlow<List<Policy>> = db.policyDao().observeAll()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val pendingChanges: StateFlow<List<PendingChange>> = db.pendingChangeDao().observeAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private val _lastOutcome = MutableStateFlow<PendingChangeQueue.Outcome?>(null)
+    val lastOutcome: StateFlow<PendingChangeQueue.Outcome?> = _lastOutcome.asStateFlow()
+
+    fun consumeOutcome() { _lastOutcome.value = null }
 
     val settings: StateFlow<RotblockSettings> = settingsRepo.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RotblockSettings())
@@ -60,6 +70,9 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
     fun refresh() {
         viewModelScope.launch {
             val now = System.currentTimeMillis()
+            // Opportunistic: queued weakenings land whenever someone looks. Applying them late is
+            // harmless (the stricter rule simply stayed on longer); applying them early is not.
+            queue.applyDue(now)
             val all = db.policyDao().getAll()
             val result = buildMap {
                 for (p in all) {
@@ -88,6 +101,11 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
     fun addAppPolicy(packageName: String, label: String, quotaSeconds: Int?, windowSeconds: Int) =
         addPolicy(TargetKind.APP, packageName, label, quotaSeconds, windowSeconds)
 
+    /**
+     * Every policy mutation goes through [PendingChangeQueue], which decides whether it lands now
+     * or waits. Nothing in the UI writes to the policy table directly -- that is what keeps the
+     * "loosening is delayed" rule from being bypassable by a screen someone forgot to route.
+     */
     fun addPolicy(
         kind: TargetKind,
         matcher: String,
@@ -98,7 +116,9 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val now = System.currentTimeMillis()
             val id = Policy.targetId(kind, matcher)
-            db.policyDao().upsert(
+            val existing = db.policyDao().get(id)
+            submit(
+                existing,
                 Policy(
                     id = id,
                     kind = kind,
@@ -106,49 +126,31 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
                     label = label,
                     quotaSeconds = quotaSeconds,
                     windowSeconds = windowSeconds,
-                    createdAtMs = now,
+                    createdAtMs = existing?.createdAtMs ?: now,
                     updatedAtMs = now,
                 ),
             )
-            Rotblock.audit(getApplication()).record(
-                AuditType.POLICY_CREATED,
-                targetId = id,
-                detail = if (quotaSeconds == null) {
-                    "Blocked $label completely"
-                } else {
-                    "Limited $label to ${quotaSeconds / 60} min per ${windowSeconds / 60} min"
-                },
-            )
-            refresh()
         }
     }
 
     fun deletePolicy(policy: Policy) {
+        viewModelScope.launch { submit(policy, null) }
+    }
+
+    fun setPolicyEnabled(policy: Policy, enabled: Boolean) {
+        viewModelScope.launch { submit(policy, policy.copy(enabled = enabled)) }
+    }
+
+    fun cancelPending(change: PendingChange) {
         viewModelScope.launch {
-            db.policyDao().delete(policy)
-            // Deleting a policy is the strongest possible weakening. Phase 5 routes this through
-            // the delay queue; until then it is at least loudly recorded.
-            Rotblock.audit(getApplication()).record(
-                AuditType.POLICY_DELETED,
-                targetId = policy.id,
-                detail = "Removed the policy for ${policy.label}",
-            )
+            queue.cancel(change)
             refresh()
         }
     }
 
-    fun setPolicyEnabled(policy: Policy, enabled: Boolean) {
-        viewModelScope.launch {
-            db.policyDao().upsert(
-                policy.copy(enabled = enabled, updatedAtMs = System.currentTimeMillis()),
-            )
-            Rotblock.audit(getApplication()).record(
-                if (enabled) AuditType.POLICY_STRENGTHENED else AuditType.WEAKENING_APPLIED,
-                targetId = policy.id,
-                detail = if (enabled) "Re-enabled ${policy.label}" else "Disabled ${policy.label}",
-            )
-            refresh()
-        }
+    private suspend fun submit(old: Policy?, new: Policy?) {
+        _lastOutcome.value = queue.submit(old, new)
+        refresh()
     }
 
     suspend fun startPause(minutes: Int, emergency: Boolean, reason: String?): PauseResult =

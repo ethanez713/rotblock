@@ -53,6 +53,7 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
     val policies by viewModel.policies.collectAsStateWithLifecycle()
     val usage by viewModel.usage.collectAsStateWithLifecycle()
     val budget by viewModel.budget.collectAsStateWithLifecycle()
+    val pending by viewModel.pendingChanges.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -92,6 +93,14 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
                             android.content.Intent(context, PauseRequestActivity::class.java),
                         )
                     },
+                )
+            }
+
+            items(pending, key = { "pending-${it.id}" }) { change ->
+                PendingChangeCard(
+                    change = change,
+                    nowMs = now,
+                    onCancel = { viewModel.cancelPending(change) },
                 )
             }
 
@@ -185,6 +194,46 @@ private fun com.ezhou.rotblock.pause.BudgetStatus?.describe(): String {
         minutesRemaining?.let { add("$it min of pause time left") }
     }
     return if (parts.isEmpty()) "Pauses are unlimited today." else parts.joinToString(" · ")
+}
+
+/**
+ * A loosening edit waiting out its delay. Shown above the policies because the countdown is the
+ * thing you most need to see -- and because cancelling it is meant to be the easy option.
+ */
+@Composable
+private fun PendingChangeCard(
+    change: com.ezhou.rotblock.data.PendingChange,
+    nowMs: Long,
+    onCancel: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                "Waiting: ${change.description}",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (change.applyAtMs > nowMs) {
+                    "Takes effect in ${formatDuration(change.applyAtMs - nowMs)}. " +
+                        "The current rule stays on until then."
+                } else {
+                    "Applying now."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onCancel) { Text("Cancel this change") }
+        }
+    }
 }
 
 @Composable
