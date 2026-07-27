@@ -53,6 +53,41 @@ class WebMatcherParseTest {
     }
 }
 
+class WebMatcherCanonicalTest {
+
+    @Test
+    fun `collapses the spellings of the same site to one rule`() {
+        // These must all become one stored policy, not several that each fire on the same page.
+        val expected = "reddit.com"
+        listOf(
+            "reddit.com",
+            "Reddit.com",
+            "  REDDIT.com  ",
+            "https://reddit.com",
+            "http://www.reddit.com",
+            "https://www.Reddit.com/",
+        ).forEach { input ->
+            assertEquals(input, expected, WebMatcher.canonicalRule(input))
+        }
+    }
+
+    @Test
+    fun `keeps a path but drops its trailing slash`() {
+        assertEquals("youtube.com/shorts", WebMatcher.canonicalRule("https://www.YouTube.com/shorts/"))
+    }
+
+    @Test
+    fun `normalises keyword rules without mangling the keyword`() {
+        assertEquals("kw:brainrot", WebMatcher.canonicalRule("KW: Brainrot "))
+    }
+
+    @Test
+    fun `a canonicalised rule still matches what the original did`() {
+        val canonical = WebMatcher.canonicalRule("HTTPS://WWW.Reddit.com/")
+        assertTrue(matches("old.reddit.com/r/all", canonical))
+    }
+}
+
 class WebMatcherRuleTest {
 
     @Test

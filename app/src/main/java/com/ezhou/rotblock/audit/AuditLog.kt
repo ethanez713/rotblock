@@ -26,9 +26,15 @@ class AuditLog(
         userReason: String? = null,
         durationSeconds: Int? = null,
         overBudget: Boolean = false,
+        /**
+         * When the thing actually happened, if that differs from now. Used for events noticed
+         * late -- a pause expiring is detected whenever something next looks at the clock, but it
+         * belongs in the log at its deadline, not at the moment of discovery.
+         */
+        tsMs: Long = clock(),
     ) {
         val event = AuditEvent(
-            tsMs = clock(),
+            tsMs = tsMs,
             type = type,
             targetId = targetId,
             detail = detail,

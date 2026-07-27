@@ -1,4 +1,8 @@
 <resources>
-    <color name="surface">#101014</color>
+    <!-- Window background behind Compose. Must track the Compose theme's `background`, or the
+         system window shows through as a mismatched band before/around the content. -->
+    <color name="window_background">#FAFAFB</color>
+
+    <!-- Launcher icon backdrop stays dark in both modes; the icon is drawn for it. -->
     <color name="ic_launcher_background">#101014</color>
 </resources>

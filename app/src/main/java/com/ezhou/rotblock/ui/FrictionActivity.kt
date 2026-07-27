@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.ezhou.rotblock.block.Interstitial
 import kotlinx.coroutines.delay
 
 /**
@@ -45,6 +46,20 @@ class FrictionActivity : ComponentActivity() {
     companion object {
         const val EXTRA_LABEL = "label"
         const val EXTRA_SECONDS = "seconds"
+    }
+
+    /**
+     * Waiting out the friction must not spend the quota of the app underneath -- friction costs
+     * time, not allowance. See [Interstitial].
+     */
+    override fun onStart() {
+        super.onStart()
+        Interstitial.entered()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        Interstitial.exited()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

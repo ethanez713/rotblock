@@ -58,4 +58,8 @@ interface AuditDao {
 
     @Query("SELECT * FROM audit_events WHERE tsMs >= :sinceMs ORDER BY tsMs")
     suspend fun since(sinceMs: Long): List<AuditEvent>
+
+    /** Dedupe anchor for events that are detected late; see `PauseController.noteExpiryIfNeeded`. */
+    @Query("SELECT MAX(tsMs) FROM audit_events WHERE type = :type")
+    suspend fun lastTimestampOf(type: String): Long?
 }

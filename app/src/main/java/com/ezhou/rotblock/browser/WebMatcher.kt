@@ -49,20 +49,39 @@ object WebMatcher {
         }
     }
 
+    /**
+     * The stored form of a rule: trimmed, lowercased, scheme and `www.` stripped, no trailing
+     * slash.
+     *
+     * Rules are canonicalised on save so `Reddit.com`, `https://reddit.com/` and `reddit.com` are
+     * one policy rather than three that all fire on the same page. [matches] canonicalises again
+     * so a rule stored by an older build still behaves.
+     */
+    fun canonicalRule(raw: String): String {
+        val rule = raw.trim().lowercase()
+        if (rule.startsWith(KEYWORD_PREFIX)) {
+            return KEYWORD_PREFIX + rule.removePrefix(KEYWORD_PREFIX).trim()
+        }
+        return rule
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .removePrefix("www.")
+            .trimEnd('/')
+    }
+
     /** True if [matcher] applies to [url]. */
     fun matches(url: ParsedUrl, matcher: String): Boolean {
-        val rule = matcher.trim().lowercase()
+        val rule = canonicalRule(matcher)
         if (rule.isEmpty()) return false
 
         if (rule.startsWith(KEYWORD_PREFIX)) {
-            val keyword = rule.removePrefix(KEYWORD_PREFIX).trim()
+            val keyword = rule.removePrefix(KEYWORD_PREFIX)
             return keyword.isNotEmpty() && url.full.contains(keyword)
         }
 
-        val normalized = rule.removePrefix("https://").removePrefix("http://").removePrefix("www.")
-        val slash = normalized.indexOf('/')
-        val ruleHost = if (slash < 0) normalized else normalized.substring(0, slash)
-        val rulePath = if (slash < 0) "" else normalized.substring(slash)
+        val slash = rule.indexOf('/')
+        val ruleHost = if (slash < 0) rule else rule.substring(0, slash)
+        val rulePath = if (slash < 0) "" else rule.substring(slash)
 
         val hostMatches = url.host == ruleHost || url.host.endsWith(".$ruleHost")
         if (!hostMatches) return false

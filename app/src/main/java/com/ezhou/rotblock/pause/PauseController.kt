@@ -26,11 +26,25 @@ class PauseController(
     @Volatile var pausedUntilMs: Long = 0L
         private set
 
-    /** True if a pause was running the last time we checked, used to log expiry exactly once. */
-    @Volatile private var sawActivePause = false
+    /**
+     * Deadline of the most recently logged expiry, so one is never recorded twice.
+     *
+     * Seeded from the audit log itself rather than a separate flag, which means it survives
+     * process death without adding state that could disagree with the history you are reading.
+     */
+    @Volatile private var lastLoggedExpiryMs: Long = 0L
+
+    /** Separate from the 0 sentinel: "no expiry has ever been logged" is a real, cacheable answer. */
+    @Volatile private var expirySeedLoaded = false
 
     suspend fun refresh() {
         pausedUntilMs = settings.current().pausedUntilMs
+        if (!expirySeedLoaded) {
+            lastLoggedExpiryMs =
+                runCatching { auditDao.lastTimestampOf(AuditType.PAUSE_EXPIRED.name) }
+                    .getOrNull() ?: 0L
+            expirySeedLoaded = true
+        }
         noteExpiryIfNeeded()
     }
 
@@ -38,16 +52,23 @@ class PauseController(
 
     fun remainingMs(nowMs: Long = clock()): Long = (pausedUntilMs - nowMs).coerceAtLeast(0L)
 
-    /** Logs PAUSE_EXPIRED the first time we notice a pause deadline has passed. */
+    /**
+     * Records PAUSE_EXPIRED once a pause deadline has passed.
+     *
+     * Nothing fires when a deadline merely elapses, so this is called opportunistically from
+     * whatever happens to run next. The event is therefore stamped with the deadline itself
+     * rather than the moment of discovery -- otherwise a pause that ended at 14:30 and was
+     * noticed at 21:00 would read, wrongly, as six and a half hours of unblocked phone.
+     */
     fun noteExpiryIfNeeded(nowMs: Long = clock()) {
-        val active = nowMs < pausedUntilMs
-        if (sawActivePause && !active && pausedUntilMs > 0L) {
-            audit.record(
-                AuditType.PAUSE_EXPIRED,
-                detail = "Pause ended on its own; blocking resumed",
-            )
-        }
-        sawActivePause = active
+        val deadline = pausedUntilMs
+        if (deadline <= 0L || nowMs < deadline || deadline <= lastLoggedExpiryMs) return
+        lastLoggedExpiryMs = deadline
+        audit.record(
+            AuditType.PAUSE_EXPIRED,
+            detail = "Pause ended on its own; blocking resumed",
+            tsMs = deadline,
+        )
     }
 
     suspend fun budgetStatus(nowMs: Long = clock()): BudgetStatus {
@@ -93,7 +114,6 @@ class PauseController(
         val until = maxOf(pausedUntilMs, nowMs) + effectiveMinutes * 60_000L
         settings.setPausedUntil(until)
         pausedUntilMs = until
-        sawActivePause = true
 
         if (emergency) {
             audit.record(
@@ -119,7 +139,6 @@ class PauseController(
         val remainingMin = ((pausedUntilMs - nowMs) / 60_000L).toInt()
         settings.setPausedUntil(0L)
         pausedUntilMs = 0L
-        sawActivePause = false
         audit.record(
             AuditType.PAUSE_ENDED_EARLY,
             detail = "Ended pause early with $remainingMin min left",

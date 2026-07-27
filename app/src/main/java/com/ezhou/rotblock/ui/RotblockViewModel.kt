@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditEvent
 import com.ezhou.rotblock.audit.AuditType
+import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.insights.DayBucket
 import com.ezhou.rotblock.insights.TargetSession
 import com.ezhou.rotblock.insights.bucketByDay
@@ -140,14 +141,21 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         viewModelScope.launch {
             val now = System.currentTimeMillis()
-            val id = Policy.targetId(kind, matcher)
+            // Website rules are canonicalised so "Reddit.com" and "reddit.com" are one policy
+            // rather than two that both fire on the same page.
+            val canonical = if (kind == TargetKind.WEBSITE) {
+                WebMatcher.canonicalRule(matcher)
+            } else {
+                matcher
+            }
+            val id = Policy.targetId(kind, canonical)
             val existing = db.policyDao().get(id)
             submit(
                 existing,
                 Policy(
                     id = id,
                     kind = kind,
-                    matcher = matcher,
+                    matcher = canonical,
                     label = label,
                     // An edit must not silently re-enable a rule that was switched off.
                     enabled = existing?.enabled ?: true,

@@ -43,6 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.pause.BudgetStatus
@@ -68,6 +69,21 @@ class PauseRequestActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_TARGET_LABEL = "target_label"
+    }
+
+    /**
+     * Sitting on a 60-second cooldown must not spend the quota of whatever is underneath. See
+     * [Interstitial] -- ownership is here rather than at the launch site so a failed launch or a
+     * killed activity cannot leave accrual switched off.
+     */
+    override fun onStart() {
+        super.onStart()
+        Interstitial.entered()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        Interstitial.exited()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -137,7 +153,13 @@ private fun PauseRequestScreen(
                 onMinutes = { minutes = it },
                 cooldownSeconds = settings.cooldownSeconds,
                 onStart = {
-                    if (settings.cooldownSeconds <= 0) {
+                    val spent = budget?.exhausted == true
+                    if (spent) {
+                        // Checked up front rather than after the wait: making someone sit through
+                        // a cooldown only to be told the budget was already gone is pure spite.
+                        denied = budget
+                        step = Step.Emergency
+                    } else if (settings.cooldownSeconds <= 0) {
                         commit(emergency = false, reason = null)
                     } else {
                         secondsLeft = settings.cooldownSeconds
@@ -227,7 +249,13 @@ private fun ChooseStep(
 
     Spacer(Modifier.height(28.dp))
     Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
-        Text(if (cooldownSeconds > 0) "Wait ${cooldownSeconds}s, then pause" else "Pause now")
+        Text(
+            when {
+                budget?.exhausted == true -> "Budget spent — emergency skip only"
+                cooldownSeconds > 0 -> "Wait ${cooldownSeconds}s, then pause"
+                else -> "Pause now"
+            },
+        )
     }
     Spacer(Modifier.height(4.dp))
     TextButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Never mind") }

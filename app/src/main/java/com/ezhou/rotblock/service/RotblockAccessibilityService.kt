@@ -18,6 +18,7 @@ import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.block.BlockOverlay
 import com.ezhou.rotblock.block.FeedRegistry
 import com.ezhou.rotblock.block.Grayscale
+import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.browser.BrowserRegistry
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.pause.PauseController
@@ -255,8 +256,11 @@ class RotblockAccessibilityService : AccessibilityService() {
     }
 
     private fun reEvaluateCurrent() {
-        val pkg = currentPackage ?: return
         val now = System.currentTimeMillis()
+        // Cheap, and this runs on unlock and on every settings change, which is the widest net we
+        // have for noticing a pause that lapsed while nothing was watching.
+        pause.noteExpiryIfNeeded(now)
+        val pkg = currentPackage ?: return
         applyTarget(currentTargetId ?: appTargetFor(pkg), now)
         if (pkg in inspectablePackages) inspectRequests.trySend(pkg)
     }
@@ -367,7 +371,13 @@ class RotblockAccessibilityService : AccessibilityService() {
 
             is Decision.Allowed -> {
                 overlay.hide()
-                ledger.startSession(targetId, nowMs)
+                if (Interstitial.isShowing) {
+                    // One of our own screens is covering the app. You are not using it, so it does
+                    // not get to charge you -- friction and cooldowns cost time, not quota.
+                    ledger.closeSession(nowMs)
+                } else {
+                    ledger.startSession(targetId, nowMs)
+                }
                 startTicking()
                 if (policy.grayscale) grayscale.enable() else grayscale.restore()
                 maybeShowFriction(policy)
