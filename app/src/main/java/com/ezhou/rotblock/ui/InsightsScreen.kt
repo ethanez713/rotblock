@@ -287,7 +287,14 @@ private fun EscapeHatchCard(state: InsightsState) {
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                "${state.pauseCount} pauses, ${state.emergencyCount} of them skipping the cooldown.",
+                buildString {
+                    append(state.pauseCount)
+                    append(if (state.pauseCount == 1) " pause" else " pauses")
+                    if (state.emergencyCount > 0) {
+                        append(", ${state.emergencyCount} of them skipping the cooldown")
+                    }
+                    append('.')
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
