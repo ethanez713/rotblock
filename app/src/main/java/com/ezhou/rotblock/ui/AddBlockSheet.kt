@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -46,6 +47,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import com.ezhou.rotblock.block.FeedRegistry
+import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.TargetKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -71,20 +73,35 @@ private data class Chosen(
 fun AddBlockSheet(
     existing: Set<String>,
     onDismiss: () -> Unit,
-    onAdd: (kind: TargetKind, matcher: String, label: String, quotaSeconds: Int?, windowSeconds: Int) -> Unit,
+    onSave: (
+        kind: TargetKind,
+        matcher: String,
+        label: String,
+        quotaSeconds: Int?,
+        windowSeconds: Int,
+        frictionSeconds: Int,
+        grayscale: Boolean,
+    ) -> Unit,
+    /** Non-null to skip the picker and edit an existing rule in place. */
+    editing: Policy? = null,
+    grayscaleAvailable: Boolean = false,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var kind by remember { mutableStateOf(BlockKind.App) }
-    var chosen by remember { mutableStateOf<Chosen?>(null) }
+    var chosen by remember {
+        mutableStateOf(editing?.let { Chosen(it.kind, it.matcher, it.label) })
+    }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         val target = chosen
         if (target != null) {
             RuleEditor(
                 chosen = target,
-                onBack = { chosen = null },
-                onConfirm = { quota, window ->
-                    onAdd(target.kind, target.matcher, target.label, quota, window)
+                existing = editing,
+                grayscaleAvailable = grayscaleAvailable,
+                onBack = if (editing != null) null else ({ chosen = null }),
+                onConfirm = { quota, window, friction, gray ->
+                    onSave(target.kind, target.matcher, target.label, quota, window, friction, gray)
                 },
             )
             return@ModalBottomSheet
@@ -285,14 +302,24 @@ private val WINDOW_PRESETS = listOf(
     "per day" to 86_400,
 )
 
+private val FRICTION_PRESETS = listOf("None" to 0, "5s" to 5, "10s" to 10, "20s" to 20)
+
 @Composable
 private fun RuleEditor(
     chosen: Chosen,
-    onBack: () -> Unit,
-    onConfirm: (quotaSeconds: Int?, windowSeconds: Int) -> Unit,
+    existing: Policy?,
+    grayscaleAvailable: Boolean,
+    onBack: (() -> Unit)?,
+    onConfirm: (quotaSeconds: Int?, windowSeconds: Int, frictionSeconds: Int, grayscale: Boolean) -> Unit,
 ) {
-    var quotaSeconds by remember { mutableStateOf<Int?>(180) }
-    var windowSeconds by remember { mutableStateOf(3_600) }
+    // Not `existing?.quotaSeconds ?: 180`: a null quota means "block completely", so that elvis
+    // would quietly turn an edited hard block into a 3-minute allowance.
+    var quotaSeconds by remember {
+        mutableStateOf<Int?>(if (existing != null) existing.quotaSeconds else 180)
+    }
+    var windowSeconds by remember { mutableStateOf(existing?.windowSeconds ?: 3_600) }
+    var frictionSeconds by remember { mutableStateOf(existing?.frictionSeconds ?: 0) }
+    var grayscale by remember { mutableStateOf(existing?.grayscale ?: false) }
     var customMinutes by remember { mutableStateOf("") }
 
     Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
@@ -364,13 +391,63 @@ private fun RuleEditor(
             )
         }
 
+        Spacer(Modifier.height(20.dp))
+        Text("Before it opens", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FRICTION_PRESETS.forEach { (label, seconds) ->
+                FilterChip(
+                    selected = frictionSeconds == seconds,
+                    onClick = { frictionSeconds = seconds },
+                    label = { Text(label) },
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "A pause on a blank screen before the app appears. It always lets you through — it " +
+                "just puts a gap between the reflex and the feed.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(Modifier.height(20.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.weight(1f)) {
+                Text("Drain the colour", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (grayscaleAvailable) {
+                        "Forces the screen to greyscale while this is open."
+                    } else {
+                        "Needs a one-time ADB grant — see Setup."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = grayscale && grayscaleAvailable,
+                onCheckedChange = { grayscale = it },
+                enabled = grayscaleAvailable,
+            )
+        }
+
         Spacer(Modifier.height(24.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(onClick = onBack) { Text("Back") }
+            onBack?.let { TextButton(onClick = it) { Text("Back") } }
             Button(
-                onClick = { onConfirm(quotaSeconds, windowSeconds) },
+                onClick = { onConfirm(quotaSeconds, windowSeconds, frictionSeconds, grayscale) },
                 enabled = quotaSeconds == null || (quotaSeconds ?: 0) > 0,
-            ) { Text("Add block") }
+            ) { Text(if (existing != null) "Save changes" else "Add block") }
+        }
+        if (existing != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Anything that loosens this rule waits out the delay before it takes effect. " +
+                    "Tightening it applies straight away.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

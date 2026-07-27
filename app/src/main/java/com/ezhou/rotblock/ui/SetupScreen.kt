@@ -44,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.ezhou.rotblock.Rotblock
+import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.service.RotblockAccessibilityService
 import kotlinx.coroutines.launch
@@ -59,6 +60,7 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
     LocalLifecycleOwner.current // touch so recomposition is tied to the host lifecycle
     val accessibilityOn = remember(refreshKey) { isAccessibilityEnabled(context) }
     val overlayOn = remember(refreshKey) { Settings.canDrawOverlays(context) }
+    val grayscaleOn = remember(refreshKey) { Grayscale(context).isAvailable }
 
     Column(
         Modifier
@@ -99,6 +101,16 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
                     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
             },
+        )
+
+        Spacer(Modifier.height(10.dp))
+        PermissionRow(
+            granted = grayscaleOn,
+            title = "Write secure settings (optional)",
+            body = "Only needed for the greyscale option. Grant it over ADB — see below.",
+            action = "",
+            onAction = {},
+            optional = true,
         )
 
         Spacer(Modifier.height(8.dp))
@@ -163,6 +175,8 @@ private fun PermissionRow(
     body: String,
     action: String,
     onAction: () -> Unit,
+    /** Optional permissions show a muted marker rather than an alarming one when missing. */
+    optional: Boolean = false,
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -172,7 +186,11 @@ private fun PermissionRow(
             Icon(
                 if (granted) Icons.Filled.CheckCircle else Icons.Filled.Warning,
                 contentDescription = null,
-                tint = if (granted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                tint = when {
+                    granted -> MaterialTheme.colorScheme.primary
+                    optional -> MaterialTheme.colorScheme.onSurfaceVariant
+                    else -> MaterialTheme.colorScheme.error
+                },
                 modifier = Modifier.size(22.dp),
             )
             Spacer(Modifier.width(12.dp))
@@ -184,7 +202,7 @@ private fun PermissionRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (!granted) {
+                if (!granted && action.isNotBlank()) {
                     TextButton(onClick = onAction, contentPadding = PaddingValues(0.dp)) {
                         Text(action)
                     }
@@ -242,7 +260,10 @@ private fun AdbCard(context: Context) {
             SelectionContainer {
                 Text(
                     "adb shell appops set ${context.packageName} " +
-                        "ACCESS_RESTRICTED_SETTINGS allow",
+                        "ACCESS_RESTRICTED_SETTINGS allow\n\n" +
+                        "# optional, enables the greyscale option:\n" +
+                        "adb shell pm grant ${context.packageName} " +
+                        "android.permission.WRITE_SECURE_SETTINGS",
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                 )

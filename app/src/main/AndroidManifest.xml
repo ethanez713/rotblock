@@ -51,6 +51,14 @@
             android:taskAffinity=""
             android:theme="@style/Theme.Rotblock" />
 
+        <activity
+            android:name=".ui.FrictionActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Rotblock" />
+
         <service
             android:name=".pause.PauseTileService"
             android:exported="true"

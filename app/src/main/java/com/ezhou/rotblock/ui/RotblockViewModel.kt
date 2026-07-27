@@ -130,20 +130,19 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun addAppPolicy(packageName: String, label: String, quotaSeconds: Int?, windowSeconds: Int) =
-        addPolicy(TargetKind.APP, packageName, label, quotaSeconds, windowSeconds)
-
     /**
      * Every policy mutation goes through [PendingChangeQueue], which decides whether it lands now
      * or waits. Nothing in the UI writes to the policy table directly -- that is what keeps the
      * "loosening is delayed" rule from being bypassable by a screen someone forgot to route.
      */
-    fun addPolicy(
+    fun savePolicy(
         kind: TargetKind,
         matcher: String,
         label: String,
         quotaSeconds: Int?,
         windowSeconds: Int,
+        frictionSeconds: Int = 0,
+        grayscale: Boolean = false,
     ) {
         viewModelScope.launch {
             val now = System.currentTimeMillis()
@@ -156,8 +155,12 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
                     kind = kind,
                     matcher = matcher,
                     label = label,
+                    // An edit must not silently re-enable a rule that was switched off.
+                    enabled = existing?.enabled ?: true,
                     quotaSeconds = quotaSeconds,
                     windowSeconds = windowSeconds,
+                    frictionSeconds = frictionSeconds,
+                    grayscale = grayscale,
                     createdAtMs = existing?.createdAtMs ?: now,
                     updatedAtMs = now,
                 ),

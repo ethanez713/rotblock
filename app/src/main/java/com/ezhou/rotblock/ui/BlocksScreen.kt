@@ -55,8 +55,10 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
     val budget by viewModel.budget.collectAsStateWithLifecycle()
     val pending by viewModel.pendingChanges.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<Policy?>(null) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     val context = androidx.compose.ui.platform.LocalContext.current
+    val grayscaleAvailable = remember { com.ezhou.rotblock.block.Grayscale(context).isAvailable }
 
     // A one-second heartbeat so countdowns and remaining-time bars stay live while you look at
     // them. Cheap: it only runs while this screen is composed.
@@ -116,18 +118,22 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
                     paused = settings.isPaused(now),
                     onToggle = { viewModel.setPolicyEnabled(policy, it) },
                     onDelete = { viewModel.deletePolicy(policy) },
+                    onEdit = { editing = policy },
                 )
             }
         }
     }
 
-    if (showAdd) {
+    if (showAdd || editing != null) {
         AddBlockSheet(
             existing = policies.map { it.matcher }.toSet(),
-            onDismiss = { showAdd = false },
-            onAdd = { kind, matcher, label, quotaSeconds, windowSeconds ->
-                viewModel.addPolicy(kind, matcher, label, quotaSeconds, windowSeconds)
+            editing = editing,
+            grayscaleAvailable = grayscaleAvailable,
+            onDismiss = { showAdd = false; editing = null },
+            onSave = { kind, matcher, label, quota, window, friction, gray ->
+                viewModel.savePolicy(kind, matcher, label, quota, window, friction, gray)
                 showAdd = false
+                editing = null
             },
         )
     }
@@ -263,6 +269,7 @@ private fun PolicyCard(
     paused: Boolean,
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
+    onEdit: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Card(
@@ -294,6 +301,10 @@ private fun PolicyCard(
                         Icon(Icons.Filled.MoreVert, contentDescription = "Options")
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Edit") },
+                            onClick = { menuOpen = false; onEdit() },
+                        )
                         DropdownMenuItem(
                             text = { Text(if (policy.enabled) "Disable" else "Enable") },
                             onClick = { menuOpen = false; onToggle(!policy.enabled) },

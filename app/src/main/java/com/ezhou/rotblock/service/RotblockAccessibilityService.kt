@@ -16,6 +16,7 @@ import com.ezhou.rotblock.audit.AuditLog
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.block.BlockOverlay
 import com.ezhou.rotblock.block.FeedRegistry
+import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.browser.BrowserRegistry
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.pause.PauseController
@@ -24,6 +25,7 @@ import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicyEngine
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.UsageLedger
+import com.ezhou.rotblock.ui.FrictionActivity
 import com.ezhou.rotblock.ui.PauseRequestActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -61,6 +63,14 @@ class RotblockAccessibilityService : AccessibilityService() {
     private lateinit var pause: PauseController
     private lateinit var audit: AuditLog
     private lateinit var overlay: BlockOverlay
+    private lateinit var grayscale: Grayscale
+
+    /**
+     * The target whose friction screen has already been shown for this visit. Cleared whenever
+     * the target changes or the screen goes off, so friction is once per visit rather than once
+     * per accessibility event.
+     */
+    private var frictionShownFor: String? = null
 
     /** Read on every window change, so it stays a plain volatile map lookup. */
     @Volatile private var policiesByTarget: Map<String, Policy> = emptyMap()
@@ -95,6 +105,9 @@ class RotblockAccessibilityService : AccessibilityService() {
                         ledger.closeSession(System.currentTimeMillis())
                         stopTicking()
                         overlay.hide()
+                        frictionShownFor = null
+                        // Never leave the phone monochrome behind a locked screen.
+                        grayscale.restore()
                     }
                     // Coming back may land on the same app with no new window event, so the
                     // session has to be restarted explicitly.
@@ -123,7 +136,11 @@ class RotblockAccessibilityService : AccessibilityService() {
             pause = Rotblock.pause(this)
             audit = Rotblock.audit(this)
             overlay = BlockOverlay(this)
+            grayscale = Grayscale(this)
             ignoredPackages = buildIgnoredPackages()
+
+            // Undo a greyscale left on by a crash before doing anything else.
+            grayscale.restoreOnStart()
 
             audit.record(AuditType.SERVICE_ENABLED, detail = "Enforcement started")
 
@@ -213,14 +230,18 @@ class RotblockAccessibilityService : AccessibilityService() {
         val policy = targetId?.let { policiesByTarget[it] }
         if (policy == null || !policy.enabled) {
             currentTargetId = null
+            frictionShownFor = null
             ledger.closeSession(nowMs)
             stopTicking()
             overlay.hide()
+            grayscale.restore()
             return
         }
         if (currentTargetId != targetId) {
             ledger.closeSession(nowMs)
             currentTargetId = targetId
+            frictionShownFor = null
+            grayscale.restore()
         }
         evaluateAndEnforce(targetId, nowMs)
     }
@@ -327,12 +348,16 @@ class RotblockAccessibilityService : AccessibilityService() {
                 overlay.hide()
                 stopTicking()
                 ledger.closeSession(nowMs)
+                // A pause suspends greyscale and friction too; a pause means "get out of my way".
+                grayscale.restore()
             }
 
             is Decision.Allowed -> {
                 overlay.hide()
                 ledger.startSession(targetId, nowMs)
                 startTicking()
+                if (policy.grayscale) grayscale.enable() else grayscale.restore()
+                maybeShowFriction(policy)
             }
 
             is Decision.Blocked -> {
@@ -340,6 +365,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 // keep charging for time spent staring at the block screen.
                 ledger.closeSession(nowMs)
                 stopTicking()
+                grayscale.restore()
                 showBlock(policy, decision)
             }
         }
@@ -363,6 +389,27 @@ class RotblockAccessibilityService : AccessibilityService() {
             // No overlay permission, or the window manager refused. Ejecting the user is blunt,
             // but blocking has to actually block.
             performGlobalAction(GLOBAL_ACTION_HOME)
+        }
+    }
+
+    /**
+     * Shows the breathing screen once per visit.
+     *
+     * Marked as shown *before* launching, not after: if the launch fails or the user backs out,
+     * a retry loop that reopens the screen every time the app redraws would be far worse than
+     * skipping the friction once.
+     */
+    private fun maybeShowFriction(policy: Policy) {
+        if (policy.frictionSeconds <= 0) return
+        if (frictionShownFor == policy.id) return
+        frictionShownFor = policy.id
+        guard("friction") {
+            startActivity(
+                Intent(this, FrictionActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .putExtra(FrictionActivity.EXTRA_LABEL, policy.label)
+                    .putExtra(FrictionActivity.EXTRA_SECONDS, policy.frictionSeconds),
+            )
         }
     }
 
@@ -418,6 +465,9 @@ class RotblockAccessibilityService : AccessibilityService() {
         runCatching { unregisterReceiver(screenReceiver) }
         if (::ledger.isInitialized) ledger.closeSession(now)
         if (::overlay.isInitialized) overlay.hide()
+        // Enforcement going away must not leave the display greyscale with nothing left running
+        // to put it back.
+        if (::grayscale.isInitialized) grayscale.restore()
         // Recorded so that turning rotblock off leaves a mark in the log rather than a silent gap.
         if (::audit.isInitialized) audit.record(AuditType.SERVICE_DISABLED, detail = reason)
         inspectorJob?.cancel()
