@@ -19,6 +19,7 @@ import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.block.BlockOverlay
 import com.ezhou.rotblock.block.FeedRegistry
 import com.ezhou.rotblock.block.Grayscale
+import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.browser.BrowserRegistry
 import com.ezhou.rotblock.browser.WebMatcher
@@ -45,6 +46,20 @@ private const val TICK_MS = 1_000L
 
 /** Coalescing window for content-change bursts before the node tree is read. */
 private const val INSPECT_DEBOUNCE_MS = 250L
+
+/**
+ * Enforcement gaps shorter than this are system rebinds, not you switching rotblock off, and are
+ * not written to the log. Toggling the service in Settings and coming back takes far longer.
+ */
+private const val MIN_REPORTABLE_OUTAGE_MS = 30_000L
+
+private const val OUTAGE_PREFS = "rotblock_outage"
+private const val KEY_DOWN_SINCE = "down_since"
+private const val KEY_DOWN_REASON = "down_reason"
+private const val KEY_LAST_ALIVE = "last_alive"
+
+/** How often the service records that it was still running. */
+private const val HEARTBEAT_MS = 60_000L
 
 /**
  * The single service that enforces everything.
@@ -91,6 +106,9 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     /** Memoised `pkg/class` -> is-an-activity answers for [isActivity]. Main thread only. */
     private val activityCache = HashMap<String, Boolean>()
+
+    /** Last time aliveness was written to disk; throttles [beat] to one write a minute. */
+    private var lastBeatMs = 0L
 
     private var currentPackage: String? = null
     private var currentTargetId: String? = null
@@ -148,7 +166,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             // Undo a greyscale left on by a crash before doing anything else.
             grayscale.restoreOnStart()
 
-            audit.record(AuditType.SERVICE_ENABLED, detail = "Enforcement started")
+            reportPreviousOutage()
 
             // Isolated: if this throws, the outer guard would swallow it and skip everything
             // below, leaving the service alive but never loading a single policy. Losing
@@ -203,6 +221,7 @@ class RotblockAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         guard("onAccessibilityEvent") {
             event ?: return@guard
+            beat()
             val pkg = event.packageName?.toString() ?: return@guard
             if (pkg in ignoredPackages) return@guard
 
@@ -269,6 +288,22 @@ class RotblockAccessibilityService : AccessibilityService() {
     /** Debug-only trace of why the enforced target changed. Silent in release. */
     private fun trace(msg: String) {
         if (com.ezhou.rotblock.BuildConfig.DEBUG) android.util.Log.d("rotblockFG", msg)
+    }
+
+    /**
+     * Records that enforcement was running, at most once a minute.
+     *
+     * Piggy-backs on accessibility events rather than a timer: they arrive whenever the phone is
+     * being used, which is exactly when an enforcement gap would matter.
+     */
+    private fun beat() {
+        val now = System.currentTimeMillis()
+        if (now - lastBeatMs < HEARTBEAT_MS) return
+        lastBeatMs = now
+        runCatching {
+            getSharedPreferences(OUTAGE_PREFS, Context.MODE_PRIVATE)
+                .edit().putLong(KEY_LAST_ALIVE, now).apply()
+        }
     }
 
     private fun onForegroundChanged(pkg: String, nowMs: Long) {
@@ -535,17 +570,69 @@ class RotblockAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
+    /**
+     * Writes the previous outage to the log, if there was one worth mentioning.
+     *
+     * The log exists to show when enforcement was actually off, but Android rebinds this service
+     * constantly -- on reinstall, on config changes, whenever another accessibility client
+     * attaches. Logging each blip buried the real events: on the first device run 89% of the
+     * audit log was bind churn, which is worse than not recording it at all, because the one
+     * entry that matters stops standing out.
+     *
+     * So the disable is written on the *next* connect, once its true duration is known, and
+     * stamped at the moment it happened rather than the moment it was noticed -- the same
+     * approach as a lapsed pause.
+     */
+    private fun reportPreviousOutage() {
+        val prefs = getSharedPreferences(OUTAGE_PREFS, Context.MODE_PRIVATE)
+        val downSince = prefs.getLong(KEY_DOWN_SINCE, 0L)
+        val lastAlive = prefs.getLong(KEY_LAST_ALIVE, 0L)
+        val reason = prefs.getString(KEY_DOWN_REASON, null)
+        prefs.edit().remove(KEY_DOWN_SINCE).remove(KEY_DOWN_REASON).commit()
+
+        // A clean unbind records exactly when it stopped. A force-stop, a crash or a reboot kills
+        // the process with no callback at all, so fall back to the last heartbeat -- otherwise
+        // being killed would erase the outage from the log entirely, which is the one direction
+        // this record must not fail in.
+        val stoppedAt = maxOf(downSince, lastAlive)
+        if (stoppedAt <= 0L) {
+            audit.record(AuditType.SERVICE_ENABLED, detail = "Enforcement started")
+            return
+        }
+        val outage = System.currentTimeMillis() - stoppedAt
+        if (outage < MIN_REPORTABLE_OUTAGE_MS) return // a rebind, not an event
+
+        audit.record(
+            AuditType.SERVICE_DISABLED,
+            detail = reason ?: "Enforcement stopped",
+            tsMs = downSince,
+        )
+        audit.record(
+            AuditType.SERVICE_ENABLED,
+            detail = "Enforcement back on after ${formatDuration(outage)} with nothing blocked",
+        )
+    }
+
     private fun teardown(reason: String) {
         val now = System.currentTimeMillis()
         stopTicking()
         runCatching { unregisterReceiver(screenReceiver) }
+        // onUnbind and onDestroy both land here; keep the first timestamp, which is when
+        // enforcement actually stopped.
+        runCatching {
+            val prefs = getSharedPreferences(OUTAGE_PREFS, Context.MODE_PRIVATE)
+            if (prefs.getLong(KEY_DOWN_SINCE, 0L) <= 0L) {
+                prefs.edit()
+                    .putLong(KEY_DOWN_SINCE, now)
+                    .putString(KEY_DOWN_REASON, reason)
+                    .commit()
+            }
+        }
         if (::ledger.isInitialized) ledger.closeSession(now)
         if (::overlay.isInitialized) overlay.hide()
         // Enforcement going away must not leave the display greyscale with nothing left running
         // to put it back.
         if (::grayscale.isInitialized) grayscale.restore()
-        // Recorded so that turning rotblock off leaves a mark in the log rather than a silent gap.
-        if (::audit.isInitialized) audit.record(AuditType.SERVICE_DISABLED, detail = reason)
         inspectorJob?.cancel()
         watchJob?.cancel()
     }

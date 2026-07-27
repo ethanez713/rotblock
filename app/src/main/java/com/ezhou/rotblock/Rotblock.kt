@@ -3,6 +3,7 @@ package com.ezhou.rotblock
 import android.app.Application
 import android.content.Context
 import com.ezhou.rotblock.audit.AuditLog
+import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.data.PendingChangeQueue
 import com.ezhou.rotblock.data.RotblockDatabase
 import com.ezhou.rotblock.data.SettingsRepository
@@ -73,6 +74,16 @@ object Rotblock {
 class RotblockApp : Application() {
     override fun onCreate() {
         super.onCreate()
+
+        // Undo a greyscale that outlived the thing that set it.
+        //
+        // The accessibility service does this too, but force-stopping rotblock while greyscale is
+        // active *also* removes it from Android's enabled-services list -- verified on device --
+        // so the service alone can never recover: the phone stays monochrome until the user goes
+        // and re-enables accessibility, with no hint that is what is wrong. Doing it here means
+        // simply opening rotblock puts the colour back, which is what anyone would try first.
+        runCatching { Grayscale(this).restoreOnStart() }
+
         // Open the database now so the first accessibility event, which must stay fast, is not
         // the thing that pays for it.
         Rotblock.scope.launch {
