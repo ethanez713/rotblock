@@ -3,8 +3,11 @@ package com.ezhou.rotblock.ui
 import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,12 +17,15 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -38,7 +44,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -203,26 +211,15 @@ private fun WebsitePicker(onPick: (Chosen) -> Unit) {
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(8.dp))
-        Text(
-            "reddit.com blocks the site and its subdomains. Adding a path like " +
-                "youtube.com/shorts blocks just that section. kw:word matches anywhere in the URL.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Read from the browser's address bar, so it works regardless of DNS settings — but " +
-                "only in browsers, not in web views inside other apps.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Hint("A domain covers its subdomains; a path narrows it. Browsers only, not in-app webviews.")
 
         Spacer(Modifier.height(16.dp))
-        Button(
-            onClick = { onPick(Chosen(TargetKind.WEBSITE, text.trim(), text.trim())) },
-            enabled = text.isNotBlank(),
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("Continue") }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Button(
+                onClick = { onPick(Chosen(TargetKind.WEBSITE, text.trim(), text.trim())) },
+                enabled = text.isNotBlank(),
+            ) { Text("Continue") }
+        }
 
         Spacer(Modifier.height(20.dp))
         Text("Common ones", style = MaterialTheme.typography.titleSmall)
@@ -252,7 +249,7 @@ private fun WebsitePicker(onPick: (Chosen) -> Unit) {
 private fun FeedPicker(existing: Set<String>, onPick: (Chosen) -> Unit) {
     Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 20.dp)) {
         Text(
-            "Block the short-form feed inside an app while leaving the rest of it usable.",
+            "Block the short-form feed inside an app, leaving the rest usable.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -278,13 +275,18 @@ private fun FeedPicker(existing: Set<String>, onPick: (Chosen) -> Unit) {
             }
         }
         Spacer(Modifier.height(12.dp))
-        Text(
-            "Feed detection reads the app's on-screen layout, which app updates can change. If a " +
-                "feed stops being caught, the block fails open rather than breaking the app.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Hint("Detection reads the app's layout, so an app update can break it — it fails open.")
     }
+}
+
+/** The one-line explanations under a control. Small, muted, and kept to a single sentence. */
+@Composable
+private fun Hint(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 /** Preset quotas, in seconds, plus a hard block. The 3-min-an-hour case is the default. */
@@ -348,7 +350,11 @@ private fun RuleEditor(
             }
         }
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
             QUOTA_PRESETS.drop(3).forEach { (label, seconds) ->
                 FilterChip(
                     selected = quotaSeconds == seconds,
@@ -356,16 +362,16 @@ private fun RuleEditor(
                     label = { Text(label) },
                 )
             }
-            OutlinedTextField(
+            // A chip-shaped field, so the custom option reads as one more choice in the row rather
+            // than a form control that wandered in. An OutlinedTextField cannot be made this short
+            // without clipping its own label, so it carries a suffix instead.
+            CustomMinutesChip(
                 value = customMinutes,
+                selected = customMinutes.isNotEmpty() && quotaSeconds == customMinutes.toIntOrNull()?.times(60),
                 onValueChange = { text ->
                     customMinutes = text.filter { it.isDigit() }.take(4)
                     quotaSeconds = customMinutes.toIntOrNull()?.times(60)
                 },
-                label = { Text("min") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.width(110.dp),
             )
         }
 
@@ -382,13 +388,8 @@ private fun RuleEditor(
                     )
                 }
             }
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "This is a rolling window, not a clock hour. Time comes back gradually as old " +
-                    "usage ages out, so there is no top-of-the-hour refill to wait around for.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Spacer(Modifier.height(8.dp))
+            Hint("Rolling window — time comes back gradually, with no top-of-the-hour refill.")
         }
 
         Spacer(Modifier.height(20.dp))
@@ -404,25 +405,18 @@ private fun RuleEditor(
             }
         }
         Spacer(Modifier.height(6.dp))
-        Text(
-            "A pause on a blank screen before the app appears. It always lets you through — it " +
-                "just puts a gap between the reflex and the feed.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Hint("A blank countdown first. Always lets you through.")
 
         Spacer(Modifier.height(20.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
                 Text("Drain the colour", style = MaterialTheme.typography.titleSmall)
-                Text(
+                Hint(
                     if (grayscaleAvailable) {
-                        "Forces the screen to greyscale while this is open."
+                        "Greyscale while this is open."
                     } else {
                         "Needs a one-time ADB grant — see Setup."
                     },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Switch(
@@ -432,23 +426,79 @@ private fun RuleEditor(
             )
         }
 
+        if (existing != null) {
+            Spacer(Modifier.height(20.dp))
+            Hint("Loosening waits out the delay. Tightening applies now.")
+        }
+
         Spacer(Modifier.height(24.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            onBack?.let { TextButton(onClick = it) { Text("Back") } }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            onBack?.let {
+                TextButton(onClick = it) { Text("Back") }
+                Spacer(Modifier.width(12.dp))
+            }
             Button(
                 onClick = { onConfirm(quotaSeconds, windowSeconds, frictionSeconds, grayscale) },
                 enabled = quotaSeconds == null || (quotaSeconds ?: 0) > 0,
             ) { Text(if (existing != null) "Save changes" else "Add block") }
         }
-        if (existing != null) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Anything that loosens this rule waits out the delay before it takes effect. " +
-                    "Tightening it applies straight away.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    }
+}
+
+/**
+ * The "any number of minutes" option, dressed as the chip it sits beside.
+ *
+ * Its own selected state is derived from the quota rather than stored: typing here sets the quota,
+ * and picking a preset clears the text, so there is nothing to keep in sync.
+ */
+@Composable
+private fun CustomMinutesChip(
+    value: String,
+    selected: Boolean,
+    onValueChange: (String) -> Unit,
+) {
+    val shape = FilterChipDefaults.shape
+    val content = if (selected) {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .height(FilterChipDefaults.Height)
+            .widthIn(min = 96.dp)
+            .background(
+                if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                shape,
+            )
+            .border(
+                1.dp,
+                if (selected) Color.Transparent else MaterialTheme.colorScheme.outline,
+                shape,
+            )
+            .padding(horizontal = 12.dp),
+    ) {
+        val style = MaterialTheme.typography.labelLarge
+        Box {
+            if (value.isEmpty()) {
+                Text("00", style = style, color = content.copy(alpha = 0.5f))
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = style.copy(color = content),
+                cursorBrush = SolidColor(content),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.widthIn(min = 30.dp),
             )
         }
+        Text(" min", style = style, color = content)
     }
 }
 

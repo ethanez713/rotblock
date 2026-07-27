@@ -11,7 +11,12 @@
         tools:ignore="QueryAllPackagesPermission" />
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!--
+      No RECEIVE_BOOT_COMPLETED, and none is wanted. There is no boot receiver because there is
+      nothing to restore at boot: enforcement is whatever PolicyEngine folds out of the stored
+      deadlines the next time a window changes, and the accessibility service is rebound by the
+      system on its own. A boot receiver would be a wakeup that bought nothing.
+    -->
 
     <!-- Special access, granted from Settings or over ADB. Used for usage backfill. -->
     <uses-permission

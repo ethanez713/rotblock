@@ -41,11 +41,32 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** How often an in-quota target is re-checked while it is on screen. */
-private const val TICK_MS = 1_000L
+/**
+ * Bounds on how often an on-screen target is re-checked.
+ *
+ * The tick is scheduled for the *soonest deadline that matters* -- quota running out, or a pause
+ * elapsing -- clamped into this range, rather than firing every second regardless. Sitting in a
+ * twenty-minute allowance used to cost 1200 wakeups; it now costs about 80, and the deadline is
+ * still hit exactly, because the interval is never longer than the time left.
+ *
+ * [MAX_TICK_MS] is capped at the ledger's flush interval so a long allowance still writes through
+ * to disk at roughly the cadence [UsageLedger] documents.
+ */
+private const val MIN_TICK_MS = 1_000L
+private const val MAX_TICK_MS = 15_000L
 
 /** Coalescing window for content-change bursts before the node tree is read. */
 private const val INSPECT_DEBOUNCE_MS = 250L
+
+/**
+ * Floor on the gap between two node-tree reads.
+ *
+ * Scrolling a feed emits content-change events without pause, and the debounce alone still let
+ * that turn into four full tree searches a second, every one of them an IPC into the app being
+ * scrolled. Nothing we read from the tree -- the address bar, a feed container -- changes that
+ * fast, so the worst this costs is a second of latency on noticing a new URL.
+ */
+private const val MIN_INSPECT_INTERVAL_MS = 1_000L
 
 /**
  * Enforcement gaps shorter than this are system rebinds, not you switching rotblock off, and are
@@ -143,13 +164,19 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     private val tick = object : Runnable {
         override fun run() {
+            var reschedulingHandled = false
             guard("tick") {
                 val now = System.currentTimeMillis()
                 ledger.touch(now)
                 pause.noteExpiryIfNeeded(now)
-                currentTargetId?.let { evaluateAndEnforce(it, now) }
+                val target = currentTargetId
+                // evaluateAndEnforce arms the next tick for whatever deadline it found.
+                if (target == null) stopTicking() else evaluateAndEnforce(target, now)
+                reschedulingHandled = true
             }
-            if (ticking) handler.postDelayed(this, TICK_MS)
+            // A swallowed error must not be able to stop the clock: an unnoticed quota deadline
+            // is a fail-open, so fall back to the floor interval and try again.
+            if (!reschedulingHandled && ticking) handler.postDelayed(this, MIN_TICK_MS)
         }
     }
 
@@ -231,17 +258,15 @@ class RotblockAccessibilityService : AccessibilityService() {
                         if (isForegroundChange(pkg, event.className?.toString())) {
                             onForegroundChanged(pkg, System.currentTimeMillis())
                         }
-                    } else if (pkg in inspectablePackages) {
-                        inspectRequests.trySend(pkg)
+                    } else {
+                        requestInspect(pkg)
                     }
                 }
 
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                     // Navigating within a browser or scrolling into a feed produces no window
                     // state change, so this is the only signal that the target changed.
-                    if (pkg == currentPackage && pkg in inspectablePackages) {
-                        inspectRequests.trySend(pkg)
-                    }
+                    if (pkg == currentPackage) requestInspect(pkg)
                 }
             }
         }
@@ -316,7 +341,7 @@ class RotblockAccessibilityService : AccessibilityService() {
 
         applyTarget(appTargetFor(pkg), nowMs)
 
-        if (pkg in inspectablePackages) inspectRequests.trySend(pkg)
+        requestInspect(pkg)
     }
 
     /** Runs on the main thread; [targetId] null means nothing here is governed by a policy. */
@@ -348,10 +373,23 @@ class RotblockAccessibilityService : AccessibilityService() {
         pause.noteExpiryIfNeeded(now)
         val pkg = currentPackage ?: return
         applyTarget(currentTargetId ?: appTargetFor(pkg), now)
-        if (pkg in inspectablePackages) inspectRequests.trySend(pkg)
+        requestInspect(pkg)
     }
 
     private fun appTargetFor(pkg: String): String = Policy.targetId(TargetKind.APP, pkg)
+
+    /**
+     * Queues a node-tree read, if one could tell us anything.
+     *
+     * Skipped while one of rotblock's own screens is covering the app: the read would only find
+     * our window, and the browser underneath goes on emitting content-change events the whole time
+     * a countdown is running.
+     */
+    private fun requestInspect(pkg: String) {
+        if (pkg !in inspectablePackages) return
+        if (Interstitial.isShowing) return
+        inspectRequests.trySend(pkg)
+    }
 
     // endregion
 
@@ -360,47 +398,62 @@ class RotblockAccessibilityService : AccessibilityService() {
     /**
      * Reads the node tree off the event callback.
      *
-     * The channel is conflated and the loop debounces, so a burst of a hundred content-change
-     * events during a scroll collapses into one tree read.
+     * The channel is conflated and the loop both debounces and rate-limits, so a burst of a hundred
+     * content-change events during a scroll collapses into one tree read, and a sustained scroll
+     * costs at most one read a second.
      */
     private suspend fun runInspector() {
+        var lastReadMs = 0L
         for (pkg in inspectRequests) {
             delay(INSPECT_DEBOUNCE_MS)
+            val sinceLastRead = System.currentTimeMillis() - lastReadMs
+            if (sinceLastRead < MIN_INSPECT_INTERVAL_MS) delay(MIN_INSPECT_INTERVAL_MS - sinceLastRead)
+            lastReadMs = System.currentTimeMillis()
+
             val resolved = try {
                 resolveInspectedTarget(pkg)
             } catch (t: Throwable) {
                 audit.recordError("inspect", t)
-                null
+                Inspected.Unreadable
             }
             withContext(Dispatchers.Main) {
                 guard("applyInspected") {
                     // Discard if the user has moved on since the read started.
                     if (pkg != currentPackage) return@guard
-                    applyTarget(resolved ?: appTargetFor(pkg), System.currentTimeMillis())
+                    val targetId = when (resolved) {
+                        is Inspected.Target -> resolved.targetId
+                        Inspected.AppOnly -> appTargetFor(pkg)
+                        // Keep enforcing whatever was last established. Every other outcome of a
+                        // blind read weakens a block; this one cannot.
+                        Inspected.Unreadable -> return@guard
+                    }
+                    applyTarget(targetId, System.currentTimeMillis())
                 }
             }
         }
     }
 
     /**
-     * The most specific policy target on screen, or null to fall back to the app-level one.
-     * Feeds beat websites beat apps: a Shorts rule should win over a YouTube-app rule.
+     * Reads the screen and hands what it found to [classifyInspection], which decides what it
+     * means. Everything node-shaped lives here; every fail-open judgement lives there.
      */
-    private fun resolveInspectedTarget(pkg: String): String? {
-        val root = rootInActiveWindow ?: return null
+    private fun resolveInspectedTarget(pkg: String): Inspected {
+        val root = rootInActiveWindow ?: return Inspected.Unreadable
         try {
-            for (spec in FeedRegistry.specsFor(pkg)) {
-                if (spec.viewIdHints.any { root.hasViewId(it) }) {
-                    return Policy.targetId(TargetKind.FEED, spec.key)
-                }
-            }
-            val browser = BrowserRegistry.specFor(pkg)
-            if (browser != null) {
-                val url = browser.urlBarIds.firstNotNullOfOrNull { root.textForViewId(it) }
-                val matcher = WebMatcher.firstMatch(url, websiteMatchers)
-                if (matcher != null) return Policy.targetId(TargetKind.WEBSITE, matcher)
-            }
-            return null
+            // The active window is often not the app we were asked about -- most often it is one of
+            // rotblock's own full-screen screens sitting on top of it, while the app underneath
+            // keeps emitting content-change events as its page loads. Anything concluded from the
+            // wrong window is noise, and acting on it drops a live target.
+            if (root.packageName?.toString() != pkg) return Inspected.Unreadable
+
+            val feedKey = FeedRegistry.specsFor(pkg)
+                .firstOrNull { spec -> spec.viewIdHints.any { root.hasViewId(it) } }
+                ?.key
+            val url = BrowserRegistry.specFor(pkg)
+                ?.urlBarIds
+                ?.firstNotNullOfOrNull { root.textForViewId(it) }
+
+            return classifyInspection(pkg, feedKey, url, websiteMatchers)
         } finally {
             root.recycleCompat()
         }
@@ -454,7 +507,8 @@ class RotblockAccessibilityService : AccessibilityService() {
                 // the ticker running through it, the app would stay open past the deadline until
                 // something else happened to wake us -- a fail-open, which this design does not get
                 // to have. No session is opened, so paused time still costs no quota.
-                if (decision.pausedUntilMs != null) startTicking() else stopTicking()
+                val pausedUntil = decision.pausedUntilMs
+                if (pausedUntil != null) startTicking(pausedUntil - nowMs) else stopTicking()
             }
 
             is Decision.Allowed -> {
@@ -466,7 +520,10 @@ class RotblockAccessibilityService : AccessibilityService() {
                 } else {
                     ledger.startSession(targetId, nowMs)
                 }
-                startTicking()
+                // Wake exactly when the allowance runs out. While an interstitial is up nothing is
+                // accruing, so that deadline is not approaching -- but the tick still has to run to
+                // notice the screen going away, hence the clamp rather than a long sleep.
+                startTicking(decision.remainingMs)
                 if (policy.grayscale) grayscale.enable() else grayscale.restore()
                 maybeShowFriction(policy)
             }
@@ -535,10 +592,18 @@ class RotblockAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun startTicking() {
-        if (ticking) return
+    /**
+     * Arms the next re-check for [untilDeadlineMs] from now, clamped into
+     * [MIN_TICK_MS]..[MAX_TICK_MS].
+     *
+     * Always reschedules rather than being idempotent: the deadline moves as usage accrues, and
+     * clamping to the *shorter* of the deadline and the ceiling is what keeps a late tick from
+     * being a fail-open.
+     */
+    private fun startTicking(untilDeadlineMs: Long) {
         ticking = true
-        handler.postDelayed(tick, TICK_MS)
+        handler.removeCallbacks(tick)
+        handler.postDelayed(tick, untilDeadlineMs.coerceIn(MIN_TICK_MS, MAX_TICK_MS))
     }
 
     private fun stopTicking() {

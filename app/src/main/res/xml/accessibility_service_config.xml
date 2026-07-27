@@ -1,14 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
+  This file is most of the app's battery budget. An accessibility service is billed by how much the
+  system has to compute and hand across a process boundary on its behalf, so every attribute here
+  is a running cost, and the ones that were not paying for themselves are gone.
+
   No packageNames filter: policies are user-editable at runtime, so the service has to see every
   app's window changes. typeWindowContentChanged is needed from phase 4 onward to notice URL bar
   changes within a browser that never fires a window-state change.
+
+  Flags, and what each is worth:
+    flagReportViewIds            - required. findAccessibilityNodeInfosByViewId is the whole
+                                   detection mechanism for browsers and feeds.
+    flagIncludeNotImportantViews - kept deliberately, despite inflating the tree each read walks.
+                                   Feed containers are exactly the sort of decorative scrolling
+                                   view an app marks not-important, and a miss there is a silent
+                                   fail-open. Detection wins over battery on this one.
+    flagRetrieveInteractiveWindows - REMOVED. It makes the system track and deliver the full
+                                   interactive window list on every event, and nothing here ever
+                                   called getWindows(); rootInActiveWindow needs only
+                                   canRetrieveWindowContent. It was overhead on every event from
+                                   every app, bought nothing, and is the single largest saving
+                                   available in this file.
+
+  notificationTimeout is the framework's own coalescing window: the minimum gap between two events
+  of the same type reaching us. Content-change bursts during a scroll are the firehose this app has
+  to survive, and 200ms roughly halves what crosses the process boundary versus 100ms. The cost is
+  up to 200ms more latency before a block appears, which is not perceptible, and the in-app debounce
+  already dominates that path.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"
     android:description="@string/accessibility_service_description"
-    android:notificationTimeout="100"
+    android:notificationTimeout="200"
     android:settingsActivity="com.ezhou.rotblock.ui.MainActivity" />
