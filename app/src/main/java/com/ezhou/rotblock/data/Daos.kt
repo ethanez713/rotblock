@@ -45,20 +45,7 @@ interface UsageDao {
 
     @Query("DELETE FROM usage_sessions WHERE endMs < :beforeMs")
     suspend fun prune(beforeMs: Long)
-
-    /** Feeds the Insights charts: total foreground seconds per target within a span. */
-    @Query(
-        """
-        SELECT targetId, SUM(MIN(endMs, :toMs) - MAX(startMs, :fromMs)) AS totalMs
-        FROM usage_sessions
-        WHERE endMs > :fromMs AND startMs < :toMs
-        GROUP BY targetId
-        """
-    )
-    suspend fun totalsBetween(fromMs: Long, toMs: Long): List<TargetTotal>
 }
-
-data class TargetTotal(val targetId: String, val totalMs: Long)
 
 /** Insert-and-read only, on purpose. See [AuditEvent]. */
 @Dao
@@ -71,7 +58,4 @@ interface AuditDao {
 
     @Query("SELECT * FROM audit_events WHERE tsMs >= :sinceMs ORDER BY tsMs")
     suspend fun since(sinceMs: Long): List<AuditEvent>
-
-    @Query("SELECT COUNT(*) FROM audit_events WHERE type = :type AND tsMs >= :sinceMs")
-    suspend fun countSince(type: String, sinceMs: Long): Int
 }

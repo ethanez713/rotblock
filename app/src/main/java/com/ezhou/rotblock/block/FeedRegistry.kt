@@ -57,6 +57,4 @@ object FeedRegistry {
     val packages: Set<String> = byPackage.keys
 
     fun specsFor(packageName: String): List<FeedSpec> = byPackage[packageName].orEmpty()
-
-    fun byKey(key: String): FeedSpec? = specs.firstOrNull { it.key == key }
 }

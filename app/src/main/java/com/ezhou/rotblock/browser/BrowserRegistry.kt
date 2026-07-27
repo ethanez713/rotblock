@@ -52,6 +52,4 @@ object BrowserRegistry {
     val packages: Set<String> = byPackage.keys
 
     fun specFor(packageName: String): BrowserSpec? = byPackage[packageName]
-
-    fun isBrowser(packageName: String): Boolean = packageName in byPackage
 }

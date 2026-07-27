@@ -19,7 +19,6 @@ import com.ezhou.rotblock.pause.PauseResult
 import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.RollingQuota
-import com.ezhou.rotblock.quota.UsageSession
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -76,11 +75,6 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
 
     val pendingChanges: StateFlow<List<PendingChange>> = db.pendingChangeDao().observeAll()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-
-    private val _lastOutcome = MutableStateFlow<PendingChangeQueue.Outcome?>(null)
-    val lastOutcome: StateFlow<PendingChangeQueue.Outcome?> = _lastOutcome.asStateFlow()
-
-    fun consumeOutcome() { _lastOutcome.value = null }
 
     val settings: StateFlow<RotblockSettings> = settingsRepo.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RotblockSettings())
@@ -184,7 +178,9 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun submit(old: Policy?, new: Policy?) {
-        _lastOutcome.value = queue.submit(old, new)
+        // The outcome needs no return channel: an instant apply shows up in the policy list, and
+        // a queued weakening shows up as its own countdown card on the Blocks screen.
+        queue.submit(old, new)
         refresh()
     }
 
@@ -247,6 +243,3 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
-/** Convenience for the UI: total foreground time inside a window. */
-fun List<UsageSession>.usedIn(nowMs: Long, windowMs: Long): Long =
-    RollingQuota.usedInWindow(this, nowMs, windowMs)
