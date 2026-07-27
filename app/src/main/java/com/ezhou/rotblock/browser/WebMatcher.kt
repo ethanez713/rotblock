@@ -25,9 +25,20 @@ object WebMatcher {
         val full: String get() = if (path.isEmpty()) host else "$host$path"
     }
 
+    /**
+     * Bidi and zero-width formatting characters that browsers wrap URLs in.
+     *
+     * Samsung Internet reports its address bar as "‎example.com" -- a left-to-right mark
+     * before the host, to stop a right-to-left domain from rearranging the display. It is
+     * invisible, `trim()` does not touch it (it is a format character, not whitespace), and it
+     * silently broke every website rule in that browser: the host parsed as "‎example.com",
+     * which equals nothing and is a subdomain of nothing.
+     */
+    private val INVISIBLE = Regex("[\\u200B-\\u200F\\u061C\\u202A-\\u202E\\u2066-\\u2069\\uFEFF]")
+
     /** Returns null when the text is not a URL -- a search term, a page title, or empty. */
     fun parse(raw: String?): ParsedUrl? {
-        val text = raw?.trim()?.lowercase() ?: return null
+        val text = raw?.replace(INVISIBLE, "")?.trim()?.lowercase() ?: return null
         if (text.isEmpty()) return null
 
         val withoutScheme = text
@@ -58,7 +69,7 @@ object WebMatcher {
      * so a rule stored by an older build still behaves.
      */
     fun canonicalRule(raw: String): String {
-        val rule = raw.trim().lowercase()
+        val rule = raw.replace(INVISIBLE, "").trim().lowercase()
         if (rule.startsWith(KEYWORD_PREFIX)) {
             return KEYWORD_PREFIX + rule.removePrefix(KEYWORD_PREFIX).trim()
         }

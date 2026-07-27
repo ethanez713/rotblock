@@ -51,6 +51,27 @@ class WebMatcherParseTest {
     fun `a page title with a dot but spaces is not a URL`() {
         assertNull(WebMatcher.parse("Node.js is great for servers"))
     }
+
+    @Test
+    fun `strips the bidi mark Samsung Internet puts before the host`() {
+        // Found on device: Samsung Internet reports "‎example.com". The mark is invisible
+        // and trim() does not remove it, so the host used to parse as "‎example.com" and
+        // matched no rule at all -- website blocking silently did nothing in that browser.
+        val parsed = WebMatcher.parse("‎example.com")!!
+        assertEquals("example.com", parsed.host)
+    }
+
+    @Test
+    fun `strips assorted zero-width and bidi wrappers`() {
+        assertEquals("reddit.com", WebMatcher.parse("‪https://​www.reddit.com‬")!!.host)
+        assertEquals("/r/all", WebMatcher.parse("reddit.com/r/all﻿")!!.path)
+    }
+
+    @Test
+    fun `an invisible mark does not stop a rule from matching`() {
+        val parsed = WebMatcher.parse("‎old.reddit.com/r/all")!!
+        assertTrue(WebMatcher.matches(parsed, "reddit.com"))
+    }
 }
 
 class WebMatcherCanonicalTest {

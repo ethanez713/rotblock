@@ -2,6 +2,7 @@ package com.ezhou.rotblock.service
 
 import android.accessibilityservice.AccessibilityService
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -87,6 +88,9 @@ class RotblockAccessibilityService : AccessibilityService() {
     private val inspectablePackages: Set<String> = BrowserRegistry.packages + FeedRegistry.packages
 
     private val inspectRequests = Channel<String>(Channel.CONFLATED)
+
+    /** Memoised `pkg/class` -> is-an-activity answers for [isActivity]. Main thread only. */
+    private val activityCache = HashMap<String, Boolean>()
 
     private var currentPackage: String? = null
     private var currentTargetId: String? = null
@@ -205,7 +209,9 @@ class RotblockAccessibilityService : AccessibilityService() {
             when (event.eventType) {
                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                     if (pkg != currentPackage) {
-                        onForegroundChanged(pkg, System.currentTimeMillis())
+                        if (isForegroundChange(pkg, event.className?.toString())) {
+                            onForegroundChanged(pkg, System.currentTimeMillis())
+                        }
                     } else if (pkg in inspectablePackages) {
                         inspectRequests.trySend(pkg)
                     }
@@ -222,7 +228,51 @@ class RotblockAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Whether a window-state change from [pkg] really means "you are now using that app".
+     *
+     * `TYPE_WINDOW_STATE_CHANGED` fires for far more than app switches: toasts, dialogs, heads-up
+     * notifications, and — found the hard way on device — the system's own "rotblock is
+     * displaying over other apps" notification, which is posted by package `android`. Treating
+     * that as a foreground change made the newly-shown block screen vanish about two seconds
+     * after it appeared, because `android` has no policy and so cleared the target.
+     *
+     * The test is deliberately asymmetric, and the asymmetry is the point:
+     *
+     * - A package that **has a policy** is always honoured, whatever kind of window it is. Missing
+     *   a blocked app is a fail-open, and nothing here may risk that.
+     * - A package with **no policy** only clears the current target if the window is a genuine
+     *   activity. That is what stops a passing toast from cancelling a block.
+     *
+     * So a mistake in either direction leaves blocking on rather than off.
+     */
+    private fun isForegroundChange(pkg: String, className: String?): Boolean {
+        if (policiesByTarget.containsKey(appTargetFor(pkg))) return true
+        if (pkg in inspectablePackages) return true
+        return isActivity(pkg, className)
+    }
+
+    /** Resolves `pkg/className` against PackageManager, cached — the lookup is not free. */
+    private fun isActivity(pkg: String, className: String?): Boolean {
+        if (className.isNullOrEmpty()) return false
+        val key = "$pkg/$className"
+        activityCache[key]?.let { return it }
+        val resolved = runCatching {
+            packageManager.getActivityInfo(ComponentName(pkg, className), 0)
+        }.isSuccess
+        // Bounded: window classes are few in practice, but a misbehaving app could churn them.
+        if (activityCache.size > 512) activityCache.clear()
+        activityCache[key] = resolved
+        return resolved
+    }
+
+    /** Debug-only trace of why the enforced target changed. Silent in release. */
+    private fun trace(msg: String) {
+        if (com.ezhou.rotblock.BuildConfig.DEBUG) android.util.Log.d("rotblockFG", msg)
+    }
+
     private fun onForegroundChanged(pkg: String, nowMs: Long) {
+        trace("foreground -> $pkg")
         currentPackage = pkg
 
         // Whatever was accruing time has stopped.
@@ -237,6 +287,7 @@ class RotblockAccessibilityService : AccessibilityService() {
     /** Runs on the main thread; [targetId] null means nothing here is governed by a policy. */
     private fun applyTarget(targetId: String?, nowMs: Long) {
         val policy = targetId?.let { policiesByTarget[it] }
+        trace("applyTarget($targetId) policy=${policy?.label} enabled=${policy?.enabled} known=${policiesByTarget.keys}")
         if (policy == null || !policy.enabled) {
             currentTargetId = null
             frictionShownFor = null
@@ -355,7 +406,9 @@ class RotblockAccessibilityService : AccessibilityService() {
     private fun evaluateAndEnforce(targetId: String, nowMs: Long) {
         val policy = policiesByTarget[targetId] ?: return
         val sessions = ledger.sessionsFor(targetId, nowMs)
-        when (val decision = PolicyEngine.evaluate(policy, sessions, pause.pausedUntilMs, nowMs)) {
+        val decision = PolicyEngine.evaluate(policy, sessions, pause.pausedUntilMs, nowMs)
+        trace("decision for ${policy.label}: $decision")
+        when (decision) {
             is Decision.Allow -> {
                 overlay.hide()
                 ledger.closeSession(nowMs)
