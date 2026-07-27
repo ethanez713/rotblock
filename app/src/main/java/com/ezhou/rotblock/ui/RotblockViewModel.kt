@@ -85,15 +85,24 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun addAppPolicy(packageName: String, label: String, quotaSeconds: Int?, windowSeconds: Int) {
+    fun addAppPolicy(packageName: String, label: String, quotaSeconds: Int?, windowSeconds: Int) =
+        addPolicy(TargetKind.APP, packageName, label, quotaSeconds, windowSeconds)
+
+    fun addPolicy(
+        kind: TargetKind,
+        matcher: String,
+        label: String,
+        quotaSeconds: Int?,
+        windowSeconds: Int,
+    ) {
         viewModelScope.launch {
             val now = System.currentTimeMillis()
-            val id = Policy.targetId(TargetKind.APP, packageName)
+            val id = Policy.targetId(kind, matcher)
             db.policyDao().upsert(
                 Policy(
                     id = id,
-                    kind = TargetKind.APP,
-                    matcher = packageName,
+                    kind = kind,
+                    matcher = matcher,
                     label = label,
                     quotaSeconds = quotaSeconds,
                     windowSeconds = windowSeconds,

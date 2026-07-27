@@ -116,8 +116,8 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
         AddBlockSheet(
             existing = policies.map { it.matcher }.toSet(),
             onDismiss = { showAdd = false },
-            onAdd = { pkg, label, quotaSeconds, windowSeconds ->
-                viewModel.addAppPolicy(pkg, label, quotaSeconds, windowSeconds)
+            onAdd = { kind, matcher, label, quotaSeconds, windowSeconds ->
+                viewModel.addPolicy(kind, matcher, label, quotaSeconds, windowSeconds)
                 showAdd = false
             },
         )

@@ -9,7 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -28,7 +28,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     Blocks("Blocks", Icons.Filled.Lock),
-    Log("Log", Icons.Filled.List),
+    Log("Log", Icons.AutoMirrored.Filled.List),
     Setup("Setup", Icons.Filled.Settings),
 }
 
