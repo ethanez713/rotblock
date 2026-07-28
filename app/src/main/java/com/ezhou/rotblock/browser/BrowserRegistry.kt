@@ -15,6 +15,23 @@ data class BrowserSpec(val packageName: String, val urlBarIds: List<String>)
 
 object BrowserRegistry {
 
+    /**
+     * Where "Leave this site" sends the browser.
+     *
+     * Not `about:blank`, which was the obvious choice and was wrong twice over. Samsung Internet
+     * validates the URL in an incoming `ACTION_VIEW` and rejects anything that is not http(s):
+     * the escape produced an "Invalid address" toast, the tab stayed on the blocked site, and
+     * `startActivity` still returned normally, so nothing noticed. And the text `about:blank`
+     * sitting in an address bar does not parse as a URL, so a browser that *did* accept it read
+     * back as unreadable -- which now means "hold the target", i.e. re-block the page you just
+     * left.
+     *
+     * Loopback satisfies both: every browser accepts it as a URL, it parses back as a host that
+     * no sane rule matches, and it never leaves the device -- the connection is refused by this
+     * phone, immediately, with no network permission on our side and no request on the wire.
+     */
+    const val ESCAPE_URL = "http://127.0.0.1"
+
     private val specs = listOf(
         BrowserSpec(
             "com.android.chrome",

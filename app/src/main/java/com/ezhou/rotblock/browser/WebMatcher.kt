@@ -104,10 +104,4 @@ object WebMatcher {
             url.path.startsWith("$rulePath/") ||
             url.path.startsWith("$rulePath?")
     }
-
-    /** The first matching rule from [matchers], or null. */
-    fun firstMatch(raw: String?, matchers: Collection<String>): String? {
-        val url = parse(raw) ?: return null
-        return matchers.firstOrNull { matches(url, it) }
-    }
 }

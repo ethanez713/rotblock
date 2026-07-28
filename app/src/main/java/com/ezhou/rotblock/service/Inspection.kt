@@ -58,7 +58,17 @@ fun classifyInspection(
         // update renamed still degrades to "not blocked" rather than sticking a block on the wrong
         // page.
         if (url == null) return Inspected.Unreadable
-        val matcher = WebMatcher.firstMatch(url, websiteMatchers)
+
+        // Bar text that is not a URL is the same "I could not see" in a different costume, and
+        // reading it as "you are not on that site" is the second half of the same fail-open: a
+        // half-typed search term, a placeholder, or the `about:blank` a rejected escape left
+        // sitting in the bar all dropped a live reddit target, and once dropped a scrolled page
+        // never gets it back because every read after that is unreadable.
+        //
+        // Only a bar that parses as a real URL is allowed to say you left. That is a claim about
+        // the page you are on; anything else is a claim about the address bar.
+        val parsed = WebMatcher.parse(url) ?: return Inspected.Unreadable
+        val matcher = websiteMatchers.firstOrNull { WebMatcher.matches(parsed, it) }
         if (matcher != null) return Inspected.Target(Policy.targetId(TargetKind.WEBSITE, matcher))
     }
     return Inspected.AppOnly

@@ -1,8 +1,10 @@
 package com.ezhou.rotblock
 
+import com.ezhou.rotblock.browser.BrowserRegistry
 import com.ezhou.rotblock.browser.WebMatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -168,11 +170,14 @@ class WebMatcherRuleTest {
     }
 
     @Test
-    fun `firstMatch returns the matching rule and ignores non-urls`() {
-        val rules = listOf("youtube.com/shorts", "reddit.com")
-        assertEquals("reddit.com", WebMatcher.firstMatch("old.reddit.com/r/all", rules))
-        assertEquals("youtube.com/shorts", WebMatcher.firstMatch("youtube.com/shorts/x", rules))
-        assertNull(WebMatcher.firstMatch("youtube.com/watch?v=x", rules))
-        assertNull(WebMatcher.firstMatch("just a search", rules))
+    fun `the escape destination is a url that no ordinary rule can match`() {
+        // The way off a blocked site has to read back as a *page*, not as unreadable text: the
+        // service holds the current target whenever it cannot parse the bar, so an escape landing
+        // somewhere unparseable (`about:blank`) would re-block the page you just left and loop.
+        val parsed = WebMatcher.parse(BrowserRegistry.ESCAPE_URL)
+        assertNotNull(parsed)
+        for (rule in listOf("reddit.com", "youtube.com/shorts", "kw:reddit", "instagram.com")) {
+            assertFalse(rule, WebMatcher.matches(parsed!!, rule))
+        }
     }
 }

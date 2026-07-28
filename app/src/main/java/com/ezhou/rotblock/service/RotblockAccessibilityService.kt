@@ -72,6 +72,16 @@ private const val INSPECT_DEBOUNCE_MS = 250L
 private const val MIN_INSPECT_INTERVAL_MS = 1_000L
 
 /**
+ * How long an escape gets to prove it worked before the block comes back.
+ *
+ * Long enough for the app to navigate and for a read to land -- [INSPECT_DEBOUNCE_MS] plus
+ * [MIN_INSPECT_INTERVAL_MS] plus room for the page -- and short enough that a failed escape is a
+ * blink rather than a browsing session. Being early only costs a block that the next read lifts
+ * again; being late costs unmetered time on the target.
+ */
+private const val ESCAPE_VERIFY_MS = 3_000L
+
+/**
  * Enforcement gaps shorter than this are system rebinds, not you switching rotblock off, and are
  * not written to the log. Toggling the service in Settings and coming back takes far longer.
  */
@@ -731,33 +741,74 @@ class RotblockAccessibilityService : AccessibilityService() {
      * blocked part. Reopening restores the same page and blocks again, and the only remaining way
      * out is disabling the policy, which is the failure this whole app exists to prevent.
      */
-    private fun escapeFor(policy: Policy): Escape? = when (policy.kind) {
-        TargetKind.APP -> null
+    private fun escapeFor(policy: Policy): Escape? {
+        val label = escapeLabelFor(policy.kind) ?: return null
+        val leave: () -> Unit = when (policy.kind) {
+            // Unreachable: escapeLabelFor returns null for APP and we have already left.
+            TargetKind.APP -> return null
 
-        // Backing out of a short-form player lands on the rest of the app, and if the app has
-        // nothing to go back to it closes -- reopening then starts at its normal entry point
-        // rather than back inside the feed. Either way you are out.
-        TargetKind.FEED -> Escape(escapeLabelFor(policy.kind)!!) {
-            guard("escapeFeed") { performGlobalAction(GLOBAL_ACTION_BACK) }
-        }
+            // Backing out of a short-form player lands on the rest of the app, and if the app has
+            // nothing to go back to it closes -- reopening then starts at its normal entry point
+            // rather than back inside the feed. Either way you are out.
+            TargetKind.FEED -> {
+                { guard("escapeFeed") { performGlobalAction(GLOBAL_ACTION_BACK) } }
+            }
 
-        // Point the browser at a blank page. Back is not enough on its own: a restored tab can
-        // have no history, in which case back closes the browser and reopening lands on the same
-        // blocked page again. Loading about:blank changes what the active tab *is*, which survives
-        // the app being closed and reopened, and it touches the network for nothing.
-        TargetKind.WEBSITE -> Escape(escapeLabelFor(policy.kind)!!) {
-            guard("escapeSite") {
-                val browser = currentPackage
-                val navigated = browser != null && runCatching {
-                    startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse("about:blank"))
-                            .setPackage(browser)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                }.isSuccess
-                if (!navigated) performGlobalAction(GLOBAL_ACTION_BACK)
+            // Point the browser somewhere that is not the blocked site. Back is not enough on its
+            // own: a restored tab can have no history, in which case back closes the browser and
+            // reopening lands on the same blocked page again. Loading a URL changes what the
+            // active tab *is*, which survives the app being closed and reopened.
+            TargetKind.WEBSITE -> {
+                {
+                    guard("escapeSite") {
+                        val browser = currentPackage
+                        val navigated = browser != null && runCatching {
+                            startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(BrowserRegistry.ESCAPE_URL))
+                                    .setPackage(browser)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }.isSuccess
+                        if (!navigated) performGlobalAction(GLOBAL_ACTION_BACK)
+                    }
+                }
             }
         }
+        return Escape(label) {
+            leave()
+            verifyEscaped(policy.id)
+        }
+    }
+
+    /**
+     * Checks that the escape actually escaped, and re-blocks if it did not.
+     *
+     * The escape hides the block screen and then *asks* an app to go somewhere else. Nothing
+     * guarantees the app agrees: Samsung Internet answered an `about:blank` intent with an
+     * "Invalid address" toast and stayed on the blocked page, `startActivity` returned normally,
+     * and the block was already gone. From there the only thing that could have re-blocked was the
+     * next successful address-bar read, and a page you scroll does not produce one -- so a tap on
+     * "Leave this site" bought unlimited browsing on the site that had just run out of time.
+     *
+     * A request that hides a block must therefore carry its own proof of success. This is the
+     * proof, and it fails closed: if the target is still the one we tried to leave when the check
+     * lands, enforcement comes straight back. A successful escape clears the target by then --
+     * either from the browser's own content-change events or from [requestInspect] below -- and
+     * this finds nothing to do.
+     *
+     * Deliberately a delayed post and not a scheduled job: the screen is on and the user is
+     * standing right there, so nothing needs to survive the process. If it is lost, the target
+     * simply stays blocked.
+     */
+    private fun verifyEscaped(targetId: String) {
+        currentPackage?.let { requestInspect(it) }
+        handler.postDelayed({
+            guard("verifyEscaped") {
+                if (currentTargetId != targetId) return@guard
+                trace("escape from $targetId did not take, re-blocking")
+                evaluateAndEnforce(targetId, System.currentTimeMillis())
+            }
+        }, ESCAPE_VERIFY_MS)
     }
 
     /**
@@ -907,6 +958,9 @@ class RotblockAccessibilityService : AccessibilityService() {
                     .commit()
             }
         }
+        // Including any pending escape check: it would re-show the overlay on a service that is
+        // going away, and nothing would be left to take that window down again.
+        handler.removeCallbacksAndMessages(null)
         if (::ledger.isInitialized) ledger.closeSession(now)
         if (::overlay.isInitialized) overlay.hide()
         // Enforcement going away must not leave the display greyscale with nothing left running
