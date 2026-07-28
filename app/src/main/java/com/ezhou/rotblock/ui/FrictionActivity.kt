@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ezhou.rotblock.block.Interstitial
+import com.ezhou.rotblock.browser.escapeIntent
 import kotlinx.coroutines.delay
 
 /**
@@ -46,6 +47,9 @@ class FrictionActivity : ComponentActivity() {
     companion object {
         const val EXTRA_LABEL = "label"
         const val EXTRA_SECONDS = "seconds"
+
+        /** Set only when the countdown covers a *website* block: the browser showing it. */
+        const val EXTRA_BROWSER = "browser"
     }
 
     /**
@@ -67,6 +71,7 @@ class FrictionActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val label = intent.getStringExtra(EXTRA_LABEL) ?: "this"
         val seconds = intent.getIntExtra(EXTRA_SECONDS, 5).coerceIn(1, 120)
+        val browser = intent.getStringExtra(EXTRA_BROWSER)
 
         setContent {
             RotblockTheme {
@@ -75,18 +80,31 @@ class FrictionActivity : ComponentActivity() {
                         label = label,
                         seconds = seconds,
                         onContinue = { finish() },
-                        onLeave = {
-                            startActivity(
-                                Intent(Intent.ACTION_MAIN)
-                                    .addCategory(Intent.CATEGORY_HOME)
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
-                            finish()
-                        },
+                        onLeave = { leave(browser) },
                     )
                 }
             }
         }
+    }
+
+    /**
+     * Backs out of the countdown without opening the target.
+     *
+     * Going home is the whole answer for an app: it is behind you. For a website it is not --
+     * the browser stays on the page, so reopening it lands on the site with the countdown already
+     * spent for this visit. So the browser is moved off the page first, and that becomes where it
+     * comes back to. Declining the countdown has to actually decline it.
+     */
+    private fun leave(browser: String?) {
+        val moved = browser != null && runCatching { startActivity(escapeIntent(browser)) }.isSuccess
+        if (!moved) {
+            startActivity(
+                Intent(Intent.ACTION_MAIN)
+                    .addCategory(Intent.CATEGORY_HOME)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+        finish()
     }
 }
 

@@ -40,7 +40,7 @@ the bugs that were found the hard way on a real device.
 
 ```
 ./gradlew assembleDebug
-./gradlew testDebugUnitTest      # 92 tests, all pure JVM — no device needed
+./gradlew testDebugUnitTest      # 98 tests, all pure JVM — no device needed
 ```
 
 JDK 17 and an Android SDK with platform 35. AGP 8.6.0 / Gradle 8.7 / Kotlin 2.0.21,

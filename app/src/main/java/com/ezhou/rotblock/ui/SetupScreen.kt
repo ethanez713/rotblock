@@ -32,6 +32,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,7 +46,9 @@ import androidx.compose.ui.unit.dp
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.data.RotblockSettings
+import com.ezhou.rotblock.service.EnforcementStatus
 import com.ezhou.rotblock.service.RotblockAccessibilityService
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -193,9 +196,114 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
         )
 
         Spacer(Modifier.height(28.dp))
+        EnforcementCard()
+
+        Spacer(Modifier.height(28.dp))
         AdbCard(context)
         Spacer(Modifier.height(40.dp))
     }
+}
+
+/**
+ * What enforcement believes right now, and the last few things it decided.
+ *
+ * Here because every failure this app has had presents identically: the app is on screen and
+ * nothing happens. Whether that is a dropped target, an unreadable address bar, a pause still
+ * running, or a service that is not bound at all is invisible from the outside, and guessing at it
+ * from the block screen's absence is how an afternoon disappears.
+ */
+@Composable
+private fun EnforcementCard() {
+    var snapshot by remember { mutableStateOf(EnforcementStatus.snapshot()) }
+    var expanded by remember { mutableStateOf(false) }
+
+    // Only while this screen is composed, so nothing polls in the background.
+    LaunchedEffect(Unit) {
+        while (true) {
+            snapshot = EnforcementStatus.snapshot()
+            delay(1_000)
+        }
+    }
+
+    Text("Right now", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "What the service currently thinks is on screen. If something is not being counted, this " +
+            "is where it shows.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(12.dp))
+
+    Card(colors = CardDefaults.cardColors()) {
+        Column(Modifier.padding(16.dp)) {
+            StatusRow("Service", if (snapshot.connected) "running" else "not connected")
+            StatusRow("Foreground app", snapshot.currentPackage ?: "—")
+            StatusRow("Enforcing", snapshot.currentTargetId ?: "nothing")
+            StatusRow(
+                "Counting time against",
+                snapshot.accruingTargetId
+                    ?: if (snapshot.interstitialShowing) "nothing (our screen is up)" else "nothing",
+            )
+            StatusRow(
+                "Last screen read",
+                snapshot.lastRead?.let { read ->
+                    val age = (System.currentTimeMillis() - snapshot.lastReadAtMs) / 1000
+                    "$read (${age}s ago)"
+                } ?: "none yet",
+            )
+
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Hide what happened" else "Show what happened")
+            }
+
+            if (expanded) {
+                SelectionContainer {
+                    Column {
+                        if (snapshot.trail.isEmpty()) {
+                            Text(
+                                "Nothing yet. Open a blocked app and come back.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        snapshot.trail.forEach { entry ->
+                            Text(
+                                buildString {
+                                    append(clockTime(entry.atMs))
+                                    append("  ")
+                                    append(entry.text)
+                                    if (entry.repeats > 1) append("  ×${entry.repeats}")
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(150.dp),
+        )
+        Text(value, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+    }
+}
+
+private fun clockTime(atMs: Long): String {
+    val local = java.time.Instant.ofEpochMilli(atMs).atZone(java.time.ZoneId.systemDefault())
+    return "%02d:%02d:%02d".format(local.hour, local.minute, local.second)
 }
 
 @Composable

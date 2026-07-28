@@ -6,7 +6,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -25,6 +24,7 @@ import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.browser.BrowserRegistry
+import com.ezhou.rotblock.browser.escapeIntent
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.pause.PauseController
 import com.ezhou.rotblock.policy.Decision
@@ -161,6 +161,13 @@ class RotblockAccessibilityService : AccessibilityService() {
     private var currentPackage: String? = null
     private var currentTargetId: String? = null
 
+    /**
+     * What a read last found inside each app that needs one, so re-entering a browser does not
+     * silently start tracking nothing. See [VisitMemory] -- this is the fix for "it stopped
+     * noticing reddit after I switched apps".
+     */
+    private val visits = VisitMemory()
+
     /** Last values written by [persistVisit], so repeat calls do not touch disk. */
     private var persistedPackage: String? = null
     private var persistedTarget: String? = null
@@ -233,6 +240,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             grayscale = Grayscale(this)
             ignoredPackages = buildIgnoredPackages()
             trace("onServiceConnected: fresh instance, state reset")
+            EnforcementStatus.setConnected(true)
 
             // Our own screens blind every read taken while they are up, and the app underneath
             // resumes before they stop -- so the window-state change that would prompt a re-read
@@ -393,13 +401,18 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     private fun onForegroundChanged(pkg: String, nowMs: Long) {
         trace("foreground -> $pkg")
+        EnforcementStatus.note("foreground -> $pkg")
         currentPackage = pkg
 
         // Whatever was accruing time has stopped.
         ledger.closeSession(nowMs)
         stopTicking()
 
-        applyTarget(appTargetFor(pkg), nowMs)
+        // Not simply the app target. Inside a browser the app target means "nothing here is
+        // covered", and coming back to a page you left scrolled reads as unreadable -- so the
+        // website target would be dropped on the way in and never re-acquired while you kept
+        // scrolling. The read that follows overrules this within about a second either way.
+        applyTarget(visits.resume(pkg) ?: appTargetFor(pkg), nowMs)
 
         requestInspect(pkg)
     }
@@ -410,6 +423,9 @@ class RotblockAccessibilityService : AccessibilityService() {
         trace("applyTarget($targetId) policy=${policy?.label} enabled=${policy?.enabled} cur=$currentTargetId shownFor=$frictionShownFor")
         if (policy == null || !policy.enabled) {
             if (frictionShownFor != null) trace("  CLEARING frictionShownFor (no policy for $targetId)")
+            if (currentTargetId != null) {
+                EnforcementStatus.note("target $currentTargetId -> none (nothing here is covered)")
+            }
             currentTargetId = null
             frictionShownFor = null
             ledger.closeSession(nowMs)
@@ -417,10 +433,12 @@ class RotblockAccessibilityService : AccessibilityService() {
             overlay.hide()
             grayscale.restore()
             persistVisit()
+            reportStatus()
             return
         }
         if (currentTargetId != targetId) {
             trace("  target change $currentTargetId -> $targetId, re-arming friction")
+            EnforcementStatus.note("target ${currentTargetId ?: "none"} -> $targetId")
             ledger.closeSession(nowMs)
             currentTargetId = targetId
             frictionShownFor = null
@@ -429,6 +447,17 @@ class RotblockAccessibilityService : AccessibilityService() {
         evaluateAndEnforce(targetId, nowMs)
         // After enforcement, so a friction screen just shown is part of what gets carried over.
         persistVisit()
+        reportStatus()
+    }
+
+    /** Publishes what enforcement believes, for the "Right now" panel. See [EnforcementStatus]. */
+    private fun reportStatus() {
+        EnforcementStatus.update(
+            pkg = currentPackage,
+            targetId = currentTargetId,
+            accruing = ledger.openTargetId,
+            interstitial = Interstitial.isShowing,
+        )
     }
 
     private fun reEvaluateCurrent() {
@@ -488,6 +517,9 @@ class RotblockAccessibilityService : AccessibilityService() {
         if (prefs.getString(KEY_VISIT_PACKAGE, null) == pkg) {
             currentTargetId = prefs.getString(KEY_VISIT_TARGET, null)
             frictionShownFor = prefs.getString(KEY_VISIT_FRICTION_SHOWN, null)
+            // So a trip out of the app and back does not lose it again: the read that would
+            // re-establish it is exactly the read that a scrolled page cannot give us.
+            currentTargetId?.let { visits.remember(pkg, it) }
         }
         trace("seed: $pkg target=$currentTargetId shownFor=$frictionShownFor")
 
@@ -576,8 +608,15 @@ class RotblockAccessibilityService : AccessibilityService() {
                     // Discard if the user has moved on since the read started.
                     if (pkg != currentPackage) return@guard
                     val targetId = when (resolved) {
-                        is Inspected.Target -> resolved.targetId
-                        Inspected.AppOnly -> appTargetFor(pkg)
+                        is Inspected.Target -> {
+                            visits.remember(pkg, resolved.targetId)
+                            resolved.targetId
+                        }
+                        // A successful read is the only thing allowed to say "nothing here".
+                        Inspected.AppOnly -> {
+                            visits.forget(pkg)
+                            appTargetFor(pkg)
+                        }
                         // Keep enforcing whatever was last established. Every other outcome of a
                         // blind read weakens a block; this one cannot.
                         Inspected.Unreadable -> return@guard
@@ -596,6 +635,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow
         if (root == null) {
             trace("read($pkg): rootInActiveWindow null")
+            EnforcementStatus.note("read $pkg: no active window (target held)")
             return Inspected.Unreadable
         }
         try {
@@ -605,6 +645,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             // wrong window is noise, and acting on it drops a live target.
             if (root.packageName?.toString() != pkg) {
                 trace("read($pkg): active window is ${root.packageName}")
+                EnforcementStatus.note("read $pkg: window belongs to ${root.packageName} (target held)")
                 return Inspected.Unreadable
             }
 
@@ -616,7 +657,9 @@ class RotblockAccessibilityService : AccessibilityService() {
                 ?.firstNotNullOfOrNull { root.textForViewId(it) }
             trace("read($pkg): feed=$feedKey url=${url?.let { "\"$it\"" }}")
 
-            return classifyInspection(pkg, feedKey, url, websiteMatchers)
+            val result = classifyInspection(pkg, feedKey, url, websiteMatchers)
+            EnforcementStatus.noteRead(pkg, url, feedKey, result)
+            return result
         } finally {
             root.recycleCompat()
         }
@@ -676,6 +719,13 @@ class RotblockAccessibilityService : AccessibilityService() {
                 // to have. No session is opened, so paused time still costs no quota.
                 val pausedUntil = decision.pausedUntilMs
                 if (pausedUntil != null) startTicking(pausedUntil - nowMs) else stopTicking()
+                EnforcementStatus.note(
+                    if (pausedUntil != null) {
+                        "$targetId: paused, not charging"
+                    } else {
+                        "$targetId: no active policy"
+                    },
+                )
             }
 
             is Decision.Allowed -> {
@@ -684,8 +734,10 @@ class RotblockAccessibilityService : AccessibilityService() {
                     // One of our own screens is covering the app. You are not using it, so it does
                     // not get to charge you -- friction and cooldowns cost time, not quota.
                     ledger.closeSession(nowMs)
+                    EnforcementStatus.note("$targetId: not charging, one of our screens is up")
                 } else {
                     ledger.startSession(targetId, nowMs)
+                    EnforcementStatus.note("$targetId: charging")
                 }
                 // Wake exactly when the allowance runs out. While an interstitial is up nothing is
                 // accruing, so that deadline is not approaching -- but the tick still has to run to
@@ -701,6 +753,9 @@ class RotblockAccessibilityService : AccessibilityService() {
                 ledger.closeSession(nowMs)
                 stopTicking()
                 grayscale.restore()
+                EnforcementStatus.note(
+                    "$targetId: blocked (${decision.reason.name.lowercase().replace('_', ' ')})",
+                )
                 showBlock(policy, decision)
             }
         }
@@ -763,11 +818,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                     guard("escapeSite") {
                         val browser = currentPackage
                         val navigated = browser != null && runCatching {
-                            startActivity(
-                                Intent(Intent.ACTION_VIEW, Uri.parse(BrowserRegistry.ESCAPE_URL))
-                                    .setPackage(browser)
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
+                            startActivity(escapeIntent(browser))
                         }.isSuccess
                         if (!navigated) performGlobalAction(GLOBAL_ACTION_BACK)
                     }
@@ -831,9 +882,19 @@ class RotblockAccessibilityService : AccessibilityService() {
                 Intent(this, FrictionActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     .putExtra(FrictionActivity.EXTRA_LABEL, policy.label)
-                    .putExtra(FrictionActivity.EXTRA_SECONDS, policy.frictionSeconds),
+                    .putExtra(FrictionActivity.EXTRA_SECONDS, policy.frictionSeconds)
+                    // "Take me back" has the same dead end as the block screen: going home leaves
+                    // the browser on the site, so reopening it lands straight back on the page you
+                    // just declined. Told which browser, the screen moves it off first.
+                    .putExtra(FrictionActivity.EXTRA_BROWSER, browserBehindWebsite(policy)),
             )
         }
+    }
+
+    /** The browser showing a website target, or null for any other kind of block. */
+    private fun browserBehindWebsite(policy: Policy): String? {
+        if (policy.kind != TargetKind.WEBSITE) return null
+        return currentPackage?.takeIf { BrowserRegistry.specFor(it) != null }
     }
 
     private fun launchPauseRequest(policy: Policy) {
@@ -944,6 +1005,7 @@ class RotblockAccessibilityService : AccessibilityService() {
     private fun teardown(reason: String) {
         val now = System.currentTimeMillis()
         trace("teardown: $reason")
+        EnforcementStatus.setConnected(false)
         stopTicking()
         Interstitial.onCleared = null
         runCatching { unregisterReceiver(screenReceiver) }
