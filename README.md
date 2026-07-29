@@ -10,7 +10,9 @@ them anywhere.
 
 - **Blocks apps**, outright or on a rolling time quota ("3 minutes out of any 60").
 - **Blocks websites** by domain, path prefix (`youtube.com/shorts`), or keyword, read from the
-  browser's address bar — so it works regardless of DNS or VPN settings.
+  browser's address bar — so it works regardless of DNS or VPN settings. When the bar is not there
+  to read (Samsung Internet drops the whole toolbar from the accessibility tree once you scroll),
+  it falls back to the host the page's own links agree on, which never scrolls away.
 - **Blocks short-form feeds inside apps** you otherwise want to keep, like Reels, by recognising the
   feed's own view hierarchy.
 - **Schedules**: any rule can be limited to particular hours on particular days ("block YouTube
@@ -44,7 +46,7 @@ the bugs that were found the hard way on a real device.
 
 ```
 ./gradlew assembleDebug
-./gradlew testDebugUnitTest      # 136 tests, all pure JVM — no device needed
+./gradlew testDebugUnitTest      # 154 tests, all pure JVM — no device needed
 ```
 
 JDK 17 and an Android SDK with platform 35. AGP 8.6.0 / Gradle 8.7 / Kotlin 2.0.21,

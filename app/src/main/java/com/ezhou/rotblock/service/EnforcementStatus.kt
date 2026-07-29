@@ -59,12 +59,15 @@ object EnforcementStatus {
         interstitialShowing = interstitial
     }
 
-    fun noteRead(pkg: String, url: String?, feedKey: String?, result: Inspected) {
+    fun noteRead(pkg: String, url: String?, feedKey: String?, result: Inspected, linkUrls: Int = 0) {
         lastReadAtMs = System.currentTimeMillis()
         lastRead = buildString {
             append(pkg.substringAfterLast('.'))
             if (url != null) append(" bar=\"$url\"")
             if (feedKey != null) append(" feed=$feedKey")
+            // Distinguishes "the bar was gone and the page's links identified it" from a normal
+            // read, which is the difference between the two ways a website target gets acquired.
+            if (linkUrls > 0) append(" links=$linkUrls")
             append(" -> ")
             append(
                 when (result) {

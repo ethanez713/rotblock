@@ -1,6 +1,7 @@
 package com.ezhou.rotblock.service
 
 import com.ezhou.rotblock.browser.BrowserRegistry
+import com.ezhou.rotblock.browser.LinkConsensus
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.TargetKind
@@ -39,12 +40,15 @@ sealed interface Inspected {
  *   found on screen, or null if none were.
  * @param url the text of the address bar, or null if this package has no address bar *or* the bar
  *   was not in the tree.
+ * @param linkUrls destinations harvested from the page's own link nodes, used only to acquire a
+ *   target when [url] told us nothing. See [LinkConsensus]; empty means the fallback did not run.
  */
 fun classifyInspection(
     pkg: String,
     feedKey: String?,
     url: String?,
     websiteMatchers: List<String>,
+    linkUrls: List<String> = emptyList(),
 ): Inspected {
     if (feedKey != null) return Inspected.Target(Policy.targetId(TargetKind.FEED, feedKey))
 
@@ -57,7 +61,18 @@ fun classifyInspection(
         // This can only ever hold a match already read, never invent one, so a view id that an app
         // update renamed still degrades to "not blocked" rather than sticking a block on the wrong
         // page.
-        if (url == null) return Inspected.Unreadable
+        //
+        // Holding is enough only when there is something to hold. When the bar was never readable
+        // in the first place -- you arrived on a page already scrolled, or came back to one -- the
+        // target was never acquired, and holding nothing enforces nothing, silently, for as long
+        // as you stay. The page's own links are the second opinion, and they carry the weaker
+        // half of the same asymmetry: they may say "you are on reddit", never "you left it".
+        if (url == null) {
+            val fromLinks = LinkConsensus.of(linkUrls) ?: return Inspected.Unreadable
+            val matched = websiteMatchers.firstOrNull { WebMatcher.matches(fromLinks, it) }
+                ?: return Inspected.Unreadable
+            return Inspected.Target(Policy.targetId(TargetKind.WEBSITE, matched))
+        }
 
         // Bar text that is not a URL is the same "I could not see" in a different costume, and
         // reading it as "you are not on that site" is the second half of the same fail-open: a

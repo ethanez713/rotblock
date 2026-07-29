@@ -24,6 +24,7 @@ import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.browser.BrowserRegistry
+import com.ezhou.rotblock.browser.LinkConsensus
 import com.ezhou.rotblock.browser.escapeIntent
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.pause.PauseController
@@ -94,6 +95,25 @@ private const val INSPECT_DEBOUNCE_MS = 250L
 private const val MIN_INSPECT_INTERVAL_MS = 1_000L
 
 /**
+ * Bounds on the link-target fallback. See [com.ezhou.rotblock.browser.LinkConsensus].
+ *
+ * A page's own navigation links cluster at the top of its tree: measured on device, ten of them
+ * sit within thirty nodes of a depth-first walk. So the scan stops at the first
+ * [MAX_LINK_SAMPLES] it finds or [MAX_LINK_SCAN_NODES] nodes, whichever comes first, which leaves
+ * generous headroom over the measurement while staying a fraction of a full traversal -- the three
+ * `findAccessibilityNodeInfosByViewId` calls this runs *after* already cost far more than this
+ * does, and on a scrolled page all three of them find nothing.
+ *
+ * The interval is a floor on top of [MIN_INSPECT_INTERVAL_MS] rather than a substitute for it,
+ * because a sustained scroll re-arms the read every second and none of those reads can see
+ * anything new. Acquiring a target up to [MIN_LINK_HARVEST_INTERVAL_MS] late costs a few seconds
+ * of unmetered time once per visit; paying for the scan every second costs it forever.
+ */
+private const val MAX_LINK_SCAN_NODES = 120
+private const val MAX_LINK_SAMPLES = 12
+private const val MIN_LINK_HARVEST_INTERVAL_MS = 3_000L
+
+/**
  * How long an escape gets to prove it worked before the block comes back.
  *
  * Long enough for the app to navigate and for a read to land -- [INSPECT_DEBOUNCE_MS] plus
@@ -124,9 +144,20 @@ private const val KEY_VISIT_PACKAGE = "visit_package"
 private const val KEY_VISIT_TARGET = "visit_target"
 private const val KEY_VISIT_FRICTION_SHOWN = "visit_friction_shown"
 
-/** Attempts to read the already-open window at startup, before giving up until the next event. */
-private const val SEED_ATTEMPTS = 5
-private const val SEED_RETRY_MS = 200L
+/**
+ * Attempts to read the already-open window at startup, before giving up until the next event.
+ *
+ * Ten seconds, not the one second this used to allow. `rootInActiveWindow` returns null for a
+ * while after a bind even with the screen on and an app plainly in front -- measured on device,
+ * where `uiautomator dump` retrieved the very same window seconds later without trouble. Giving up
+ * after a second meant a reinstall or a re-enable left the service permanently blind, because the
+ * app it should have been watching was already in the foreground and would never announce itself.
+ *
+ * The cost is twenty null checks spread over ten seconds on a background coroutine, once per bind,
+ * and only ever while a bind is happening. That is not a battery consideration; being blind is.
+ */
+private const val SEED_ATTEMPTS = 20
+private const val SEED_RETRY_MS = 500L
 
 /** How often the service records that it was still running. */
 private const val HEARTBEAT_MS = 60_000L
@@ -181,7 +212,15 @@ class RotblockAccessibilityService : AccessibilityService() {
     private var lastBeatMs = 0L
 
     private var currentPackage: String? = null
-    private var currentTargetId: String? = null
+
+    /**
+     * Volatile because the inspector coroutine reads it to decide whether a target still needs
+     * acquiring; every write is still on the main thread.
+     */
+    @Volatile private var currentTargetId: String? = null
+
+    /** Inspector coroutine only. A duplicated harvest would be harmless, so no synchronisation. */
+    private var lastLinkHarvestMs = 0L
 
     /**
      * What a read last found inside each app that needs one, so re-entering a browser does not
@@ -202,6 +241,7 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     private var watchJob: Job? = null
     private var inspectorJob: Job? = null
+    private var reseedJob: Job? = null
 
     /**
      * Screen off is the one way a target leaves the foreground without an accessibility event.
@@ -356,7 +396,21 @@ class RotblockAccessibilityService : AccessibilityService() {
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                     // Navigating within a browser or scrolling into a feed produces no window
                     // state change, so this is the only signal that the target changed.
-                    if (pkg == currentPackage) requestInspect(pkg)
+                    if (pkg == currentPackage) {
+                        requestInspect(pkg)
+                    } else if (currentPackage == null && isForegroundChange(pkg, null)) {
+                        // Nothing has been established at all: the seed failed with the screen
+                        // off, and no window-state change has arrived since because the app was
+                        // already in front before we existed. Scrolling a page is then the only
+                        // evidence we will ever get, and discarding it for not matching a package
+                        // we never learned is what kept the service blind for an entire session.
+                        //
+                        // Passing a null class deliberately restricts this to packages we have a
+                        // reason to care about -- one with a policy, or a browser -- so a passing
+                        // toast still cannot claim the foreground.
+                        trace("WCC adopting $pkg: nothing established yet")
+                        onForegroundChanged(pkg, System.currentTimeMillis())
+                    }
                 }
             }
         }
@@ -487,9 +541,27 @@ class RotblockAccessibilityService : AccessibilityService() {
         // Cheap, and this runs on unlock and on every settings change, which is the widest net we
         // have for noticing a pause that lapsed while nothing was watching.
         pause.noteExpiryIfNeeded(now)
-        val pkg = currentPackage ?: return
+        val pkg = currentPackage
+        if (pkg == null) {
+            // The seed at connect is allowed to fail and regularly does: enabling the service or
+            // reinstalling while the phone is idle means there is no readable window yet. Nothing
+            // ever asked again, and an app already in the foreground fires no window-state change
+            // when you come back to it -- so the service stayed blind for as long as you stayed in
+            // that app. Observed on device: bound, alive, zero events, nothing enforced, no symptom.
+            //
+            // Unlocking is exactly when the screen becomes readable again, and this is the path
+            // ACTION_USER_PRESENT already takes.
+            reseed()
+            return
+        }
         applyTarget(currentTargetId ?: appTargetFor(pkg), now)
         requestInspect(pkg)
+    }
+
+    /** One re-seed at a time; callers fire on unlock and on every settings and policy change. */
+    private fun reseed() {
+        if (reseedJob?.isActive == true) return
+        reseedJob = scope.launch { seedForegroundFromScreen() }
     }
 
     private fun appTargetFor(pkg: String): String = Policy.targetId(TargetKind.APP, pkg)
@@ -677,13 +749,78 @@ class RotblockAccessibilityService : AccessibilityService() {
             val url = BrowserRegistry.specFor(pkg)
                 ?.urlBarIds
                 ?.firstNotNullOfOrNull { root.textForViewId(it) }
-            trace("read($pkg): feed=$feedKey url=${url?.let { "\"$it\"" }}")
+            // Only when the bar said nothing *and* nothing is currently being enforced here. Once a
+            // target is held there is nothing to acquire, so the scan cannot contradict a live
+            // target -- and the common case, scrolling a page we already recognised, never pays
+            // for it at all.
+            val linkUrls = if (
+                url == null &&
+                currentTargetId == null &&
+                BrowserRegistry.specFor(pkg) != null &&
+                websiteMatchers.isNotEmpty()
+            ) {
+                harvestLinkUrls(root)
+            } else {
+                emptyList()
+            }
+            trace("read($pkg): feed=$feedKey url=${url?.let { "\"$it\"" }} links=${linkUrls.size}")
 
-            val result = classifyInspection(pkg, feedKey, url, websiteMatchers)
-            EnforcementStatus.noteRead(pkg, url, feedKey, result)
+            val result = classifyInspection(pkg, feedKey, url, websiteMatchers, linkUrls)
+            EnforcementStatus.noteRead(pkg, url, feedKey, result, linkUrls.size)
             return result
         } finally {
             root.recycleCompat()
+        }
+    }
+
+    /**
+     * Collects link destinations from the top of the document, depth-first and bounded.
+     *
+     * Depth-first and not breadth-first because a page's own navigation sits at the start of its
+     * DOM, so document order reaches links soonest -- and because breadth-first would sweep a
+     * whole level of a feed before descending into anything.
+     *
+     * Every node fetched here is recycled on the way out. The root is not: it belongs to the
+     * caller, which recycles it in its own `finally`.
+     */
+    private fun harvestLinkUrls(root: AccessibilityNodeInfo): List<String> {
+        val now = System.currentTimeMillis()
+        if (now - lastLinkHarvestMs < MIN_LINK_HARVEST_INTERVAL_MS) return emptyList()
+        lastLinkHarvestMs = now
+
+        val urls = ArrayList<String>(MAX_LINK_SAMPLES)
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        pushChildren(root, stack)
+        var visited = 0
+        try {
+            while (stack.isNotEmpty() && visited < MAX_LINK_SCAN_NODES && urls.size < MAX_LINK_SAMPLES) {
+                val node = stack.removeLast()
+                visited++
+                try {
+                    // getCharSequence, not getString: Bundle.getString returns null when the value
+                    // was stored as a CharSequence, and Chromium does exactly that in some
+                    // versions. A String is a CharSequence, so this reads both.
+                    runCatching { node.extras?.getCharSequence(LinkConsensus.EXTRA_TARGET_URL) }
+                        .getOrNull()
+                        ?.toString()
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { urls.add(it) }
+                    pushChildren(node, stack)
+                } finally {
+                    node.recycleCompat()
+                }
+            }
+        } finally {
+            stack.forEach { it.recycleCompat() }
+        }
+        trace("harvest: visited=$visited urls=${urls.size} unexplored=${stack.size}")
+        return urls
+    }
+
+    /** Pushes children in reverse so the stack pops them in document order. */
+    private fun pushChildren(node: AccessibilityNodeInfo, stack: ArrayDeque<AccessibilityNodeInfo>) {
+        for (i in node.childCount - 1 downTo 0) {
+            runCatching { node.getChild(i) }.getOrNull()?.let { stack.addLast(it) }
         }
     }
 
@@ -1062,6 +1199,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         if (::grayscale.isInitialized) grayscale.restore()
         inspectorJob?.cancel()
         watchJob?.cancel()
+        reseedJob?.cancel()
     }
 
     /**
