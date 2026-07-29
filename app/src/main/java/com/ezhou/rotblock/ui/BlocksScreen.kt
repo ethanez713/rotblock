@@ -24,6 +24,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +47,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.policy.PolicySort
+import com.ezhou.rotblock.policy.sortedFor
 import kotlinx.coroutines.delay
 
 @Composable
@@ -59,6 +62,10 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     val context = androidx.compose.ui.platform.LocalContext.current
     val grayscaleAvailable = remember { com.ezhou.rotblock.block.Grayscale(context).isAvailable }
+
+    // Re-sorted only when the list or the choice changes, not on every heartbeat: strictness is a
+    // property of the rules, so nothing here moves just because a second passed.
+    val sorted = remember(policies, settings.blocksSort) { policies.sortedFor(settings.blocksSort) }
 
     // A one-second heartbeat so countdowns and remaining-time bars stay live while you look at
     // them. Cheap: it only runs while this screen is composed.
@@ -110,7 +117,17 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
                 item { EmptyState() }
             }
 
-            items(policies, key = { it.id }) { policy ->
+            // Only worth the row once there is an order to argue about.
+            if (policies.size > 1) {
+                item(key = "sort") {
+                    SortRow(
+                        selected = settings.blocksSort,
+                        onSelect = viewModel::setBlocksSort,
+                    )
+                }
+            }
+
+            items(sorted, key = { it.id }) { policy ->
                 PolicyCard(
                     policy = policy,
                     usage = usage[policy.id],
@@ -242,6 +259,35 @@ private fun PendingChangeCard(
     }
 }
 
+/**
+ * The order the cards are in.
+ *
+ * Two chips rather than a menu behind an icon: there are two answers, both worth reading, and the
+ * chosen one has to be visible — a list quietly in an order you did not pick is how you end up
+ * believing a rule is missing.
+ */
+@Composable
+private fun SortRow(selected: PolicySort, onSelect: (PolicySort) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            "Sort",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        PolicySort.entries.forEach { sort ->
+            FilterChip(
+                selected = sort == selected,
+                onClick = { onSelect(sort) },
+                label = { Text(sort.label) },
+            )
+        }
+    }
+}
+
 @Composable
 private fun EmptyState() {
     Card(
@@ -281,6 +327,8 @@ private fun PolicyCard(
     ) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                TargetAvatar(policy)
+                Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
                         policy.label,

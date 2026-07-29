@@ -18,6 +18,7 @@ import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.pause.BudgetStatus
 import com.ezhou.rotblock.pause.PauseResult
 import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.policy.PolicySort
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.RollingQuota
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -235,6 +236,11 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun startPause(minutes: Int, emergency: Boolean, reason: String?): PauseResult =
         pauseController.startPause(minutes, emergency, reason).also { refresh() }
+
+    /** Presentation only, but stored: an order you have to re-pick every launch is not a setting. */
+    fun setBlocksSort(sort: PolicySort) {
+        viewModelScope.launch { settingsRepo.setBlocksSort(sort) }
+    }
 
     fun endPause() {
         viewModelScope.launch {

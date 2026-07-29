@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The backdrop, as a drawable rather than a flat colour so the mark sits on some depth. Full-bleed
+  on purpose: the outer 18dp on each edge is only visible during the launcher's parallax, and a
+  gradient that stopped at the safe zone would show its own seam there.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:startColor="@color/ic_launcher_background_top"
+                android:endColor="@color/ic_launcher_background" />
+        </aapt:attr>
+    </path>
+</vector>

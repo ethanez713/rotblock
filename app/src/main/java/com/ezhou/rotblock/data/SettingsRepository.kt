@@ -6,7 +6,9 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.ezhou.rotblock.policy.PolicySort
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -31,6 +33,11 @@ data class RotblockSettings(
     val dayStartHour: Int = 4,
     /** How long a weakening policy edit is held before it applies. (Phase 5) */
     val weakeningDelayMinutes: Int = 60,
+    /**
+     * How the Blocks screen orders its cards. The one presentation knob stored here: it belongs
+     * with the user's other choices, and nothing in enforcement reads it.
+     */
+    val blocksSort: PolicySort = PolicySort.DEFAULT,
 ) {
     fun isPaused(nowMs: Long): Boolean = nowMs < pausedUntilMs
 }
@@ -47,6 +54,7 @@ class SettingsRepository(context: Context) {
         val maxPauseMinutesPerDay = intPreferencesKey("max_pause_minutes_per_day")
         val dayStartHour = intPreferencesKey("day_start_hour")
         val weakeningDelayMinutes = intPreferencesKey("weakening_delay_minutes")
+        val blocksSort = stringPreferencesKey("blocks_sort")
     }
 
     val settings: Flow<RotblockSettings> = store.data.map { p ->
@@ -58,6 +66,7 @@ class SettingsRepository(context: Context) {
             maxPauseMinutesPerDay = p[Keys.maxPauseMinutesPerDay] ?: d.maxPauseMinutesPerDay,
             dayStartHour = p[Keys.dayStartHour] ?: d.dayStartHour,
             weakeningDelayMinutes = p[Keys.weakeningDelayMinutes] ?: d.weakeningDelayMinutes,
+            blocksSort = PolicySort.decode(p[Keys.blocksSort]),
         )
     }
 
@@ -85,5 +94,9 @@ class SettingsRepository(context: Context) {
 
     suspend fun setWeakeningDelayMinutes(minutes: Int) {
         store.edit { it[Keys.weakeningDelayMinutes] = minutes.coerceIn(0, 7 * 24 * 60) }
+    }
+
+    suspend fun setBlocksSort(sort: PolicySort) {
+        store.edit { it[Keys.blocksSort] = sort.name }
     }
 }

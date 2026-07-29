@@ -113,6 +113,18 @@ data class Schedule(val blocks: List<TimeBlock> = emptyList()) {
             .firstOrNull { !isActiveAt(it, tz) }
     }
 
+    /**
+     * How much of the week this schedule is live for, as a fraction of 1.
+     *
+     * Always-on is 1.0 and nothing can be 0.0 — a block covering no days is rejected at decode, so
+     * every schedule that exists covers at least some minutes. Overlapping blocks are counted once,
+     * which is the whole reason this goes through the minute grid rather than summing durations.
+     */
+    fun coverageFraction(): Double {
+        if (isAlwaysOn) return 1.0
+        return activeMinutes().count { it } / MINUTES_PER_WEEK.toDouble()
+    }
+
     /** True when every minute of the week [other] covers is also covered here. */
     fun coversAllOf(other: Schedule): Boolean {
         if (isAlwaysOn) return true

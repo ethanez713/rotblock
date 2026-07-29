@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The quick-settings tile. The launcher mark redrawn tight to a 24dp box: the tile scales whatever
+  it is given, so handing it the launcher foreground drew the glyph at the 61% the adaptive safe
+  zone allows and left it looking shrunken next to every stock tile.
+
+  One colour, because the system tints tile icons to say on or off, and a two-tone drawable loses
+  that distinction.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <path
+        android:pathData="M7.5,4.7L12,8.8L16.5,4.7"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeAlpha="0.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <path
+        android:pathData="M6.6,9.6L12,15L17.4,9.6"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <path
+        android:pathData="M6.9,19.1L17.1,19.1"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round" />
+</vector>

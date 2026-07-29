@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The themed-icon silhouette. Same geometry as the foreground, one colour.
+
+  It exists separately because a launcher tinting a two-tone drawable flattens the mint and the
+  coral into one shade, and the mark then depends entirely on the gaps between its parts. Those
+  gaps are drawn wider here (thinner strokes) so the bar still reads as a separate thing.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:pathData="M39,29L54,44L69,29"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6"
+        android:strokeAlpha="0.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <path
+        android:pathData="M36,45L54,63L72,45"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="9"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <path
+        android:pathData="M37,77L71,77"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="7"
+        android:strokeLineCap="round" />
+</vector>

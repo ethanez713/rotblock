@@ -215,6 +215,32 @@ class ScheduleTest {
     }
 
     @Test
+    fun `coverageFraction measures the week, counting overlaps once`() {
+        assertEquals(1.0, Schedule.ALWAYS.coverageFraction(), 1e-9)
+        // Weekdays 9am–5pm: 5 days of 8 hours out of 168.
+        assertEquals(
+            40.0 / 168.0,
+            Schedule(listOf(block(TimeBlock.WEEKDAYS, 9, 17))).coverageFraction(),
+            1e-9,
+        )
+        // Two blocks over the same hours are one block's worth of coverage, not two.
+        assertEquals(
+            40.0 / 168.0,
+            Schedule(
+                listOf(block(TimeBlock.WEEKDAYS, 9, 17), block(TimeBlock.WEEKDAYS, 10, 16)),
+            ).coverageFraction(),
+            1e-9,
+        )
+    }
+
+    @Test
+    fun `coverageFraction counts a window that wraps past midnight once`() {
+        // 10pm–7am every day is 9 hours a day, not 15 and not two separate stretches.
+        val overnight = Schedule(listOf(block(TimeBlock.ALL_DAYS, 22, 7)))
+        assertEquals(63.0 / 168.0, overnight.coverageFraction(), 1e-9)
+    }
+
+    @Test
     fun `describeDays names the common sets and collapses runs`() {
         assertEquals("Every day", describeDays(TimeBlock.ALL_DAYS))
         assertEquals("Weekdays", describeDays(TimeBlock.WEEKDAYS))

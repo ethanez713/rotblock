@@ -90,7 +90,6 @@ private data class Chosen(
     val kind: TargetKind,
     val matcher: String,
     val label: String,
-    val icon: ImageBitmap? = null,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -174,7 +173,7 @@ private fun AppPicker(existing: Set<String>, onPick: (Chosen) -> Unit) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable(enabled = !already) {
-                            onPick(Chosen(TargetKind.APP, app.packageName, app.label, app.icon))
+                            onPick(Chosen(TargetKind.APP, app.packageName, app.label))
                         }
                         .padding(vertical = 10.dp),
                 ) {
@@ -239,7 +238,10 @@ private fun WebsitePicker(onPick: (Chosen) -> Unit) {
                     .fillMaxWidth()
                     .clickable { onPick(Chosen(TargetKind.WEBSITE, matcher, label)) }
                     .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                TargetAvatar(TargetKind.WEBSITE, matcher, label, size = 36.dp)
+                Spacer(Modifier.width(14.dp))
                 Column {
                     Text(label, style = MaterialTheme.typography.bodyLarge)
                     Text(
@@ -272,7 +274,10 @@ private fun FeedPicker(existing: Set<String>, onPick: (Chosen) -> Unit) {
                         onPick(Chosen(TargetKind.FEED, spec.key, spec.label))
                     }
                     .padding(vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                TargetAvatar(TargetKind.FEED, spec.key, spec.label, size = 36.dp)
+                Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(spec.label, style = MaterialTheme.typography.bodyLarge)
                     Text(
@@ -343,10 +348,8 @@ private fun RuleEditor(
             .padding(bottom = 28.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            chosen.icon?.let {
-                Image(bitmap = it, contentDescription = null, modifier = Modifier.size(40.dp))
-                Spacer(Modifier.width(12.dp))
-            }
+            TargetAvatar(chosen.kind, chosen.matcher, chosen.label, size = 44.dp)
+            Spacer(Modifier.width(12.dp))
             Text(
                 chosen.label,
                 style = MaterialTheme.typography.headlineSmall,

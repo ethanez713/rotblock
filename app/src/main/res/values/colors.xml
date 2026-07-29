@@ -3,6 +3,8 @@
          system window shows through as a mismatched band before/around the content. -->
     <color name="window_background">#FAFAFB</color>
 
-    <!-- Launcher icon backdrop stays dark in both modes; the icon is drawn for it. -->
-    <color name="ic_launcher_background">#101014</color>
+    <!-- Launcher icon backdrop stays dark in both modes; the icon is drawn for it. The two are
+         the ends of the diagonal gradient in drawable/ic_launcher_background.xml. -->
+    <color name="ic_launcher_background_top">#1B2733</color>
+    <color name="ic_launcher_background">#0C0D11</color>
 </resources>
