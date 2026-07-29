@@ -1,5 +1,6 @@
 package com.ezhou.rotblock.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Index
@@ -7,6 +8,7 @@ import androidx.room.Insert
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.policy.Schedule
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -30,6 +32,8 @@ data class PendingChange(
     val windowSeconds: Int = 3600,
     val frictionSeconds: Int = 0,
     val grayscale: Boolean = false,
+    @ColumnInfo(defaultValue = "")
+    val schedule: Schedule = Schedule.ALWAYS,
 ) {
     /** Applies this change's fields onto the policy as it stands now. */
     fun applyTo(current: Policy, nowMs: Long): Policy = current.copy(
@@ -38,6 +42,7 @@ data class PendingChange(
         windowSeconds = windowSeconds,
         frictionSeconds = frictionSeconds,
         grayscale = grayscale,
+        schedule = schedule,
         updatedAtMs = nowMs,
     )
 
@@ -53,6 +58,7 @@ data class PendingChange(
             windowSeconds = target.windowSeconds,
             frictionSeconds = target.frictionSeconds,
             grayscale = target.grayscale,
+            schedule = target.schedule,
         )
 
         fun deletion(targetId: String, applyAtMs: Long, description: String, nowMs: Long) =

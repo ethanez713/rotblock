@@ -130,15 +130,7 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
      * or waits. Nothing in the UI writes to the policy table directly -- that is what keeps the
      * "loosening is delayed" rule from being bypassable by a screen someone forgot to route.
      */
-    fun savePolicy(
-        kind: TargetKind,
-        matcher: String,
-        label: String,
-        quotaSeconds: Int?,
-        windowSeconds: Int,
-        frictionSeconds: Int = 0,
-        grayscale: Boolean = false,
-    ) {
+    fun savePolicy(kind: TargetKind, matcher: String, label: String, draft: RuleDraft) {
         viewModelScope.launch {
             val now = System.currentTimeMillis()
             // Website rules are canonicalised so "Reddit.com" and "reddit.com" are one policy
@@ -159,10 +151,11 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
                     label = label,
                     // An edit must not silently re-enable a rule that was switched off.
                     enabled = existing?.enabled ?: true,
-                    quotaSeconds = quotaSeconds,
-                    windowSeconds = windowSeconds,
-                    frictionSeconds = frictionSeconds,
-                    grayscale = grayscale,
+                    quotaSeconds = draft.quotaSeconds,
+                    windowSeconds = draft.windowSeconds,
+                    frictionSeconds = draft.frictionSeconds,
+                    grayscale = draft.grayscale,
+                    schedule = draft.schedule,
                     createdAtMs = existing?.createdAtMs ?: now,
                     updatedAtMs = now,
                 ),

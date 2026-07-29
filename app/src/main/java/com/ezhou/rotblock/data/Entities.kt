@@ -5,6 +5,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import com.ezhou.rotblock.audit.AuditType
+import com.ezhou.rotblock.policy.Schedule
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.UsageSession
 
@@ -24,6 +25,15 @@ class Converters {
     @TypeConverter fun stringToTargetKind(v: String): TargetKind = TargetKind.valueOf(v)
 
     @TypeConverter fun auditTypeToString(v: AuditType): String = v.name
+
+    @TypeConverter fun scheduleToString(v: Schedule): String = v.encode()
+
+    /**
+     * A row this cannot parse decodes to "always on" rather than throwing, for the same reason
+     * unknown audit types do not throw -- and, unlike them, in the only direction that is safe.
+     * See [Schedule.decode].
+     */
+    @TypeConverter fun stringToSchedule(v: String?): Schedule = Schedule.decode(v)
 
     /**
      * Unknown names decode to [AuditType.INTERNAL_ERROR] rather than throwing. A row written by a

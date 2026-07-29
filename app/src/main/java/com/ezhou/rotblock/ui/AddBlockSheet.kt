@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
@@ -56,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import com.ezhou.rotblock.block.FeedRegistry
 import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.policy.Schedule
 import com.ezhou.rotblock.policy.TargetKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -67,6 +70,20 @@ data class InstalledApp(
 )
 
 private enum class BlockKind(val label: String) { App("App"), Website("Website"), Feed("Feed") }
+
+/**
+ * Everything the rule editor decides about a target, as one value.
+ *
+ * A single object rather than a longer callback: five of these are ints and booleans, and a
+ * positional list that long is one careless reorder away from swapping a quota for a countdown.
+ */
+data class RuleDraft(
+    val quotaSeconds: Int?,
+    val windowSeconds: Int,
+    val frictionSeconds: Int,
+    val grayscale: Boolean,
+    val schedule: Schedule,
+)
 
 /** What is being configured once a target has been chosen. */
 private data class Chosen(
@@ -81,15 +98,7 @@ private data class Chosen(
 fun AddBlockSheet(
     existing: Set<String>,
     onDismiss: () -> Unit,
-    onSave: (
-        kind: TargetKind,
-        matcher: String,
-        label: String,
-        quotaSeconds: Int?,
-        windowSeconds: Int,
-        frictionSeconds: Int,
-        grayscale: Boolean,
-    ) -> Unit,
+    onSave: (kind: TargetKind, matcher: String, label: String, draft: RuleDraft) -> Unit,
     /** Non-null to skip the picker and edit an existing rule in place. */
     editing: Policy? = null,
     grayscaleAvailable: Boolean = false,
@@ -108,9 +117,7 @@ fun AddBlockSheet(
                 existing = editing,
                 grayscaleAvailable = grayscaleAvailable,
                 onBack = if (editing != null) null else ({ chosen = null }),
-                onConfirm = { quota, window, friction, gray ->
-                    onSave(target.kind, target.matcher, target.label, quota, window, friction, gray)
-                },
+                onConfirm = { draft -> onSave(target.kind, target.matcher, target.label, draft) },
             )
             return@ModalBottomSheet
         }
@@ -283,7 +290,7 @@ private fun FeedPicker(existing: Set<String>, onPick: (Chosen) -> Unit) {
 
 /** The one-line explanations under a control. Small, muted, and kept to a single sentence. */
 @Composable
-private fun Hint(text: String) {
+internal fun Hint(text: String) {
     Text(
         text,
         style = MaterialTheme.typography.bodySmall,
@@ -314,7 +321,7 @@ private fun RuleEditor(
     existing: Policy?,
     grayscaleAvailable: Boolean,
     onBack: (() -> Unit)?,
-    onConfirm: (quotaSeconds: Int?, windowSeconds: Int, frictionSeconds: Int, grayscale: Boolean) -> Unit,
+    onConfirm: (RuleDraft) -> Unit,
 ) {
     // Not `existing?.quotaSeconds ?: 180`: a null quota means "block completely", so that elvis
     // would quietly turn an edited hard block into a 3-minute allowance.
@@ -324,9 +331,17 @@ private fun RuleEditor(
     var windowSeconds by remember { mutableStateOf(existing?.windowSeconds ?: 3_600) }
     var frictionSeconds by remember { mutableStateOf(existing?.frictionSeconds ?: 0) }
     var grayscale by remember { mutableStateOf(existing?.grayscale ?: false) }
+    var schedule by remember { mutableStateOf(existing?.schedule ?: Schedule.ALWAYS) }
     var customMinutes by remember { mutableStateOf("") }
 
-    Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
+    // Scrollable since the schedule rows landed: with two of them this is taller than a phone, and
+    // the confirm button is the part that goes off the bottom.
+    Column(
+        Modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 28.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             chosen.icon?.let {
                 Image(bitmap = it, contentDescription = null, modifier = Modifier.size(40.dp))
@@ -395,6 +410,9 @@ private fun RuleEditor(
         }
 
         Spacer(Modifier.height(20.dp))
+        ScheduleSection(schedule = schedule, onChange = { schedule = it })
+
+        Spacer(Modifier.height(20.dp))
         Text("Before it opens", style = MaterialTheme.typography.titleSmall)
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -444,7 +462,11 @@ private fun RuleEditor(
                 Spacer(Modifier.width(12.dp))
             }
             Button(
-                onClick = { onConfirm(quotaSeconds, windowSeconds, frictionSeconds, grayscale) },
+                onClick = {
+                    onConfirm(
+                        RuleDraft(quotaSeconds, windowSeconds, frictionSeconds, grayscale, schedule),
+                    )
+                },
                 enabled = quotaSeconds == null || (quotaSeconds ?: 0) > 0,
             ) { Text(if (existing != null) "Save changes" else "Add block") }
         }

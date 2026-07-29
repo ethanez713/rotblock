@@ -1,5 +1,6 @@
 package com.ezhou.rotblock.policy
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -19,6 +20,9 @@ enum class TargetKind { APP, WEBSITE, FEED }
  * A policy with a null [quotaSeconds] is a hard block. A policy with a quota allows
  * [quotaSeconds] of use out of any trailing [windowSeconds], and blocks once that is spent
  * until enough old usage ages out of the window.
+ *
+ * [schedule] gates all of that: outside its hours the rule does nothing at all, and nothing spent
+ * there counts against the quota.
  */
 @Entity(tableName = "policies")
 data class Policy(
@@ -38,6 +42,12 @@ data class Policy(
     val frictionSeconds: Int = 0,
     /** Force the display to greyscale while this target is in the foreground. (Phase 7) */
     val grayscale: Boolean = false,
+    /**
+     * The hours this rule is live for. Empty means always, which is what every rule written before
+     * schedules existed decodes to. (Phase 8)
+     */
+    @ColumnInfo(defaultValue = "")
+    val schedule: Schedule = Schedule.ALWAYS,
     val createdAtMs: Long = 0L,
     val updatedAtMs: Long = 0L,
 ) {

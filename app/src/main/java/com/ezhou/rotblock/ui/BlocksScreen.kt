@@ -130,8 +130,8 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
             editing = editing,
             grayscaleAvailable = grayscaleAvailable,
             onDismiss = { showAdd = false; editing = null },
-            onSave = { kind, matcher, label, quota, window, friction, gray ->
-                viewModel.savePolicy(kind, matcher, label, quota, window, friction, gray)
+            onSave = { kind, matcher, label, draft ->
+                viewModel.savePolicy(kind, matcher, label, draft)
                 showAdd = false
                 editing = null
             },
@@ -272,6 +272,9 @@ private fun PolicyCard(
     onEdit: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    // Recomputed against the screen's own one-second clock, so a card watched across a window
+    // opening changes over rather than sitting on a stale answer.
+    val offHours = policy.enabled && !policy.schedule.isActiveAt(nowMs)
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         modifier = Modifier.fillMaxWidth(),
@@ -319,10 +322,19 @@ private fun PolicyCard(
 
             if (usage?.quotaMs != null) {
                 Spacer(Modifier.height(12.dp))
-                QuotaBar(usage = usage, enabled = policy.enabled && !paused)
+                QuotaBar(usage = usage, enabled = policy.enabled && !paused && !offHours)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    usage.statusLine(nowMs, paused || !policy.enabled),
+                    usage.statusLine(nowMs, paused || !policy.enabled || offHours),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            if (offHours && !paused) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Outside its hours — not in force right now.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -374,11 +386,13 @@ private fun PolicyUsage.statusLine(nowMs: Long, inactive: Boolean): String {
 }
 
 private fun Policy.describeRule(): String {
-    val quota = quotaSeconds ?: return if (enabled) "Blocked completely" else "Blocked completely (off)"
-    val window = windowSeconds / 60
-    val minutes = quota / 60
-    val seconds = quota % 60
-    val amount = if (seconds == 0) "$minutes min" else "$minutes min ${seconds}s"
-    val base = "$amount in any $window min"
+    val allowance = quotaSeconds?.let { quota ->
+        val window = windowSeconds / 60
+        val minutes = quota / 60
+        val seconds = quota % 60
+        val amount = if (seconds == 0) "$minutes min" else "$minutes min ${seconds}s"
+        "$amount in any $window min"
+    } ?: "Blocked completely"
+    val base = schedule.describe()?.let { "$allowance · $it" } ?: allowance
     return if (enabled) base else "$base (off)"
 }

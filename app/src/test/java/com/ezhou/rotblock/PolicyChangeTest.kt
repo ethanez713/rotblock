@@ -3,7 +3,9 @@ package com.ezhou.rotblock
 import com.ezhou.rotblock.policy.ChangeDirection
 import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicyChange
+import com.ezhou.rotblock.policy.Schedule
 import com.ezhou.rotblock.policy.TargetKind
+import com.ezhou.rotblock.policy.TimeBlock
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -13,6 +15,7 @@ private fun p(
     enabled: Boolean = true,
     frictionSeconds: Int = 0,
     grayscale: Boolean = false,
+    schedule: Schedule = Schedule.ALWAYS,
 ) = Policy(
     id = Policy.targetId(TargetKind.APP, "com.reddit.frontpage"),
     kind = TargetKind.APP,
@@ -23,7 +26,13 @@ private fun p(
     windowSeconds = windowSeconds,
     frictionSeconds = frictionSeconds,
     grayscale = grayscale,
+    schedule = schedule,
 )
+
+private fun hours(days: Int, startHour: Int, endHour: Int) =
+    Schedule(listOf(TimeBlock(days, startHour * 60, endHour * 60)))
+
+private val WEEKDAYS_10_TO_6 = hours(TimeBlock.WEEKDAYS, 10, 18)
 
 private fun classify(old: Policy?, new: Policy?) = PolicyChange.classify(old, new)
 
@@ -107,4 +116,78 @@ class PolicyChangeTest {
     fun `relabelling is neutral`() {
         assertEquals(ChangeDirection.NEUTRAL, classify(p(), p().copy(label = "Reddit (bad)")))
     }
+
+    // region schedules
+
+    @Test
+    fun `putting an always-on rule on a schedule is weakening`() {
+        assertEquals(
+            ChangeDirection.WEAKENING,
+            classify(p(), p(schedule = WEEKDAYS_10_TO_6)),
+        )
+    }
+
+    @Test
+    fun `taking a rule off its schedule is strengthening`() {
+        assertEquals(
+            ChangeDirection.STRENGTHENING,
+            classify(p(schedule = WEEKDAYS_10_TO_6), p()),
+        )
+    }
+
+    @Test
+    fun `widening the hours strengthens and narrowing them weakens`() {
+        val narrow = p(schedule = hours(TimeBlock.WEEKDAYS, 11, 17))
+        val wide = p(schedule = WEEKDAYS_10_TO_6)
+        assertEquals(ChangeDirection.STRENGTHENING, classify(narrow, wide))
+        assertEquals(ChangeDirection.WEAKENING, classify(wide, narrow))
+    }
+
+    @Test
+    fun `moving the hours is weakening even when just as many are covered`() {
+        // The edit this rule exists for: at 9pm, sliding an eight-hour block off the evening and
+        // onto the morning. Counting hours would call it neutral and apply it instantly.
+        val working = p(schedule = hours(TimeBlock.ALL_DAYS, 9, 17))
+        val evenings = p(schedule = hours(TimeBlock.ALL_DAYS, 17, 25 % 24))
+        assertEquals(ChangeDirection.WEAKENING, classify(working, evenings))
+        assertEquals(ChangeDirection.WEAKENING, classify(evenings, working))
+    }
+
+    @Test
+    fun `an unchanged schedule is neutral`() {
+        assertEquals(
+            ChangeDirection.NEUTRAL,
+            classify(p(schedule = WEEKDAYS_10_TO_6), p(schedule = WEEKDAYS_10_TO_6)),
+        )
+    }
+
+    @Test
+    fun `narrowing the hours while raising the quota is still weakening`() {
+        // The mixed-edit rule, on the dimension that most invites gaming: a smaller window is not
+        // currency you can spend on a bigger allowance.
+        val old = p(quotaSeconds = 180)
+        val new = p(quotaSeconds = 600, schedule = WEEKDAYS_10_TO_6)
+        assertEquals(ChangeDirection.WEAKENING, classify(old, new))
+    }
+
+    @Test
+    fun `switching a rule on with hours attached is strengthening`() {
+        // Off is the most permissive state there is, so anything that turns a rule on tightens
+        // things -- however narrow the hours it comes back with. Comparing them against the
+        // always-on schedule an off rule happens to store would delay a strengthening for an hour.
+        assertEquals(
+            ChangeDirection.STRENGTHENING,
+            classify(p(enabled = false), p(enabled = true, schedule = WEEKDAYS_10_TO_6)),
+        )
+    }
+
+    @Test
+    fun `turning a scheduled rule off is still weakening`() {
+        assertEquals(
+            ChangeDirection.WEAKENING,
+            classify(p(schedule = WEEKDAYS_10_TO_6), p(enabled = false, schedule = WEEKDAYS_10_TO_6)),
+        )
+    }
+
+    // endregion
 }

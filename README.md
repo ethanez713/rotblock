@@ -13,6 +13,10 @@ them anywhere.
   browser's address bar — so it works regardless of DNS or VPN settings.
 - **Blocks short-form feeds inside apps** you otherwise want to keep, like Reels, by recognising the
   feed's own view hierarchy.
+- **Schedules**: any rule can be limited to particular hours on particular days ("block YouTube
+  10–6, weekdays"), with as many stretches as you want and overnight windows that wrap past
+  midnight. Outside its hours a rule does nothing at all, and nothing spent there counts against
+  its quota.
 - **Friction**: a few seconds of blank countdown before a chosen app opens. It always lets you
   through; it just puts a gap between the reflex and the feed.
 - **Greyscale** while a target is open, if you grant the ADB permission for it.
@@ -40,7 +44,7 @@ the bugs that were found the hard way on a real device.
 
 ```
 ./gradlew assembleDebug
-./gradlew testDebugUnitTest      # 98 tests, all pure JVM — no device needed
+./gradlew testDebugUnitTest      # 136 tests, all pure JVM — no device needed
 ```
 
 JDK 17 and an Android SDK with platform 35. AGP 8.6.0 / Gradle 8.7 / Kotlin 2.0.21,
@@ -48,8 +52,9 @@ compileSdk+targetSdk 35, minSdk 29. No Android Studio required.
 
 Tests cover the logic that has to be right and needs no device: rolling-window arithmetic at the
 window edges, quota boundaries to the millisecond, weaken-vs-strengthen classification of policy
-edits, URL rule matching, pause budgets, the 4am day rollover, and which way a screen inspection
-fails when it cannot read anything.
+edits, URL rule matching, pause budgets, the 4am day rollover, schedule windows including ones that
+wrap past midnight or straddle a daylight-saving change, and which way a screen inspection fails
+when it cannot read anything.
 
 ## Install
 

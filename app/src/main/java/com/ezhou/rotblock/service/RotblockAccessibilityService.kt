@@ -58,6 +58,28 @@ import kotlinx.coroutines.withContext
 private const val MIN_TICK_MS = 1_000L
 private const val MAX_TICK_MS = 15_000L
 
+/**
+ * Ceiling for a tick that is purely waiting out a deadline.
+ *
+ * [MAX_TICK_MS] buys two things -- a ledger that keeps flushing, and noticing one of our own
+ * screens go away -- and neither is in play once the decision is to allow: no session is open, and
+ * an interstitial clearing calls back directly. All that is left is the deadline itself, which for
+ * a scheduled window can be most of a day away. Waking 240 times an hour to re-learn that a rule
+ * is still outside its hours is exactly the battery cost that gets an always-on service switched
+ * off.
+ *
+ * The obvious objection is drift: `postDelayed` counts uptime, which stops during deep sleep, so a
+ * long delay could in principle fire late in wall-clock terms -- and a window *opening* late is a
+ * fail-open. It cannot happen here, and not by luck: the ticker only ever exists while the screen
+ * is on, because screen-off calls [stopTicking] and coming back re-evaluates from scratch. A
+ * pending tick and a sleeping CPU are mutually exclusive by construction. Anything that changes
+ * that gating has to revisit this constant.
+ *
+ * Generous rather than unbounded only because the value is added to a clock; the real interval
+ * always comes from an actual deadline.
+ */
+private const val MAX_IDLE_TICK_MS = 10L * 24 * 60 * 60 * 1_000
+
 /** Coalescing window for content-change bursts before the node tree is read. */
 private const val INSPECT_DEBOUNCE_MS = 250L
 
@@ -711,19 +733,18 @@ class RotblockAccessibilityService : AccessibilityService() {
                 overlay.hide()
                 ledger.closeSession(nowMs)
                 // A pause suspends greyscale and friction too; a pause means "get out of my way".
+                // So do a policy's off-hours: outside them the rule does not exist, which means no
+                // colour drained, no countdown, and nothing charged against the quota.
                 grayscale.restore()
-                // A pause ends by *elapsing*, which fires no event at all: no window change while
-                // you keep scrolling, and no settings emission for time merely passing. Without
-                // the ticker running through it, the app would stay open past the deadline until
-                // something else happened to wake us -- a fail-open, which this design does not get
-                // to have. No session is opened, so paused time still costs no quota.
-                val pausedUntil = decision.pausedUntilMs
-                if (pausedUntil != null) startTicking(pausedUntil - nowMs) else stopTicking()
+                // Three quite different reasons nothing is happening, and "the app is open and
+                // nothing happens" is what every failure in this app looks like from the outside.
+                // Telling them apart in the trail is the entire point of the Right now panel.
                 EnforcementStatus.note(
-                    if (pausedUntil != null) {
-                        "$targetId: paused, not charging"
-                    } else {
-                        "$targetId: no active policy"
+                    when {
+                        decision.pausedUntilMs != null -> "$targetId: paused, not charging"
+                        policy.enabled && !policy.schedule.isAlwaysOn ->
+                            "$targetId: outside its hours, not charging"
+                        else -> "$targetId: no active policy"
                     },
                 )
             }
@@ -739,10 +760,6 @@ class RotblockAccessibilityService : AccessibilityService() {
                     ledger.startSession(targetId, nowMs)
                     EnforcementStatus.note("$targetId: charging")
                 }
-                // Wake exactly when the allowance runs out. While an interstitial is up nothing is
-                // accruing, so that deadline is not approaching -- but the tick still has to run to
-                // notice the screen going away, hence the clamp rather than a long sleep.
-                startTicking(decision.remainingMs)
                 if (policy.grayscale) grayscale.enable() else grayscale.restore()
                 maybeShowFriction(policy)
             }
@@ -751,13 +768,28 @@ class RotblockAccessibilityService : AccessibilityService() {
                 // Close first: nextRelease assumes no session runs past now, and we should not
                 // keep charging for time spent staring at the block screen.
                 ledger.closeSession(nowMs)
-                stopTicking()
                 grayscale.restore()
                 EnforcementStatus.note(
                     "$targetId: blocked (${decision.reason.name.lowercase().replace('_', ' ')})",
                 )
                 showBlock(policy, decision)
             }
+        }
+
+        // One place, every branch, because every one of them can go stale with nothing happening:
+        // a pause elapses, an allowance runs out, a scheduled window opens or closes -- and not one
+        // of those fires an event while the phone sits on the same screen. The engine works out
+        // which deadline is soonest; all that is left here is to be awake for it.
+        val recheckAtMs = decision.recheckAtMs
+        if (recheckAtMs != null) {
+            startTicking(
+                recheckAtMs - nowMs,
+                // Nothing is accruing on an allow and none of our screens need watching, so there
+                // is no reason to wake before the deadline. See [MAX_IDLE_TICK_MS].
+                maxIntervalMs = if (decision is Decision.Allow) MAX_IDLE_TICK_MS else MAX_TICK_MS,
+            )
+        } else {
+            stopTicking()
         }
     }
 
@@ -910,7 +942,7 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     /**
      * Arms the next re-check for [untilDeadlineMs] from now, clamped into
-     * [MIN_TICK_MS]..[MAX_TICK_MS].
+     * [MIN_TICK_MS]..[maxIntervalMs].
      *
      * Keeps an already-armed tick when it would fire no later than the one being asked for, and
      * that is not an optimisation -- it is what stops the tick being starved. This runs from every
@@ -920,8 +952,8 @@ class RotblockAccessibilityService : AccessibilityService() {
      * Rescheduling *earlier* is always allowed, so the soonest deadline still wins and a late tick
      * can never become a fail-open.
      */
-    private fun startTicking(untilDeadlineMs: Long) {
-        val dueAtMs = System.currentTimeMillis() + untilDeadlineMs.coerceIn(MIN_TICK_MS, MAX_TICK_MS)
+    private fun startTicking(untilDeadlineMs: Long, maxIntervalMs: Long = MAX_TICK_MS) {
+        val dueAtMs = System.currentTimeMillis() + untilDeadlineMs.coerceIn(MIN_TICK_MS, maxIntervalMs)
         if (ticking && tickDueAtMs in (System.currentTimeMillis() + 1)..dueAtMs) return
         ticking = true
         tickDueAtMs = dueAtMs

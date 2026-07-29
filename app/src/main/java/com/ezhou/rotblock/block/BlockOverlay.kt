@@ -61,6 +61,7 @@ class BlockOverlay(private val context: Context) {
     private var root: LinearLayout? = null
     private var countdownView: TextView? = null
     private var liftsAtMs: Long? = null
+    private var liftReason: BlockReason? = null
     private var onPauseRequested: (() -> Unit)? = null
 
     val isShowing: Boolean get() = root != null
@@ -86,6 +87,7 @@ class BlockOverlay(private val context: Context) {
         escape: Escape? = null,
     ): Boolean {
         this.liftsAtMs = liftsAtMs
+        this.liftReason = reason
         this.onPauseRequested = onPauseRequested
         if (root != null) {
             updateTexts(label, reason)
@@ -122,6 +124,7 @@ class BlockOverlay(private val context: Context) {
         root = null
         countdownView = null
         liftsAtMs = null
+        liftReason = null
         onPauseRequested = null
         handler.removeCallbacks(tick)
         runCatching { windowManager.removeView(view) }
@@ -240,10 +243,15 @@ class BlockOverlay(private val context: Context) {
         }
         val remaining = lifts - System.currentTimeMillis()
         view.visibility = View.VISIBLE
-        view.text = if (remaining <= 0) {
-            "Time is available again — reopen the app."
-        } else {
-            "More time in ${formatDuration(remaining)}"
+        // A hard block has no time to run out of, so the only thing that can make it lift on its
+        // own is its scheduled window ending. Saying "more time" there would promise an allowance
+        // that does not exist.
+        val quota = liftReason != BlockReason.HARD_BLOCK
+        view.text = when {
+            remaining <= 0 && quota -> "Time is available again — reopen the app."
+            remaining <= 0 -> "Allowed again — reopen the app."
+            quota -> "More time in ${formatDuration(remaining)}"
+            else -> "Allowed again in ${formatDuration(remaining)}"
         }
     }
 

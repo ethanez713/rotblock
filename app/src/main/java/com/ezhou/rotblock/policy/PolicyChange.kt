@@ -14,12 +14,19 @@ enum class ChangeDirection { STRENGTHENING, WEAKENING, NEUTRAL }
  *   adding friction is still delayed. Mixed edits fail closed.
  * - **Disabling is the most permissive state there is**, more so than any quota, because it turns
  *   the rule off entirely.
+ * - **A schedule that merely moved counts as a weakening.** Comparing how many hours each covers
+ *   would call "block it 9-to-5" and "block it 5-to-1am" the same edit, and the second one is
+ *   exactly the edit somebody makes at 9pm. So the only instant schedule change is one whose new
+ *   hours are a superset of the old ones; anything else waits.
  */
 object PolicyChange {
 
     /**
-     * Fraction of time the policy lets through: 0.0 for a hard block, 1.0 for "always allowed",
-     * and [Double.MAX_VALUE] for a disabled rule. Higher means more permissive.
+     * Fraction of time the policy lets through *while it is live*: 0.0 for a hard block, 1.0 for
+     * "always allowed", and [Double.MAX_VALUE] for a disabled rule. Higher means more permissive.
+     *
+     * Deliberately blind to the schedule, which is its own dimension in [classify] -- folding the
+     * two together would let a widened quota be paid for with narrowed hours.
      */
     fun permissiveness(policy: Policy): Double {
         if (!policy.enabled) return Double.MAX_VALUE
@@ -38,14 +45,23 @@ object PolicyChange {
         val oldPerm = permissiveness(old)
         val newPerm = permissiveness(new)
 
+        // Only meaningful while the rule is on either side of the edit. Switching a rule *on* with
+        // hours attached is a strengthening however narrow those hours are, and comparing them
+        // against the always-on schedule an off rule happens to store would call it the opposite.
+        val bothOn = old.enabled && new.enabled
+        val hoursLost = bothOn && !new.schedule.coversAllOf(old.schedule)
+        val hoursGained = bothOn && !old.schedule.coversAllOf(new.schedule)
+
         val weakens = newPerm > oldPerm ||
             new.frictionSeconds < old.frictionSeconds ||
-            (old.grayscale && !new.grayscale)
+            (old.grayscale && !new.grayscale) ||
+            hoursLost
         if (weakens) return ChangeDirection.WEAKENING
 
         val strengthens = newPerm < oldPerm ||
             new.frictionSeconds > old.frictionSeconds ||
-            (!old.grayscale && new.grayscale)
+            (!old.grayscale && new.grayscale) ||
+            hoursGained
         return if (strengthens) ChangeDirection.STRENGTHENING else ChangeDirection.NEUTRAL
     }
 
@@ -60,7 +76,10 @@ object PolicyChange {
     }
 
     private fun describeAllowance(policy: Policy): String {
-        val quota = policy.quotaSeconds ?: return "a full block"
-        return "${quota / 60} min per ${policy.windowSeconds / 60} min"
+        val allowance = policy.quotaSeconds
+            ?.let { "${it / 60} min per ${policy.windowSeconds / 60} min" }
+            ?: "a full block"
+        val hours = policy.schedule.describe() ?: return allowance
+        return "$allowance, $hours"
     }
 }
