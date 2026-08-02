@@ -1,5 +1,20 @@
 package com.ezhou.rotblock.service
 
+import com.ezhou.rotblock.browser.SearchEngines
+
+/**
+ * How long a bar read that said "this is a search engine" keeps the link fallback switched off.
+ *
+ * It has to expire, because it is suppressing the mechanism that exists for pages whose bar cannot
+ * be read: hold it forever and one visit to Google would blind the browser until its address bar
+ * happened to be readable again. Two minutes is long enough to cover reading a results page and
+ * scrolling it, and short enough that it cannot become the reason nothing is ever blocked.
+ *
+ * Leaving a results page does not normally need the timeout at all -- tapping a result navigates,
+ * and browsers reveal the toolbar on navigation, so the next read replaces this within a second.
+ */
+private const val SEARCH_PAGE_TRUST_MS = 2 * 60 * 1000L
+
 /**
  * What was on screen last time you were inside an app that has to be read to be understood.
  *
@@ -45,4 +60,47 @@ class VisitMemory {
 
     /** What to enforce on re-entry to [pkg], until a read says otherwise. */
     fun resume(pkg: String): String? = byPackage[pkg]
+}
+
+/**
+ * Which packages a bar read recently found sitting on a search engine.
+ *
+ * Kept apart from [VisitMemory], and not merged into it, because of who touches it: [VisitMemory]
+ * is written from the main thread as targets change, this is written from the inspector coroutine
+ * as reads land. Two plain HashMaps on two threads is a data race with no symptom until it is a
+ * crash, and a crash here is a silently unblocked phone.
+ *
+ * What it is for: a positive identification switches the link fallback off. Once the bar has said
+ * "you are on google.com", the page's links are not evidence about anything -- they are the results
+ * -- and consulting them puts a reddit block on a search for reddit. See
+ * [com.ezhou.rotblock.browser.SearchEngines]. Scrolling then hides the bar, but what it said stays
+ * true for a while afterwards, which is exactly the window the fallback would otherwise fill in.
+ */
+class SearchPageMemory {
+
+    private val since = HashMap<String, Long>()
+
+    /**
+     * A bar read found [pkg] showing [host]. Only a bar may call this: a guess about the page must
+     * not be able to switch off the mechanism that does the guessing.
+     */
+    fun noteReadHost(pkg: String, host: String, nowMs: Long) {
+        if (SearchEngines.isSearchHost(host)) {
+            if (since.size > 32 && !since.containsKey(pkg)) since.clear()
+            since[pkg] = nowMs
+        } else {
+            // Any other page read clears it at once: the bar has said where we actually are.
+            since.remove(pkg)
+        }
+    }
+
+    /** Whether a read recently found [pkg] on a search engine. See [SEARCH_PAGE_TRUST_MS]. */
+    fun isOnSearchPage(pkg: String, nowMs: Long): Boolean {
+        val at = since[pkg] ?: return false
+        if (nowMs - at >= SEARCH_PAGE_TRUST_MS) {
+            since.remove(pkg)
+            return false
+        }
+        return true
+    }
 }

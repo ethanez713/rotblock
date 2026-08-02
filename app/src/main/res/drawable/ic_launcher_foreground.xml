@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  A scroll that stops: two chevrons falling, the second bigger than the first, and a bar they
-  cannot get past.
+  A seedling: a stem out of the soil with two leaves, the second one still opening.
 
-  Everything sits inside the 66dp safe circle of the 108dp adaptive canvas (nothing further than
-  33 from 54,54), so a circular, squircle or teardrop mask all crop nothing. The old mark put a
-  rectangle's corners and the tip of a slash right on that boundary, which is why it lost its
-  points on a round launcher.
+  What the mark is for. rotblock is not a wall, it is what grows once the rot stops taking the
+  hours, and the old mark said the opposite: two chevrons stopped by a bar, which is a download
+  that failed. Drawn after Lucide's `sprout` (ISC), redrawn rather than traced: leaves as filled
+  lenses instead of strokes, because a stroked outline at 48px in a launcher fills in and reads as
+  a smudge, while a solid shape keeps its silhouette all the way down.
 
-  Every element is a round-capped stroke rather than a filled outline: strokes hold their weight
-  when the icon is drawn at 48px in a launcher and at 24px in the app switcher, and the pill ends
-  are what keep it from reading as a hamburger menu.
+  Everything sits inside the 66dp safe circle of the 108dp adaptive canvas (nothing further than 33
+  from 54,54, stroke included), so a circular, squircle or teardrop mask all crop nothing. The leaf
+  tip is the furthest thing out at 27.
+
+  The stem is drawn first and ends *under* the upper leaf, so the two read as one plant rather than
+  a stick with shapes attached. The soil bar is drawn last for the same reason: it covers the stem's
+  round cap, which would otherwise sit on top of the soil rather than in it.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -18,27 +22,27 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- The trail: the same chevron, lighter and smaller, so the pair reads as motion downward. -->
+    <!-- Stem. Bowed very slightly, because a dead-straight stem reads as a pole. -->
     <path
-        android:pathData="M39,29L54,44L69,29"
-        android:strokeColor="#6FE3B0"
+        android:pathData="M54,79 C52.8,70 52.8,63 54,57"
+        android:strokeColor="#2F6B4F"
+        android:strokeWidth="5.5"
+        android:strokeLineCap="round" />
+
+    <!-- The new leaf, lighter and higher: the growth, and the thing the eye lands on. -->
+    <path
+        android:pathData="M54,56 C55,44 62,35 75,34 C76,46 68,55 54,56 Z"
+        android:fillColor="#45A873" />
+
+    <!-- The first leaf, darker and lower, on the other side so the mark is not symmetrical. -->
+    <path
+        android:pathData="M54,67 C50,58 43,53 32,53 C32,62 40,68 54,67 Z"
+        android:fillColor="#2F6B4F" />
+
+    <!-- Soil. Warm against the greens, and no wider than the leaves reach. -->
+    <path
+        android:pathData="M42,78.5 L66,78.5"
+        android:strokeColor="#A98156"
         android:strokeWidth="6.5"
-        android:strokeAlpha="0.5"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-
-    <path
-        android:pathData="M36,45L54,63L72,45"
-        android:strokeColor="#6FE3B0"
-        android:strokeWidth="10"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-
-    <!-- The floor. Warm against the mint, and deliberately no wider than the chevron above it: a
-         bar that overhangs turns the whole mark into a download tray. -->
-    <path
-        android:pathData="M37,77L71,77"
-        android:strokeColor="#FF6B61"
-        android:strokeWidth="8"
         android:strokeLineCap="round" />
 </vector>

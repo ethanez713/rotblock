@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -14,7 +15,6 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.ezhou.rotblock.policy.BlockReason
@@ -45,6 +45,13 @@ fun escapeLabelFor(kind: TargetKind): String? = when (kind) {
 }
 
 /**
+ * What leaving means when there is nothing narrower to leave: the app itself is the target, so
+ * closing it is the whole answer. This is the block screen's main button for an app rule, and its
+ * quiet alternative for the other two.
+ */
+private const val CLOSE_LABEL = "Close this app"
+
+/**
  * The full-screen "no" that appears over a blocked app.
  *
  * Built from plain views on purpose. It is created by the accessibility service, which must never
@@ -62,6 +69,9 @@ class BlockOverlay(private val context: Context) {
     private var countdownView: TextView? = null
     private var liftsAtMs: Long? = null
     private var liftReason: BlockReason? = null
+
+    /** The escape the visible screen was built with, so a changed one forces a rebuild. */
+    private var shownEscapeLabel: String? = null
     private var onPauseRequested: (() -> Unit)? = null
 
     val isShowing: Boolean get() = root != null
@@ -86,6 +96,13 @@ class BlockOverlay(private val context: Context) {
         onPauseRequested: () -> Unit,
         escape: Escape? = null,
     ): Boolean {
+        // Text can be swapped in place; the way out cannot. A block screen that stays up while the
+        // target changes underneath it -- a website block replaced by an app block on the same
+        // screen -- would otherwise keep the previous escape's button *and its closure*, so the
+        // main button would try to move a browser that is no longer what you are in. Before the
+        // fields below are set, because tearing down clears them.
+        if (root != null && escape?.label != shownEscapeLabel) hide()
+
         this.liftsAtMs = liftsAtMs
         this.liftReason = reason
         this.onPauseRequested = onPauseRequested
@@ -110,6 +127,7 @@ class BlockOverlay(private val context: Context) {
         return try {
             windowManager.addView(view, params)
             root = view
+            shownEscapeLabel = escape?.label
             handler.post(tick)
             true
         } catch (t: Throwable) {
@@ -123,6 +141,7 @@ class BlockOverlay(private val context: Context) {
         val view = root ?: return
         root = null
         countdownView = null
+        shownEscapeLabel = null
         liftsAtMs = null
         liftReason = null
         onPauseRequested = null
@@ -194,32 +213,70 @@ class BlockOverlay(private val context: Context) {
 
             addView(spacer(dp(36)))
 
-            // First, because it is the one that leaves you somewhere useful. For a website or feed
-            // block, "Close" alone strands you: the app reopens on the same blocked page.
-            if (escape != null) {
-                addView(Button(context).apply {
-                    text = escape.label
-                    setOnClickListener {
+            // The one button on the screen is the one that does what the block is asking for:
+            // leave. For a website or a feed that means moving the app off the blocked page,
+            // because closing it alone strands you -- it reopens on the same page and blocks
+            // again. For an app there is nothing narrower to leave, so leaving *is* closing it.
+            addView(
+                primaryButton(escape?.label ?: CLOSE_LABEL) {
+                    if (escape == null) {
+                        goHome()
+                    } else {
                         hide()
                         escape.action()
                     }
-                })
-                addView(spacer(dp(8)))
+                },
+            )
+
+            // Everything below is deliberately not a button. A block screen with three equal
+            // buttons puts "let me through" on the same footing as "fine, leave", and the way out
+            // of a rule should never be the easiest-looking thing on the screen.
+            if (escape != null) {
+                addView(spacer(dp(18)))
+                addView(textLink(CLOSE_LABEL, "#9BA3AD") { goHome() })
             }
 
-            addView(Button(context).apply {
-                text = "Close"
-                setOnClickListener { goHome() }
-            })
-
-            addView(spacer(dp(8)))
-
-            addView(Button(context).apply {
-                text = "I need this — pause blocking"
-                setOnClickListener { onPauseRequested?.invoke() }
-            })
+            addView(spacer(dp(14)))
+            addView(textLink("I actually need this", "#6E7681") { onPauseRequested?.invoke() })
         }
     }
+
+    /** A filled, rounded, full-width tap target built by hand -- there is no theme out here. */
+    private fun primaryButton(label: String, onClick: () -> Unit): TextView =
+        TextView(context).apply {
+            text = label
+            setTextColor(Color.parseColor("#0B1F17"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            gravity = Gravity.CENTER
+            setPadding(dp(20), dp(15), dp(20), dp(15))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(Color.parseColor("#7FD1A6"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            )
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+
+    /** Text that is tappable and does not pretend to be a button. Padded to stay reachable. */
+    private fun textLink(label: String, color: String, onClick: () -> Unit): TextView =
+        TextView(context).apply {
+            text = label
+            setTextColor(Color.parseColor(color))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            gravity = Gravity.CENTER
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            )
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
 
     private fun updateTexts(label: String, reason: BlockReason) {
         titleView?.text = label

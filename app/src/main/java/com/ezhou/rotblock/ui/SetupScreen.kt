@@ -6,6 +6,8 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import android.text.TextUtils
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -29,6 +31,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -195,6 +198,9 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
             },
         )
 
+        Spacer(Modifier.height(24.dp))
+        CountdownSection(settings, refreshKey) { refreshKey++ }
+
         Spacer(Modifier.height(28.dp))
         EnforcementCard()
 
@@ -203,6 +209,102 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
         Spacer(Modifier.height(40.dp))
     }
 }
+
+/**
+ * The countdown readout: a ring over the app, a notification, or neither.
+ *
+ * Off by default, because both put rotblock on top of something you are doing. What earns them the
+ * space is the second thing they do: every failure this app has had presents as "the app is open
+ * and nothing happens", and a readout that is *missing* while you sit in a quota'd app says the
+ * service is not counting, without opening anything to find out. That is why the transparency
+ * slider stops at 10% rather than at nothing.
+ */
+@Composable
+private fun CountdownSection(
+    settings: RotblockSettings,
+    refreshKey: Int,
+    onPermissionChanged: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    val notificationsGranted = remember(refreshKey) { hasNotificationPermission(context) }
+    val requestNotifications = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { onPermissionChanged() }
+
+    Text(
+        "While you are using something",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "A countdown of what is left of an allowance, shown only while that allowance is actually " +
+            "being spent. If it is not there, nothing is being counted — which is the other half " +
+            "of what it is for.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
+
+    ToggleRow(
+        label = "Countdown ring on screen",
+        checked = settings.hudEnabled,
+        onChange = { scope.launch { Rotblock.settings(context).setHudEnabled(it) } },
+    )
+    if (settings.hudEnabled) {
+        SliderRow(
+            label = "How solid it looks",
+            value = settings.hudOpacityPercent.toFloat(),
+            range = 10f..100f,
+            steps = 8,
+            format = { "${it.toInt()}%" },
+            onChange = {
+                scope.launch { Rotblock.settings(context).setHudOpacityPercent(it.toInt()) }
+            },
+        )
+    }
+
+    ToggleRow(
+        label = "Countdown as a notification",
+        checked = settings.hudNotification,
+        onChange = { on ->
+            if (on && !notificationsGranted) {
+                requestNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+            scope.launch { Rotblock.settings(context).setHudNotification(on) }
+        },
+    )
+    if (settings.hudNotification && !notificationsGranted) {
+        Text(
+            "Android is not letting rotblock post notifications yet. Allow it in the permission " +
+                "prompt, or in Settings → Apps → rotblock → Notifications.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
+}
+
+@Composable
+private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** True below Android 13, where notifications need no grant at all. */
+private fun hasNotificationPermission(context: Context): Boolean =
+    android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU ||
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.POST_NOTIFICATIONS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
 /**
  * What enforcement believes right now, and the last few things it decided.

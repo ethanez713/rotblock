@@ -3,6 +3,7 @@ package com.ezhou.rotblock.data
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
@@ -38,6 +39,19 @@ data class RotblockSettings(
      * with the user's other choices, and nothing in enforcement reads it.
      */
     val blocksSort: PolicySort = PolicySort.DEFAULT,
+    /**
+     * Show a countdown ring over an app while its allowance is being spent.
+     *
+     * Off by default, because it is an overlay on top of whatever you are doing. Its second job
+     * matters more than its first: every failure this app has had looks like "the app is open and
+     * nothing is happening", and a ring that is *absent* while you sit in a quota'd app says the
+     * service is not tracking, without opening rotblock to find out.
+     */
+    val hudEnabled: Boolean = false,
+    /** How opaque the ring is, 10..100. Low enough to ignore, high enough to notice missing. */
+    val hudOpacityPercent: Int = 55,
+    /** The same countdown as a notification instead of, or as well as, the ring. */
+    val hudNotification: Boolean = false,
 ) {
     fun isPaused(nowMs: Long): Boolean = nowMs < pausedUntilMs
 }
@@ -55,6 +69,9 @@ class SettingsRepository(context: Context) {
         val dayStartHour = intPreferencesKey("day_start_hour")
         val weakeningDelayMinutes = intPreferencesKey("weakening_delay_minutes")
         val blocksSort = stringPreferencesKey("blocks_sort")
+        val hudEnabled = booleanPreferencesKey("hud_enabled")
+        val hudOpacityPercent = intPreferencesKey("hud_opacity_percent")
+        val hudNotification = booleanPreferencesKey("hud_notification")
     }
 
     val settings: Flow<RotblockSettings> = store.data.map { p ->
@@ -67,6 +84,9 @@ class SettingsRepository(context: Context) {
             dayStartHour = p[Keys.dayStartHour] ?: d.dayStartHour,
             weakeningDelayMinutes = p[Keys.weakeningDelayMinutes] ?: d.weakeningDelayMinutes,
             blocksSort = PolicySort.decode(p[Keys.blocksSort]),
+            hudEnabled = p[Keys.hudEnabled] ?: d.hudEnabled,
+            hudOpacityPercent = p[Keys.hudOpacityPercent] ?: d.hudOpacityPercent,
+            hudNotification = p[Keys.hudNotification] ?: d.hudNotification,
         )
     }
 
@@ -98,5 +118,18 @@ class SettingsRepository(context: Context) {
 
     suspend fun setBlocksSort(sort: PolicySort) {
         store.edit { it[Keys.blocksSort] = sort.name }
+    }
+
+    suspend fun setHudEnabled(enabled: Boolean) {
+        store.edit { it[Keys.hudEnabled] = enabled }
+    }
+
+    /** Floored at 10: a ring nobody can see cannot report that tracking stopped. */
+    suspend fun setHudOpacityPercent(percent: Int) {
+        store.edit { it[Keys.hudOpacityPercent] = percent.coerceIn(10, 100) }
+    }
+
+    suspend fun setHudNotification(enabled: Boolean) {
+        store.edit { it[Keys.hudNotification] = enabled }
     }
 }

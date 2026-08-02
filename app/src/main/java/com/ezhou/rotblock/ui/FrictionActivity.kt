@@ -53,12 +53,28 @@ class FrictionActivity : ComponentActivity() {
     }
 
     /**
+     * Bumped every time this screen comes back to the front. The countdown restarts on it.
+     *
+     * The wait has to be *spent on the wait*, and nothing about a coroutine in a stopped activity
+     * says so: start the five seconds, switch away, answer a message, come back, and the countdown
+     * ran the whole time in the background and is already at zero. The gap between the reflex and
+     * the feed is the entire product here, and that path bought it for free.
+     *
+     * Restarting rather than pausing, and on any absence at all rather than a long one: coming back
+     * to a countdown frozen at 2 is a worse thing to have built than coming back to a fresh 5, and
+     * the whole cost of being wrong is a few more seconds of not opening something you did not mean
+     * to open.
+     */
+    private var visit by mutableIntStateOf(0)
+
+    /**
      * Waiting out the friction must not spend the quota of the app underneath -- friction costs
      * time, not allowance. See [Interstitial].
      */
     override fun onStart() {
         super.onStart()
         Interstitial.entered()
+        visit++
     }
 
     override fun onStop() {
@@ -79,6 +95,7 @@ class FrictionActivity : ComponentActivity() {
                     FrictionScreen(
                         label = label,
                         seconds = seconds,
+                        visit = visit,
                         onContinue = { finish() },
                         onLeave = { leave(browser) },
                     )
@@ -112,12 +129,15 @@ class FrictionActivity : ComponentActivity() {
 private fun FrictionScreen(
     label: String,
     seconds: Int,
+    /** Changes whenever the screen is re-entered, which starts the wait over. */
+    visit: Int,
     onContinue: () -> Unit,
     onLeave: () -> Unit,
 ) {
-    var left by remember { mutableIntStateOf(seconds) }
+    var left by remember(visit) { mutableIntStateOf(seconds) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(visit) {
+        left = seconds
         while (left > 0) {
             delay(1_000)
             left -= 1

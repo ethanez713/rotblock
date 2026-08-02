@@ -5,7 +5,9 @@
   zone allows and left it looking shrunken next to every stock tile.
 
   One colour, because the system tints tile icons to say on or off, and a two-tone drawable loses
-  that distinction.
+  that distinction. Unlike the themed launcher icon the stem still meets the soil here: at this size
+  the gap that separates them there is under half a pixel, so it buys nothing and only costs the
+  stem its length.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -14,23 +16,22 @@
     android:viewportHeight="24">
 
     <path
-        android:pathData="M7.5,4.7L12,8.8L16.5,4.7"
+        android:pathData="M12,21.03 C11.5,17.25 11.5,14.31 12,11.79"
         android:strokeColor="#FFFFFF"
-        android:strokeWidth="2"
-        android:strokeAlpha="0.5"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:strokeWidth="2.31"
+        android:strokeLineCap="round" />
 
     <path
-        android:pathData="M6.6,9.6L12,15L17.4,9.6"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="2.8"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+        android:pathData="M12,11.37 C12.42,6.33 15.36,2.55 20.82,2.13 C21.24,7.17 17.88,10.95 12,11.37 Z"
+        android:fillColor="#FFFFFF" />
 
     <path
-        android:pathData="M6.9,19.1L17.1,19.1"
+        android:pathData="M12,15.99 C10.32,12.21 7.38,10.11 2.76,10.11 C2.76,13.89 6.12,16.41 12,15.99 Z"
+        android:fillColor="#FFFFFF" />
+
+    <path
+        android:pathData="M6.96,20.82 L17.04,20.82"
         android:strokeColor="#FFFFFF"
-        android:strokeWidth="2.4"
+        android:strokeWidth="2.73"
         android:strokeLineCap="round" />
 </vector>

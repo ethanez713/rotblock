@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The backdrop, as a drawable rather than a flat colour so the mark sits on some depth. Full-bleed
-  on purpose: the outer 18dp on each edge is only visible during the launcher's parallax, and a
-  gradient that stopped at the safe zone would show its own seam there.
+  The backdrop: off-white, warm, with a barely-there gradient so the mark sits on paper rather than
+  on a flat swatch. Full-bleed on purpose: the outer 18dp on each edge is only visible during the
+  launcher's parallax, and a gradient that stopped at the safe zone would show its own seam there.
+
+  Vertical rather than diagonal: the mark it holds has an up (leaves) and a down (soil), and a
+  diagonal light source fights that.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
@@ -16,7 +19,7 @@
                 android:type="linear"
                 android:startX="0"
                 android:startY="0"
-                android:endX="108"
+                android:endX="0"
                 android:endY="108"
                 android:startColor="@color/ic_launcher_background_top"
                 android:endColor="@color/ic_launcher_background" />

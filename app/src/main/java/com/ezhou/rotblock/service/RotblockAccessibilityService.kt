@@ -23,6 +23,8 @@ import com.ezhou.rotblock.block.FeedRegistry
 import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.block.Interstitial
+import com.ezhou.rotblock.block.TimerHud
+import com.ezhou.rotblock.block.TrackingNotification
 import com.ezhou.rotblock.browser.BrowserRegistry
 import com.ezhou.rotblock.browser.LinkConsensus
 import com.ezhou.rotblock.browser.escapeIntent
@@ -183,6 +185,19 @@ class RotblockAccessibilityService : AccessibilityService() {
     private lateinit var audit: AuditLog
     private lateinit var overlay: BlockOverlay
     private lateinit var grayscale: Grayscale
+    private lateinit var hud: TimerHud
+    private lateinit var notification: TrackingNotification
+
+    /**
+     * The countdown-readout settings, copied out of the settings flow.
+     *
+     * Volatile and read on the main thread; written by the collector. Nothing about enforcement
+     * depends on them -- if they were stale for a second, the ring would be a second late, and
+     * that is the entire consequence.
+     */
+    @Volatile private var hudEnabled = false
+    @Volatile private var hudOpacityPercent = 55
+    @Volatile private var hudNotification = false
 
     /**
      * The target whose friction screen has already been shown for this visit. Cleared whenever
@@ -222,6 +237,9 @@ class RotblockAccessibilityService : AccessibilityService() {
     /** Inspector coroutine only. A duplicated harvest would be harmless, so no synchronisation. */
     private var lastLinkHarvestMs = 0L
 
+    /** Inspector coroutine only, like [lastLinkHarvestMs]. See [SearchPageMemory]. */
+    private val searchPages = SearchPageMemory()
+
     /**
      * What a read last found inside each app that needs one, so re-entering a browser does not
      * silently start tracking nothing. See [VisitMemory] -- this is the fix for "it stopped
@@ -256,6 +274,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                         ledger.closeSession(System.currentTimeMillis())
                         stopTicking()
                         overlay.hide()
+                        hideCountdown()
                         frictionShownFor = null
                         // Never leave the phone monochrome behind a locked screen.
                         grayscale.restore()
@@ -300,6 +319,8 @@ class RotblockAccessibilityService : AccessibilityService() {
             audit = Rotblock.audit(this)
             overlay = BlockOverlay(this)
             grayscale = Grayscale(this)
+            hud = TimerHud(this)
+            notification = TrackingNotification(this)
             ignoredPackages = buildIgnoredPackages()
             trace("onServiceConnected: fresh instance, state reset")
             EnforcementStatus.setConnected(true)
@@ -346,7 +367,11 @@ class RotblockAccessibilityService : AccessibilityService() {
                 launch {
                     Rotblock.settings(this@RotblockAccessibilityService).settings.collectLatest {
                         pause.refresh()
-                        // A pause starting or ending changes what should be on screen right now.
+                        hudEnabled = it.hudEnabled
+                        hudOpacityPercent = it.hudOpacityPercent
+                        hudNotification = it.hudNotification
+                        // A pause starting or ending changes what should be on screen right now,
+                        // and so does switching the countdown readout on or off.
                         handler.post { guard("pauseChanged") { reEvaluateCurrent() } }
                     }
                 }
@@ -480,6 +505,14 @@ class RotblockAccessibilityService : AccessibilityService() {
         EnforcementStatus.note("foreground -> $pkg")
         currentPackage = pkg
 
+        // Leaving the app earns the countdown again, however briefly you were gone. Mostly this
+        // already fell out of the target changing on the way out and back, but not always -- two
+        // browsers showing the same site, or a rule re-acquired before the switch registered --
+        // and "once per visit" is the rule, not "once per target". Only a genuine foreground
+        // change reaches here; a toast or a heads-up notification must never re-arm it, or the
+        // countdown reappears on top of an app you are already using.
+        frictionShownFor = null
+
         // Whatever was accruing time has stopped.
         ledger.closeSession(nowMs)
         stopTicking()
@@ -507,6 +540,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             ledger.closeSession(nowMs)
             stopTicking()
             overlay.hide()
+            hideCountdown()
             grayscale.restore()
             persistVisit()
             reportStatus()
@@ -749,6 +783,12 @@ class RotblockAccessibilityService : AccessibilityService() {
             val url = BrowserRegistry.specFor(pkg)
                 ?.urlBarIds
                 ?.firstNotNullOfOrNull { root.textForViewId(it) }
+
+            // A bar that parsed is a positive identification of the page, and it is remembered for
+            // one reason: to say when the links must not be consulted. See [SearchPageMemory].
+            val now = System.currentTimeMillis()
+            WebMatcher.parse(url)?.let { searchPages.noteReadHost(pkg, it.host, now) }
+
             // Only when the bar said nothing *and* nothing is currently being enforced here. Once a
             // target is held there is nothing to acquire, so the scan cannot contradict a live
             // target -- and the common case, scrolling a page we already recognised, never pays
@@ -757,7 +797,10 @@ class RotblockAccessibilityService : AccessibilityService() {
                 url == null &&
                 currentTargetId == null &&
                 BrowserRegistry.specFor(pkg) != null &&
-                websiteMatchers.isNotEmpty()
+                websiteMatchers.isNotEmpty() &&
+                // And not while the last thing the bar said was "this is a search engine". Its
+                // links are the results; they describe where you are not.
+                !searchPages.isOnSearchPage(pkg, now)
             ) {
                 harvestLinkUrls(root)
             } else {
@@ -868,6 +911,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         when (decision) {
             is Decision.Allow -> {
                 overlay.hide()
+                hideCountdown()
                 ledger.closeSession(nowMs)
                 // A pause suspends greyscale and friction too; a pause means "get out of my way".
                 // So do a policy's off-hours: outside them the rule does not exist, which means no
@@ -892,9 +936,13 @@ class RotblockAccessibilityService : AccessibilityService() {
                     // One of our own screens is covering the app. You are not using it, so it does
                     // not get to charge you -- friction and cooldowns cost time, not quota.
                     ledger.closeSession(nowMs)
+                    // And nothing is counting down, so nothing may say it is. The readout tracks
+                    // the ledger exactly, because "it is not there" is what it is for.
+                    hideCountdown()
                     EnforcementStatus.note("$targetId: not charging, one of our screens is up")
                 } else {
                     ledger.startSession(targetId, nowMs)
+                    showCountdown(policy.label, decision, nowMs)
                     EnforcementStatus.note("$targetId: charging")
                 }
                 if (policy.grayscale) grayscale.enable() else grayscale.restore()
@@ -905,6 +953,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 // Close first: nextRelease assumes no session runs past now, and we should not
                 // keep charging for time spent staring at the block screen.
                 ledger.closeSession(nowMs)
+                hideCountdown()
                 grayscale.restore()
                 EnforcementStatus.note(
                     "$targetId: blocked (${decision.reason.name.lowercase().replace('_', ' ')})",
@@ -928,6 +977,33 @@ class RotblockAccessibilityService : AccessibilityService() {
         } else {
             stopTicking()
         }
+    }
+
+    /**
+     * Puts up whichever countdown readouts are switched on. Both are optional and both are off by
+     * default; see [com.ezhou.rotblock.block.TimerHud].
+     *
+     * Called only from the branch that opens a session, so the readout and the ledger can never
+     * disagree -- an on-screen timer that keeps counting while nothing is being charged would be
+     * worse than no timer at all, because its whole value is that you can trust its absence.
+     */
+    private fun showCountdown(label: String, decision: Decision.Allowed, nowMs: Long) {
+        if (hudEnabled) {
+            hud.show(decision.remainingMs, decision.quotaMs, hudOpacityPercent)
+        } else {
+            hud.hide()
+        }
+        if (hudNotification) {
+            notification.show(label, nowMs + decision.remainingMs)
+        } else {
+            notification.hide()
+        }
+    }
+
+    /** Both are no-ops when nothing is showing, so this is safe to call from anywhere. */
+    private fun hideCountdown() {
+        if (::hud.isInitialized) hud.hide()
+        if (::notification.isInitialized) notification.hide()
     }
 
     private fun showBlock(policy: Policy, decision: Decision.Blocked) {
@@ -1194,6 +1270,9 @@ class RotblockAccessibilityService : AccessibilityService() {
         handler.removeCallbacksAndMessages(null)
         if (::ledger.isInitialized) ledger.closeSession(now)
         if (::overlay.isInitialized) overlay.hide()
+        // Enforcement going away must not leave a countdown on screen claiming it is still
+        // counting. That is the one lie this readout cannot be allowed to tell.
+        hideCountdown()
         // Enforcement going away must not leave the display greyscale with nothing left running
         // to put it back.
         if (::grayscale.isInitialized) grayscale.restore()
