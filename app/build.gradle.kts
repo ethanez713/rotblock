@@ -7,12 +7,13 @@ plugins {
 
 android {
     namespace = "com.ezhou.rotblock"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.ezhou.rotblock"
         minSdk = 29
-        targetSdk = 35
+        // Play rejects new apps and updates targeting below 36 from 31 Aug 2026.
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1"
 

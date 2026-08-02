@@ -49,10 +49,15 @@ import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicySort
 import com.ezhou.rotblock.policy.sortedFor
+import com.ezhou.rotblock.setup.blocking
 import kotlinx.coroutines.delay
 
 @Composable
-fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
+fun BlocksScreen(
+    viewModel: RotblockViewModel,
+    settings: RotblockSettings,
+    onOpenSetup: () -> Unit,
+) {
     val policies by viewModel.policies.collectAsStateWithLifecycle()
     val usage by viewModel.usage.collectAsStateWithLifecycle()
     val budget by viewModel.budget.collectAsStateWithLifecycle()
@@ -66,6 +71,10 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
     // Re-sorted only when the list or the choice changes, not on every heartbeat: strictness is a
     // property of the rules, so nothing here moves just because a second passed.
     val sorted = remember(policies, settings.blocksSort) { policies.sortedFor(settings.blocksSort) }
+
+    // A list of rules that is quietly enforcing none of them is the worst screen in this app, and
+    // it is indistinguishable from a working one. This is the difference.
+    val broken = rememberRequirements(settings, policies).blocking
 
     // A one-second heartbeat so countdowns and remaining-time bars stay live while you look at
     // them. Cheap: it only runs while this screen is composed.
@@ -91,6 +100,14 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
             contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // Above the pause banner, because it outranks it: a pause is you deciding nothing is
+            // blocked, this is nothing being blocked without anyone deciding it.
+            if (broken.isNotEmpty()) {
+                item(key = "setup-banner") {
+                    NotEnforcingBanner(broken = broken, onOpenSetup = onOpenSetup)
+                }
+            }
+
             item {
                 PauseBanner(
                     settings = settings,
@@ -153,6 +170,51 @@ fun BlocksScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
                 editing = null
             },
         )
+    }
+}
+
+/**
+ * Says, on the screen people actually look at, that the rules below are not running.
+ *
+ * Deliberately states the consequence first and the permission second. "Grant the accessibility
+ * permission" is a sentence about Android; "none of these are being enforced" is a sentence about
+ * the thing the user came here to check.
+ */
+@Composable
+private fun NotEnforcingBanner(
+    broken: List<com.ezhou.rotblock.setup.Requirement>,
+    onOpenSetup: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                if (broken.any { it.id == com.ezhou.rotblock.setup.RequirementId.ENFORCEMENT }) {
+                    "Nothing is being blocked"
+                } else {
+                    "Blocking is not working properly"
+                },
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(4.dp))
+            // The first one only: a stack of consequences on the main screen reads as a wall of
+            // red, and the Setup tab is where the whole list belongs.
+            Text(
+                broken.first().consequence,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(4.dp))
+            TextButton(onClick = onOpenSetup) {
+                Text(if (broken.size > 1) "Fix ${broken.size} problems" else "Fix this")
+            }
+        }
     }
 }
 

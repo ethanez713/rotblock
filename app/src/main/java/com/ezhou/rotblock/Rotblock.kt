@@ -26,6 +26,16 @@ object Rotblock {
     /** Survives individual failures; used for all background writes. */
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("rotblock"))
 
+    /**
+     * When this process started, near enough.
+     *
+     * Read by the setup screen, which has to tell "the accessibility service is dead" from "the
+     * accessibility service has not been bound *yet*" — the same condition a second apart, and only
+     * one of them is worth alarming anyone about. Set on first touch of this object, which
+     * [RotblockApp] does before anything else.
+     */
+    val processStartedAtMs: Long = System.currentTimeMillis()
+
     @Volatile private var db: RotblockDatabase? = null
     @Volatile private var settingsRepo: SettingsRepository? = null
     @Volatile private var ledgerRef: UsageLedger? = null

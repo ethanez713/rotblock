@@ -5,11 +5,6 @@
     <!-- The block screen. Without this, blocking degrades to ejecting you to the home screen. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Listing installed apps so you can pick what to block. -->
-    <uses-permission
-        android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
-
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!--
       No RECEIVE_BOOT_COMPLETED, and none is wanted. There is no boot receiver because there is
@@ -18,15 +13,47 @@
       system on its own. A boot receiver would be a wakeup that bought nothing.
     -->
 
-    <!-- Special access, granted from Settings or over ADB. Used for usage backfill. -->
-    <uses-permission
-        android:name="android.permission.PACKAGE_USAGE_STATS"
-        tools:ignore="ProtectedPermissions" />
-
-    <!-- Phase 7 greyscale. Grantable only via `adb shell pm grant`; absence is handled. -->
+    <!-- Phase 7 greyscale. Grantable only via `adb shell pm grant`; absence is handled, and the
+         option is only offered when the grant is actually there. -->
     <uses-permission
         android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
+
+    <!--
+      Package visibility, scoped rather than broad.
+
+      QUERY_ALL_PACKAGES is what this used to ask for, and Play refuses it outright when a scoped
+      declaration would do: it is reserved for device search, antivirus, file managers, browsers
+      and banking. Both of the lookups this app makes are expressible here, they need no
+      permission, and they need no declaration form.
+
+      The two queries are exactly the two questions the UI asks:
+        1. "What can the user launch?", for the app picker (AddBlockSheet.loadLaunchableApps).
+        2. "Who handles this website?", for a website rule's logo (TargetIcon.handlersFor), which
+           is also how a browser is recognised as a browser.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+        <!--
+          And http, for one specific reason: "Leave this site" sends a browser to
+          BrowserRegistry.ESCAPE_URL with setPackage(), and an intent aimed at a package this app
+          cannot see does not resolve. A browser is visible through the https entry above anyway,
+          but the escape is the one path where being wrong means a block silently fails to lift.
+        -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http" />
+        </intent>
+    </queries>
 
     <application
         android:name=".RotblockApp"

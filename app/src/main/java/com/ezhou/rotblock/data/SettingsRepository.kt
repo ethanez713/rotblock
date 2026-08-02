@@ -52,6 +52,18 @@ data class RotblockSettings(
     val hudOpacityPercent: Int = 55,
     /** The same countdown as a notification instead of, or as well as, the ring. */
     val hudNotification: Boolean = false,
+    /** When the first-run walkthrough was finished or dismissed. 0 means it has never been shown. */
+    val onboardedAtMs: Long = 0L,
+    /**
+     * When the user accepted what the accessibility service reads and does. 0 means they have not.
+     *
+     * Recorded rather than assumed, and checked before anything sends them to Android's
+     * accessibility settings. Partly because Play requires an in-app disclosure and affirmative
+     * consent for any non-accessibility use of that API, and partly because it is true: this is the
+     * one permission in the app that can see every screen you open, and turning it on should be a
+     * decision rather than a tap on a button that said "Open settings".
+     */
+    val accessibilityConsentAtMs: Long = 0L,
 ) {
     fun isPaused(nowMs: Long): Boolean = nowMs < pausedUntilMs
 }
@@ -72,6 +84,8 @@ class SettingsRepository(context: Context) {
         val hudEnabled = booleanPreferencesKey("hud_enabled")
         val hudOpacityPercent = intPreferencesKey("hud_opacity_percent")
         val hudNotification = booleanPreferencesKey("hud_notification")
+        val onboardedAt = longPreferencesKey("onboarded_at_ms")
+        val accessibilityConsentAt = longPreferencesKey("accessibility_consent_at_ms")
     }
 
     val settings: Flow<RotblockSettings> = store.data.map { p ->
@@ -87,6 +101,8 @@ class SettingsRepository(context: Context) {
             hudEnabled = p[Keys.hudEnabled] ?: d.hudEnabled,
             hudOpacityPercent = p[Keys.hudOpacityPercent] ?: d.hudOpacityPercent,
             hudNotification = p[Keys.hudNotification] ?: d.hudNotification,
+            onboardedAtMs = p[Keys.onboardedAt] ?: d.onboardedAtMs,
+            accessibilityConsentAtMs = p[Keys.accessibilityConsentAt] ?: d.accessibilityConsentAtMs,
         )
     }
 
@@ -131,5 +147,14 @@ class SettingsRepository(context: Context) {
 
     suspend fun setHudNotification(enabled: Boolean) {
         store.edit { it[Keys.hudNotification] = enabled }
+    }
+
+    suspend fun setOnboardedAt(atMs: Long) {
+        store.edit { it[Keys.onboardedAt] = atMs }
+    }
+
+    /** Only ever set forward, never cleared: consent given is a fact about what happened. */
+    suspend fun setAccessibilityConsentAt(atMs: Long) {
+        store.edit { it[Keys.accessibilityConsentAt] = atMs }
     }
 }

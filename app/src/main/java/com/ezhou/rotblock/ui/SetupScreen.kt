@@ -1,34 +1,24 @@
 package com.ezhou.rotblock.ui
 
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.provider.Settings
-import android.text.TextUtils
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -46,11 +36,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ezhou.rotblock.Rotblock
-import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.service.EnforcementStatus
-import com.ezhou.rotblock.service.RotblockAccessibilityService
+import com.ezhou.rotblock.setup.blocking
+import com.ezhou.rotblock.setup.isInstalledFromStore
+import com.ezhou.rotblock.setup.hasNotificationPermission
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -58,13 +50,12 @@ import kotlinx.coroutines.launch
 fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val policies by viewModel.policies.collectAsStateWithLifecycle()
 
-    // Re-read the permission state every time this screen is shown, since granting happens in
-    // Settings and we come back to a still-composed screen.
-    var refreshKey by remember { mutableStateOf(0) }
-    val accessibilityOn = remember(refreshKey) { isAccessibilityEnabled(context) }
-    val overlayOn = remember(refreshKey) { Settings.canDrawOverlays(context) }
-    val grayscaleOn = remember(refreshKey) { Grayscale(context).isAvailable }
+    // One list, shared with onboarding and the Blocks banner, re-read while you look at it.
+    val requirements = rememberRequirements(settings, policies)
+    val consent = rememberConsentGate(settings)
+    val sideloaded = remember { !isInstalledFromStore(context) }
 
     Column(
         Modifier
@@ -77,48 +68,27 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.SemiBold,
         )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            when {
+                requirements.blocking.isNotEmpty() ->
+                    "Something below is stopping rules from being enforced."
+                // Everything required is fine and something optional is not, which is its own
+                // sentence: a screen that says "all good" above a red card is not to be believed.
+                requirements.any { !it.isReady } ->
+                    "Rules are being enforced. Something optional below is not working."
+                else -> "Everything rotblock needs is in place."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Spacer(Modifier.height(16.dp))
 
-        PermissionRow(
-            granted = accessibilityOn,
-            title = "Accessibility service",
-            body = "Lets rotblock see which app is in front. Without this nothing is enforced.",
-            action = "Open settings",
-            onAction = {
-                context.startActivity(
-                    Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            },
-        )
-        Spacer(Modifier.height(10.dp))
-        PermissionRow(
-            granted = overlayOn,
-            title = "Display over other apps",
-            body = "Draws the block screen. Without it, blocked apps just get closed instead.",
-            action = "Open settings",
-            onAction = {
-                context.startActivity(
-                    Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:${context.packageName}"),
-                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            },
-        )
-
-        Spacer(Modifier.height(10.dp))
-        PermissionRow(
-            granted = grayscaleOn,
-            title = "Write secure settings (optional)",
-            body = "Only needed for the greyscale option. Grant it over ADB — see below.",
-            action = "",
-            onAction = {},
-            optional = true,
-        )
-
-        Spacer(Modifier.height(8.dp))
-        TextButton(onClick = { refreshKey++ }) { Text("Re-check permissions") }
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            requirements.forEach { requirement ->
+                RequirementCard(requirement, onNeedsConsent = consent.onNeedsConsent)
+            }
+        }
 
         Spacer(Modifier.height(24.dp))
         Text("Pause rules", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -199,13 +169,18 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
         )
 
         Spacer(Modifier.height(24.dp))
-        CountdownSection(settings, refreshKey) { refreshKey++ }
+        CountdownSection(settings)
 
         Spacer(Modifier.height(28.dp))
         EnforcementCard()
 
-        Spacer(Modifier.height(28.dp))
-        AdbCard(context)
+        // Only for sideloaded builds. "Restricted settings" does not apply to a store install, so
+        // on a normal phone this card is a paragraph about a problem that cannot happen, sitting
+        // under the one screen where every extra word costs.
+        if (sideloaded) {
+            Spacer(Modifier.height(28.dp))
+            AdbCard(context)
+        }
         Spacer(Modifier.height(40.dp))
     }
 }
@@ -220,18 +195,16 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
  * slider stops at 10% rather than at nothing.
  */
 @Composable
-private fun CountdownSection(
-    settings: RotblockSettings,
-    refreshKey: Int,
-    onPermissionChanged: () -> Unit,
-) {
+private fun CountdownSection(settings: RotblockSettings) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
-    val notificationsGranted = remember(refreshKey) { hasNotificationPermission(context) }
+    // Asked for here because this is where the user expresses the intent; if they refuse, or
+    // revoke it later, the requirement list above says so and offers the prompt again. This
+    // screen does not need to track the answer.
     val requestNotifications = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { onPermissionChanged() }
+    ) { }
 
     Text(
         "While you are using something",
@@ -270,20 +243,12 @@ private fun CountdownSection(
         label = "Countdown as a notification",
         checked = settings.hudNotification,
         onChange = { on ->
-            if (on && !notificationsGranted) {
+            if (on && !hasNotificationPermission(context)) {
                 requestNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
             }
             scope.launch { Rotblock.settings(context).setHudNotification(on) }
         },
     )
-    if (settings.hudNotification && !notificationsGranted) {
-        Text(
-            "Android is not letting rotblock post notifications yet. Allow it in the permission " +
-                "prompt, or in Settings → Apps → rotblock → Notifications.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-        )
-    }
 }
 
 @Composable
@@ -297,14 +262,6 @@ private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
         Switch(checked = checked, onCheckedChange = onChange)
     }
 }
-
-/** True below Android 13, where notifications need no grant at all. */
-private fun hasNotificationPermission(context: Context): Boolean =
-    android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU ||
-        androidx.core.content.ContextCompat.checkSelfPermission(
-            context,
-            android.Manifest.permission.POST_NOTIFICATIONS,
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
 /**
  * What enforcement believes right now, and the last few things it decided.
@@ -409,50 +366,6 @@ private fun clockTime(atMs: Long): String {
 }
 
 @Composable
-private fun PermissionRow(
-    granted: Boolean,
-    title: String,
-    body: String,
-    action: String,
-    onAction: () -> Unit,
-    /** Optional permissions show a muted marker rather than an alarming one when missing. */
-    optional: Boolean = false,
-) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
-            Icon(
-                if (granted) Icons.Filled.CheckCircle else Icons.Filled.Warning,
-                contentDescription = null,
-                tint = when {
-                    granted -> MaterialTheme.colorScheme.primary
-                    optional -> MaterialTheme.colorScheme.onSurfaceVariant
-                    else -> MaterialTheme.colorScheme.error
-                },
-                modifier = Modifier.size(22.dp),
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    body,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (!granted && action.isNotBlank()) {
-                    TextButton(onClick = onAction, contentPadding = PaddingValues(0.dp)) {
-                        Text(action)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun SliderRow(
     label: String,
     value: Float,
@@ -517,21 +430,4 @@ private fun AdbCard(context: Context) {
             )
         }
     }
-}
-
-/**
- * Reads the enabled-services list rather than tracking our own flag, so the answer stays correct
- * when the service is turned off from outside the app.
- */
-private fun isAccessibilityEnabled(context: Context): Boolean {
-    val expected = ComponentName(context, RotblockAccessibilityService::class.java).flattenToString()
-    val enabled = Settings.Secure.getString(
-        context.contentResolver,
-        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-    ) ?: return false
-    val splitter = TextUtils.SimpleStringSplitter(':').apply { setString(enabled) }
-    for (entry in splitter) {
-        if (entry.equals(expected, ignoreCase = true)) return true
-    }
-    return false
 }

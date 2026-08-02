@@ -131,10 +131,17 @@ private const val ESCAPE_VERIFY_MS = 3_000L
  */
 private const val MIN_REPORTABLE_OUTAGE_MS = 30_000L
 
-private const val OUTAGE_PREFS = "rotblock_outage"
+/**
+ * Where the service records that it was running, and when it stopped.
+ *
+ * Internal rather than private because the setup screen needs the heartbeat: "Android says
+ * enforcement is on, and it has not been seen for two hours" is a different diagnosis, with a
+ * different fix, from "it is off". See [com.ezhou.rotblock.setup.gatherSetupFacts].
+ */
+internal const val OUTAGE_PREFS = "rotblock_outage"
 private const val KEY_DOWN_SINCE = "down_since"
 private const val KEY_DOWN_REASON = "down_reason"
-private const val KEY_LAST_ALIVE = "last_alive"
+internal const val KEY_LAST_ALIVE = "last_alive"
 
 /**
  * The visit in progress, carried across a rebind. See [seedForeground].
@@ -465,7 +472,16 @@ class RotblockAccessibilityService : AccessibilityService() {
         return isActivity(pkg, className)
     }
 
-    /** Resolves `pkg/className` against PackageManager, cached — the lookup is not free. */
+    /**
+     * Resolves `pkg/className` against PackageManager, cached — the lookup is not free.
+     *
+     * Since `QUERY_ALL_PACKAGES` was dropped this also answers false for a package we cannot *see*
+     * under scoped package visibility. That is the safe direction and mostly the desired one: what
+     * the `<queries>` declaration makes visible is everything with a launcher icon, so real apps
+     * still resolve, while `android`'s toast and overlay-warning windows — the ones that used to
+     * cancel a block by looking like an app switch — no longer resolve at all. A package with a
+     * policy never reaches here; [isForegroundChange] honours those first, whatever they are.
+     */
     private fun isActivity(pkg: String, className: String?): Boolean {
         if (className.isNullOrEmpty()) return false
         val key = "$pkg/$className"

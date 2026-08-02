@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -80,6 +81,18 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
 
     val settings: StateFlow<RotblockSettings> = settingsRepo.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RotblockSettings())
+
+    /**
+     * False until the stored settings have actually been read off disk.
+     *
+     * [settings] starts at its defaults, and one of those defaults is "has never been onboarded" —
+     * so without this every cold start flashes the first-run walkthrough at someone who finished it
+     * months ago, for as long as DataStore takes to answer. Anything keyed on a settings value
+     * meaning *absence* has to wait for this.
+     */
+    val settingsLoaded: StateFlow<Boolean> = settingsRepo.settings
+        .map { true }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     val recentEvents: StateFlow<List<AuditEvent>> = db.auditDao().observeRecent(300)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -236,6 +249,11 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun startPause(minutes: Int, emergency: Boolean, reason: String?): PauseResult =
         pauseController.startPause(minutes, emergency, reason).also { refresh() }
+
+    /** The walkthrough is shown once; the Blocks banner is what keeps saying it if it was skipped. */
+    fun completeOnboarding() {
+        viewModelScope.launch { settingsRepo.setOnboardedAt(System.currentTimeMillis()) }
+    }
 
     /** Presentation only, but stored: an order you have to re-pick every launch is not a setting. */
     fun setBlocksSort(sort: PolicySort) {

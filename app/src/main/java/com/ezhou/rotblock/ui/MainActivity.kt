@@ -57,6 +57,25 @@ class MainActivity : ComponentActivity() {
 private fun RotblockApp(viewModel: RotblockViewModel) {
     var tab by remember { mutableStateOf(Tab.Blocks) }
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val settingsLoaded by viewModel.settingsLoaded.collectAsStateWithLifecycle()
+    val policies by viewModel.policies.collectAsStateWithLifecycle()
+
+    // Nothing at all until the real settings arrive: "never onboarded" is the default value of a
+    // stored one, so drawing anything before it loads means flashing the walkthrough at someone who
+    // finished it months ago. A blank frame or two is invisible; that is not.
+    if (!settingsLoaded) return
+
+    // Before anything else, once. The tabs are useless to someone who has not granted anything:
+    // rules save fine and then sit there doing nothing, which is the impression this app can least
+    // afford to make.
+    if (settings.onboardedAtMs == 0L) {
+        OnboardingScreen(
+            settings = settings,
+            policies = policies,
+            onDone = viewModel::completeOnboarding,
+        )
+        return
+    }
 
     Scaffold(
         bottomBar = {
@@ -74,7 +93,7 @@ private fun RotblockApp(viewModel: RotblockViewModel) {
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when (tab) {
-                Tab.Blocks -> BlocksScreen(viewModel, settings)
+                Tab.Blocks -> BlocksScreen(viewModel, settings, onOpenSetup = { tab = Tab.Setup })
                 Tab.Insights -> InsightsScreen(viewModel)
                 Tab.Setup -> SetupScreen(viewModel, settings)
             }
