@@ -3,6 +3,7 @@ package com.ezhou.rotblock.ui
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.animateFloatAsState
@@ -25,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -32,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.ezhou.rotblock.block.FrictionGate
 import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.browser.escapeIntent
 import kotlinx.coroutines.delay
@@ -48,9 +51,37 @@ class FrictionActivity : ComponentActivity() {
         const val EXTRA_LABEL = "label"
         const val EXTRA_SECONDS = "seconds"
 
+        /** The target this countdown covers, reported back to the service. See [FrictionGate]. */
+        const val EXTRA_TARGET = "target"
+
         /** Set only when the countdown covers a *website* block: the browser showing it. */
         const val EXTRA_BROWSER = "browser"
     }
+
+    /**
+     * What this countdown is covering, kept as state rather than read once in `onCreate`.
+     *
+     * The activity is `singleTask`, so a second launch reaches a live instance through
+     * `onNewIntent` and `getIntent()` goes on returning the *first* one's extras. Cover a different
+     * target that way and the screen would name the app you were in ten minutes ago, and -- since
+     * serving the wait now names its target -- would credit the wait to it too, leaving the target
+     * actually on screen to charge you the countdown a second time.
+     */
+    private var covering by mutableStateOf(Covering())
+
+    private data class Covering(
+        val targetId: String? = null,
+        val label: String = "this",
+        val seconds: Int = 5,
+        val browser: String? = null,
+    )
+
+    private fun covering(intent: Intent) = Covering(
+        targetId = intent.getStringExtra(EXTRA_TARGET),
+        label = intent.getStringExtra(EXTRA_LABEL) ?: "this",
+        seconds = intent.getIntExtra(EXTRA_SECONDS, 5).coerceIn(1, 120),
+        browser = intent.getStringExtra(EXTRA_BROWSER),
+    )
 
     /**
      * Bumped every time this screen comes back to the front. The countdown restarts on it.
@@ -74,6 +105,9 @@ class FrictionActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         Interstitial.entered()
+        // The service cannot see whether its launch produced anything, and it has to know: a
+        // launch that goes nowhere must not be retried on every redraw. See [FrictionGate].
+        covering.targetId?.let { FrictionGate.onShown?.invoke(it) }
         visit++
     }
 
@@ -82,20 +116,35 @@ class FrictionActivity : ComponentActivity() {
         Interstitial.exited()
     }
 
+    /** A relaunch onto a live instance. Re-entry restarts the wait; [onStart] follows. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        covering = covering(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        val label = intent.getStringExtra(EXTRA_LABEL) ?: "this"
-        val seconds = intent.getIntExtra(EXTRA_SECONDS, 5).coerceIn(1, 120)
-        val browser = intent.getStringExtra(EXTRA_BROWSER)
+        covering = covering(intent)
+
+        // Back is the bypass this screen was built without: it finishes the activity, the app
+        // underneath resumes, and no foreground change fires to say so because our own package is
+        // excluded from tracking. The service now re-shows the countdown when the wait was not
+        // served, so pressing back would only flash the app for as long as it takes to notice --
+        // and on a website that flash is the live page. So back means what the text button means:
+        // you did not want this, and the browser is moved off the page rather than left on it.
+        onBackPressedDispatcher.addCallback(this) { leave(covering.browser) }
 
         setContent {
             RotblockTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
+                    val (target, label, seconds, browser) = covering
                     FrictionScreen(
                         label = label,
                         seconds = seconds,
                         visit = visit,
+                        onServed = { target?.let { FrictionGate.onServed?.invoke(it) } },
                         onContinue = { finish() },
                         onLeave = { leave(browser) },
                     )
@@ -131,17 +180,22 @@ private fun FrictionScreen(
     seconds: Int,
     /** Changes whenever the screen is re-entered, which starts the wait over. */
     visit: Int,
+    /** The wait was actually sat through. The only thing that spends it; see [FrictionGate]. */
+    onServed: () -> Unit,
     onContinue: () -> Unit,
     onLeave: () -> Unit,
 ) {
-    var left by remember(visit) { mutableIntStateOf(seconds) }
+    var left by remember(visit, seconds) { mutableIntStateOf(seconds) }
 
-    LaunchedEffect(visit) {
+    LaunchedEffect(visit, seconds) {
         left = seconds
         while (left > 0) {
             delay(1_000)
             left -= 1
         }
+        // Zero, not the tap: waiting it out and then backing out is still waiting it out. What must
+        // not count is a countdown that was merely put on screen.
+        onServed()
     }
 
     val progress by animateFloatAsState(

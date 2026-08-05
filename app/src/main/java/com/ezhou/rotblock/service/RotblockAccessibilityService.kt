@@ -21,6 +21,7 @@ import com.ezhou.rotblock.block.Escape
 import com.ezhou.rotblock.block.escapeLabelFor
 import com.ezhou.rotblock.block.FeedRegistry
 import com.ezhou.rotblock.block.Grayscale
+import com.ezhou.rotblock.block.FrictionGate
 import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.block.TimerHud
@@ -153,7 +154,10 @@ internal const val KEY_LAST_ALIVE = "last_alive"
  */
 private const val KEY_VISIT_PACKAGE = "visit_package"
 private const val KEY_VISIT_TARGET = "visit_target"
-private const val KEY_VISIT_FRICTION_SHOWN = "visit_friction_shown"
+// A new key rather than the old "visit_friction_shown": that one recorded a countdown having been
+// *put up*, which is exactly the thing that no longer spends the wait. Reading a stale one back as
+// "served" would hand out one free bypass per upgrade.
+private const val KEY_VISIT_FRICTION_SERVED = "visit_friction_served"
 
 /**
  * Attempts to read the already-open window at startup, before giving up until the next event.
@@ -209,11 +213,12 @@ class RotblockAccessibilityService : AccessibilityService() {
     @Volatile private var hudNotification = false
 
     /**
-     * The target whose friction screen has already been shown for this visit. Cleared whenever
-     * the target changes or the screen goes off, so friction is once per visit rather than once
-     * per accessibility event.
+     * Whether the breathing countdown is still owed for this visit. Reset whenever the target
+     * changes or the screen goes off, so friction is once per visit rather than once per
+     * accessibility event -- and spent only by the countdown reaching zero, so backing out of it
+     * does not buy the visit. See [FrictionGate].
      */
-    private var frictionShownFor: String? = null
+    private val friction = FrictionGate()
 
     /** Read on every window change, so it stays a plain volatile map lookup. */
     @Volatile private var policiesByTarget: Map<String, Policy> = emptyMap()
@@ -259,7 +264,7 @@ class RotblockAccessibilityService : AccessibilityService() {
     /** Last values written by [persistVisit], so repeat calls do not touch disk. */
     private var persistedPackage: String? = null
     private var persistedTarget: String? = null
-    private var persistedFrictionShown: String? = null
+    private var persistedFrictionServed: String? = null
 
     private var ticking = false
 
@@ -284,7 +289,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                         stopTicking()
                         overlay.hide()
                         hideCountdown()
-                        frictionShownFor = null
+                        friction.endVisit()
                         // Never leave the phone monochrome behind a locked screen.
                         grayscale.restore()
                     }
@@ -341,6 +346,20 @@ class RotblockAccessibilityService : AccessibilityService() {
                 handler.post { guard("interstitialCleared") {
                     trace("interstitial cleared, re-evaluating")
                     reEvaluateCurrent()
+                } }
+            }
+
+            // The countdown is the only thing that can see itself: whether it came up at all, and
+            // whether it was sat through rather than merely shown. Both arrive on the main thread
+            // already; posting keeps every write to the gate on the same thread as the service's.
+            FrictionGate.onShown = { targetId ->
+                handler.post { guard("frictionShown") { friction.appeared(targetId) } }
+            }
+            FrictionGate.onServed = { targetId ->
+                handler.post { guard("frictionServed") {
+                    trace("friction served for $targetId")
+                    friction.served(targetId)
+                    persistVisit()
                 } }
             }
 
@@ -529,7 +548,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         // and "once per visit" is the rule, not "once per target". Only a genuine foreground
         // change reaches here; a toast or a heads-up notification must never re-arm it, or the
         // countdown reappears on top of an app you are already using.
-        frictionShownFor = null
+        friction.endVisit()
 
         // Whatever was accruing time has stopped.
         ledger.closeSession(nowMs)
@@ -547,14 +566,14 @@ class RotblockAccessibilityService : AccessibilityService() {
     /** Runs on the main thread; [targetId] null means nothing here is governed by a policy. */
     private fun applyTarget(targetId: String?, nowMs: Long) {
         val policy = targetId?.let { policiesByTarget[it] }
-        trace("applyTarget($targetId) policy=${policy?.label} enabled=${policy?.enabled} cur=$currentTargetId shownFor=$frictionShownFor")
+        trace("applyTarget($targetId) policy=${policy?.label} enabled=${policy?.enabled} cur=$currentTargetId servedFor=${friction.servedFor}")
         if (policy == null || !policy.enabled) {
-            if (frictionShownFor != null) trace("  CLEARING frictionShownFor (no policy for $targetId)")
+            if (friction.servedFor != null) trace("  ENDING friction visit (no policy for $targetId)")
             if (currentTargetId != null) {
                 EnforcementStatus.note("target $currentTargetId -> none (nothing here is covered)")
             }
             currentTargetId = null
-            frictionShownFor = null
+            friction.endVisit()
             ledger.closeSession(nowMs)
             stopTicking()
             overlay.hide()
@@ -569,7 +588,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             EnforcementStatus.note("target ${currentTargetId ?: "none"} -> $targetId")
             ledger.closeSession(nowMs)
             currentTargetId = targetId
-            frictionShownFor = null
+            friction.endVisit()
             grayscale.restore()
         }
         evaluateAndEnforce(targetId, nowMs)
@@ -633,7 +652,7 @@ class RotblockAccessibilityService : AccessibilityService() {
      *    on a blocked site is simply never inspected, and nothing is enforced until you happen to
      *    switch apps.
      * 2. When a window-state change finally does arrive, a null `currentPackage` makes it look like
-     *    a foreground change into an app with no policy, which clears `frictionShownFor`. The next
+     *    a foreground change into an app with no policy, which ends the friction visit. The next
      *    read then resolves the website again, that reads as a *target change*, friction re-arms,
      *    and the countdown fires again -- the loop, exactly.
      *
@@ -662,12 +681,12 @@ class RotblockAccessibilityService : AccessibilityService() {
         val prefs = getSharedPreferences(OUTAGE_PREFS, Context.MODE_PRIVATE)
         if (prefs.getString(KEY_VISIT_PACKAGE, null) == pkg) {
             currentTargetId = prefs.getString(KEY_VISIT_TARGET, null)
-            frictionShownFor = prefs.getString(KEY_VISIT_FRICTION_SHOWN, null)
+            friction.restoreServed(prefs.getString(KEY_VISIT_FRICTION_SERVED, null))
             // So a trip out of the app and back does not lose it again: the read that would
             // re-establish it is exactly the read that a scrolled page cannot give us.
             currentTargetId?.let { visits.remember(pkg, it) }
         }
-        trace("seed: $pkg target=$currentTargetId shownFor=$frictionShownFor")
+        trace("seed: $pkg target=$currentTargetId servedFor=${friction.servedFor}")
 
         // Enforce the restored target straight away rather than waiting for the read to confirm
         // it. If the page moved on while we were unbound the read corrects it within the second,
@@ -681,20 +700,21 @@ class RotblockAccessibilityService : AccessibilityService() {
      * actual change -- `applyTarget` runs on every tick and every read.
      */
     private fun persistVisit() {
+        val servedFor = friction.servedFor
         if (currentPackage == persistedPackage &&
             currentTargetId == persistedTarget &&
-            frictionShownFor == persistedFrictionShown
+            servedFor == persistedFrictionServed
         ) {
             return
         }
         persistedPackage = currentPackage
         persistedTarget = currentTargetId
-        persistedFrictionShown = frictionShownFor
+        persistedFrictionServed = servedFor
         runCatching {
             getSharedPreferences(OUTAGE_PREFS, Context.MODE_PRIVATE).edit()
                 .putString(KEY_VISIT_PACKAGE, currentPackage)
                 .putString(KEY_VISIT_TARGET, currentTargetId)
-                .putString(KEY_VISIT_FRICTION_SHOWN, frictionShownFor)
+                .putString(KEY_VISIT_FRICTION_SERVED, servedFor)
                 .apply()
         }
     }
@@ -992,7 +1012,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                     EnforcementStatus.note("$targetId: charging")
                 }
                 if (policy.grayscale) grayscale.enable() else grayscale.restore()
-                maybeShowFriction(policy)
+                maybeShowFriction(policy, nowMs)
             }
 
             is Decision.Blocked -> {
@@ -1154,26 +1174,25 @@ class RotblockAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Shows the breathing screen once per visit.
-     *
-     * Marked as shown *before* launching, not after: if the launch fails or the user backs out,
-     * a retry loop that reopens the screen every time the app redraws would be far worse than
-     * skipping the friction once.
+     * Shows the breathing screen once per visit -- once per *wait served*, not once per screen put
+     * up. Backing out of the countdown leaves it owed and this puts it straight back. The whole
+     * state machine, including the one case that must not be retried, is [FrictionGate].
      */
-    private fun maybeShowFriction(policy: Policy) {
+    private fun maybeShowFriction(policy: Policy, nowMs: Long) {
         if (policy.frictionSeconds <= 0) return
-        if (frictionShownFor == policy.id) {
-            trace("friction skipped: already shown this visit for ${policy.id}")
+        if (!friction.shouldLaunch(policy.id, Interstitial.isShowing, nowMs)) {
+            trace("friction not launched for ${policy.id} (served=${friction.servedFor})")
             return
         }
-        trace("friction SHOWING for ${policy.id} (was $frictionShownFor)")
-        frictionShownFor = policy.id
+        trace("friction SHOWING for ${policy.id}")
+        friction.launched(policy.id, nowMs)
         guard("friction") {
             startActivity(
                 Intent(this, FrictionActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     .putExtra(FrictionActivity.EXTRA_LABEL, policy.label)
                     .putExtra(FrictionActivity.EXTRA_SECONDS, policy.frictionSeconds)
+                    .putExtra(FrictionActivity.EXTRA_TARGET, policy.id)
                     // "Take me back" has the same dead end as the block screen: going home leaves
                     // the browser on the site, so reopening it lands straight back on the page you
                     // just declined. Told which browser, the screen moves it off first.
@@ -1299,6 +1318,8 @@ class RotblockAccessibilityService : AccessibilityService() {
         EnforcementStatus.setConnected(false)
         stopTicking()
         Interstitial.onCleared = null
+        FrictionGate.onShown = null
+        FrictionGate.onServed = null
         runCatching { unregisterReceiver(screenReceiver) }
         // onUnbind and onDestroy both land here; keep the first timestamp, which is when
         // enforcement actually stopped.
