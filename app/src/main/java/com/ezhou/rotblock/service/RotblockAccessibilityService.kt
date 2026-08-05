@@ -25,7 +25,9 @@ import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.block.TimerHud
 import com.ezhou.rotblock.block.TrackingNotification
+import com.ezhou.rotblock.browser.AddressBar
 import com.ezhou.rotblock.browser.BrowserRegistry
+import com.ezhou.rotblock.browser.BrowserSpec
 import com.ezhou.rotblock.browser.LinkConsensus
 import com.ezhou.rotblock.browser.escapeIntent
 import com.ezhou.rotblock.browser.WebMatcher
@@ -796,9 +798,13 @@ class RotblockAccessibilityService : AccessibilityService() {
             val feedKey = FeedRegistry.specsFor(pkg)
                 .firstOrNull { spec -> spec.viewIdHints.any { root.hasViewId(it) } }
                 ?.key
-            val url = BrowserRegistry.specFor(pkg)
-                ?.urlBarIds
-                ?.firstNotNullOfOrNull { root.textForViewId(it) }
+            val bar = BrowserRegistry.specFor(pkg)?.let { root.readAddressBar(it) }
+            val url = (bar as? AddressBar.Read.Text)?.value
+            // A screen offering a choice of URLs is not a page, so nothing on it is evidence about
+            // where you are -- not the row that happens to be first, and not the page's links
+            // either. Suppressing the harvest as well is what keeps this from being a fix that only
+            // covers the door it came in through.
+            val chooser = bar is AddressBar.Read.Chooser
 
             // A bar that parsed is a positive identification of the page, and it is remembered for
             // one reason: to say when the links must not be consulted. See [SearchPageMemory].
@@ -811,6 +817,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             // for it at all.
             val linkUrls = if (
                 url == null &&
+                !chooser &&
                 currentTargetId == null &&
                 BrowserRegistry.specFor(pkg) != null &&
                 websiteMatchers.isNotEmpty() &&
@@ -822,7 +829,9 @@ class RotblockAccessibilityService : AccessibilityService() {
             } else {
                 emptyList()
             }
-            trace("read($pkg): feed=$feedKey url=${url?.let { "\"$it\"" }} links=${linkUrls.size}")
+            val barNote = if (chooser) " bar=chooser(${(bar as AddressBar.Read.Chooser).offered})" else ""
+            trace("read($pkg): feed=$feedKey url=${url?.let { "\"$it\"" }}$barNote links=${linkUrls.size}")
+            if (chooser) EnforcementStatus.note("read $pkg: several urls on offer, not a page (target held)")
 
             val result = classifyInspection(pkg, feedKey, url, websiteMatchers, linkUrls)
             EnforcementStatus.noteRead(pkg, url, feedKey, result, linkUrls.size)
@@ -890,14 +899,35 @@ class RotblockAccessibilityService : AccessibilityService() {
         return found
     }
 
-    private fun AccessibilityNodeInfo.textForViewId(viewId: String): String? {
-        val nodes = findAccessibilityNodeInfosByViewId(viewId) ?: return null
-        try {
-            for (node in nodes) {
-                val text = node.text?.toString() ?: node.contentDescription?.toString()
-                if (!text.isNullOrBlank()) return text
+    /**
+     * Reads the address bar, trying this browser's view ids in order.
+     *
+     * A [AddressBar.Read.Chooser] ends the whole read rather than falling through to the next id:
+     * the ids are alternative spellings of the same bar, so once a screen has been identified as a
+     * list of URLs, a later id finding a lone node on it is not a bar either.
+     */
+    private fun AccessibilityNodeInfo.readAddressBar(spec: BrowserSpec): AddressBar.Read {
+        for (viewId in spec.urlBarIds) {
+            when (val read = readAddressBarId(viewId)) {
+                is AddressBar.Read.Text -> return read
+                is AddressBar.Read.Chooser -> return read
+                AddressBar.Read.Absent -> Unit
             }
-            return null
+        }
+        return AddressBar.Read.Absent
+    }
+
+    private fun AccessibilityNodeInfo.readAddressBarId(viewId: String): AddressBar.Read {
+        val nodes = findAccessibilityNodeInfosByViewId(viewId) ?: return AddressBar.Read.Absent
+        try {
+            return AddressBar.read(
+                nodes.map { node ->
+                    AddressBar.Candidate(
+                        text = node.text?.toString() ?: node.contentDescription?.toString(),
+                        visible = runCatching { node.isVisibleToUser }.getOrDefault(true),
+                    )
+                },
+            )
         } finally {
             nodes.forEach { it.recycleCompat() }
         }
