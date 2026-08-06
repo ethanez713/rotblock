@@ -59,7 +59,14 @@ object EnforcementStatus {
         interstitialShowing = interstitial
     }
 
-    fun noteRead(pkg: String, url: String?, feedKey: String?, result: Inspected, linkUrls: Int = 0) {
+    fun noteRead(
+        pkg: String,
+        url: String?,
+        feedKey: String?,
+        result: Inspected,
+        linkUrls: Int = 0,
+        signature: String? = null,
+    ) {
         lastReadAtMs = System.currentTimeMillis()
         lastRead = buildString {
             append(pkg.substringAfterLast('.'))
@@ -68,6 +75,11 @@ object EnforcementStatus {
             // Distinguishes "the bar was gone and the page's links identified it" from a normal
             // read, which is the difference between the two ways a website target gets acquired.
             if (linkUrls > 0) append(" links=$linkUrls")
+            // A third route, weaker than both: PageSignature matched structurally even though
+            // neither the bar nor the links could. Shown whether or not a rule ended up covering
+            // it, because "we saw the Shorts player but nothing blocked" is itself the answer to
+            // why a rule looks like it is not firing.
+            if (signature != null) append(" sig=$signature")
             append(" -> ")
             append(
                 when (result) {

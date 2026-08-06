@@ -2,6 +2,7 @@ package com.ezhou.rotblock.service
 
 import com.ezhou.rotblock.browser.BrowserRegistry
 import com.ezhou.rotblock.browser.LinkConsensus
+import com.ezhou.rotblock.browser.PageSignature
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.TargetKind
@@ -42,6 +43,10 @@ sealed interface Inspected {
  *   was not in the tree.
  * @param linkUrls destinations harvested from the page's own link nodes, used only to acquire a
  *   target when [url] told us nothing. See [LinkConsensus]; empty means the fallback did not run.
+ * @param descriptions on-screen `contentDescription` text harvested alongside [linkUrls], used only
+ *   by [PageSignature]; empty means that fallback did not run either.
+ * @param title the text of the page's `WebView` node, if any -- a weak confirmation for
+ *   [PageSignature] when the descriptions alone are ambiguous.
  */
 fun classifyInspection(
     pkg: String,
@@ -49,6 +54,8 @@ fun classifyInspection(
     url: String?,
     websiteMatchers: List<String>,
     linkUrls: List<String> = emptyList(),
+    descriptions: List<String> = emptyList(),
+    title: String? = null,
 ): Inspected {
     if (feedKey != null) return Inspected.Target(Policy.targetId(TargetKind.FEED, feedKey))
 
@@ -68,6 +75,14 @@ fun classifyInspection(
         // as you stay. The page's own links are the second opinion, and they carry the weaker
         // half of the same asymmetry: they may say "you are on reddit", never "you left it".
         if (url == null) {
+            // Tried first: it is a positive structural identification of the screen rather than an
+            // inference from navigation, and unlike the links it can carry a path -- the whole
+            // reason a Shorts rule can ever fire where the bar cannot be read at all. A miss falls
+            // straight through to the weaker link vote, exactly as it would with no signature here.
+            PageSignature.of(descriptions, title)?.let { fromSignature ->
+                websiteMatchers.firstOrNull { WebMatcher.matches(fromSignature, it) }
+                    ?.let { return Inspected.Target(Policy.targetId(TargetKind.WEBSITE, it)) }
+            }
             val fromLinks = LinkConsensus.of(linkUrls) ?: return Inspected.Unreadable
             val matched = websiteMatchers.firstOrNull { WebMatcher.matches(fromLinks, it) }
                 ?: return Inspected.Unreadable
@@ -85,6 +100,18 @@ fun classifyInspection(
         val parsed = WebMatcher.parse(url) ?: return Inspected.Unreadable
         val matcher = websiteMatchers.firstOrNull { WebMatcher.matches(parsed, it) }
         if (matcher != null) return Inspected.Target(Policy.targetId(TargetKind.WEBSITE, matcher))
+
+        // The bar read something real and it matched no rule -- ordinarily the end of the
+        // question. But Samsung Internet's bar reports host only (measured: no path, `m.` subdomain
+        // stripped), so a path rule like youtube.com/shorts can never match through it. The
+        // signature may *refine* a bar it agrees with on host (m.youtube.com -> youtube.com/shorts)
+        // but never contradict one, which is why it is only ever consulted here with the parsed
+        // host as a filter -- an embedded Shorts player on some other site must not borrow
+        // youtube.com's identity from a bar that is not on youtube.com.
+        PageSignature.of(descriptions, title, compatibleWith = parsed.host)?.let { fromSignature ->
+            websiteMatchers.firstOrNull { WebMatcher.matches(fromSignature, it) }
+                ?.let { return Inspected.Target(Policy.targetId(TargetKind.WEBSITE, it)) }
+        }
     }
     return Inspected.AppOnly
 }

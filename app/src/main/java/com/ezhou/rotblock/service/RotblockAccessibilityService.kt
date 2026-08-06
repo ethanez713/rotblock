@@ -30,6 +30,7 @@ import com.ezhou.rotblock.browser.AddressBar
 import com.ezhou.rotblock.browser.BrowserRegistry
 import com.ezhou.rotblock.browser.BrowserSpec
 import com.ezhou.rotblock.browser.LinkConsensus
+import com.ezhou.rotblock.browser.PageSignature
 import com.ezhou.rotblock.browser.escapeIntent
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.pause.PauseController
@@ -100,23 +101,35 @@ private const val INSPECT_DEBOUNCE_MS = 250L
 private const val MIN_INSPECT_INTERVAL_MS = 1_000L
 
 /**
- * Bounds on the link-target fallback. See [com.ezhou.rotblock.browser.LinkConsensus].
+ * Bounds on the page-signal scan, which now collects two things in one walk: the link-target
+ * fallback (see [com.ezhou.rotblock.browser.LinkConsensus]) and the page-signature fallback (see
+ * [com.ezhou.rotblock.browser.PageSignature]).
  *
  * A page's own navigation links cluster at the top of its tree: measured on device, ten of them
- * sit within thirty nodes of a depth-first walk. So the scan stops at the first
- * [MAX_LINK_SAMPLES] it finds or [MAX_LINK_SCAN_NODES] nodes, whichever comes first, which leaves
- * generous headroom over the measurement while staying a fraction of a full traversal -- the three
- * `findAccessibilityNodeInfosByViewId` calls this runs *after* already cost far more than this
- * does, and on a scrolled page all three of them find nothing.
+ * sit within thirty nodes of a depth-first walk. So when only links are wanted the scan stops at
+ * the first [MAX_LINK_SAMPLES] it finds or [MAX_LINK_SCAN_NODES] nodes, whichever comes first,
+ * which leaves generous headroom over the measurement while staying a fraction of a full traversal
+ * -- the three `findAccessibilityNodeInfosByViewId` calls this runs *after* already cost far more
+ * than this does, and on a scrolled page all three of them find nothing.
+ *
+ * The descriptions a signature needs are not clustered the same way -- a Shorts player's
+ * "Previous video" / "Next video" buttons sit wherever the player puts its controls, not with the
+ * page's navigation -- so stopping at [MAX_LINK_SAMPLES] would risk ending the walk before they
+ * are ever seen. When a signature is wanted the walk instead runs to [MAX_LINK_SCAN_NODES]
+ * regardless of how many links it has already found; the node budget still bounds the cost either
+ * way. [MAX_DESCRIPTION_SAMPLES] bounds the description collection the same way link samples are
+ * bounded -- a real Shorts player was measured at ~37 nodes total, so 60 is headroom, not a tight
+ * fit.
  *
  * The interval is a floor on top of [MIN_INSPECT_INTERVAL_MS] rather than a substitute for it,
  * because a sustained scroll re-arms the read every second and none of those reads can see
- * anything new. Acquiring a target up to [MIN_LINK_HARVEST_INTERVAL_MS] late costs a few seconds
+ * anything new. Acquiring a target up to [MIN_PAGE_SCAN_INTERVAL_MS] late costs a few seconds
  * of unmetered time once per visit; paying for the scan every second costs it forever.
  */
 private const val MAX_LINK_SCAN_NODES = 120
 private const val MAX_LINK_SAMPLES = 12
-private const val MIN_LINK_HARVEST_INTERVAL_MS = 3_000L
+private const val MAX_DESCRIPTION_SAMPLES = 60
+private const val MIN_PAGE_SCAN_INTERVAL_MS = 3_000L
 
 /**
  * How long an escape gets to prove it worked before the block comes back.
@@ -248,10 +261,10 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     @Volatile private var currentTargetId: String? = null
 
-    /** Inspector coroutine only. A duplicated harvest would be harmless, so no synchronisation. */
-    private var lastLinkHarvestMs = 0L
+    /** Inspector coroutine only. A duplicated scan would be harmless, so no synchronisation. */
+    private var lastPageScanMs = 0L
 
-    /** Inspector coroutine only, like [lastLinkHarvestMs]. See [SearchPageMemory]. */
+    /** Inspector coroutine only, like [lastPageScanMs]. See [SearchPageMemory]. */
     private val searchPages = SearchPageMemory()
 
     /**
@@ -818,7 +831,8 @@ class RotblockAccessibilityService : AccessibilityService() {
             val feedKey = FeedRegistry.specsFor(pkg)
                 .firstOrNull { spec -> spec.viewIdHints.any { root.hasViewId(it) } }
                 ?.key
-            val bar = BrowserRegistry.specFor(pkg)?.let { root.readAddressBar(it) }
+            val browserSpec = BrowserRegistry.specFor(pkg)
+            val bar = browserSpec?.let { root.readAddressBar(it) }
             val url = (bar as? AddressBar.Read.Text)?.value
             // A screen offering a choice of URLs is not a page, so nothing on it is evidence about
             // where you are -- not the row that happens to be first, and not the page's links
@@ -829,59 +843,98 @@ class RotblockAccessibilityService : AccessibilityService() {
             // A bar that parsed is a positive identification of the page, and it is remembered for
             // one reason: to say when the links must not be consulted. See [SearchPageMemory].
             val now = System.currentTimeMillis()
-            WebMatcher.parse(url)?.let { searchPages.noteReadHost(pkg, it.host, now) }
+            val parsedBar = url?.let { WebMatcher.parse(it) }
+            parsedBar?.let { searchPages.noteReadHost(pkg, it.host, now) }
 
+            val isBrowser = browserSpec != null
             // Only when the bar said nothing *and* nothing is currently being enforced here. Once a
             // target is held there is nothing to acquire, so the scan cannot contradict a live
             // target -- and the common case, scrolling a page we already recognised, never pays
             // for it at all.
-            val linkUrls = if (
-                url == null &&
+            val wantLinks = url == null &&
                 !chooser &&
                 currentTargetId == null &&
-                BrowserRegistry.specFor(pkg) != null &&
+                isBrowser &&
                 websiteMatchers.isNotEmpty() &&
                 // And not while the last thing the bar said was "this is a search engine". Its
                 // links are the results; they describe where you are not.
                 !searchPages.isOnSearchPage(pkg, now)
-            ) {
-                harvestLinkUrls(root)
+            // A signature may only ever refine a bar it agrees with on host, so it is only worth
+            // running where that is even possible: the bar said nothing at all, or it said
+            // something a registered signature could plausibly extend (m.youtube.com ->
+            // youtube.com/shorts). A readable bar on any other page runs nothing extra at all --
+            // the whole reason this stays free everywhere it does not apply.
+            val wantSignature = !chooser &&
+                currentTargetId == null &&
+                isBrowser &&
+                websiteMatchers.isNotEmpty() &&
+                (url == null || (parsedBar != null && PageSignature.couldRefine(parsedBar.host)))
+
+            val signals = if (wantLinks || wantSignature) {
+                harvestPageSignals(root, collectSignature = wantSignature)
             } else {
-                emptyList()
+                null
             }
+            val linkUrls = if (wantLinks) signals?.linkUrls.orEmpty() else emptyList()
+            val descriptions = if (wantSignature) signals?.descriptions.orEmpty() else emptyList()
+            val title = if (wantSignature) signals?.title else null
+
             val barNote = if (chooser) " bar=chooser(${(bar as AddressBar.Read.Chooser).offered})" else ""
-            trace("read($pkg): feed=$feedKey url=${url?.let { "\"$it\"" }}$barNote links=${linkUrls.size}")
+            trace(
+                "read($pkg): feed=$feedKey url=${url?.let { "\"$it\"" }}$barNote " +
+                    "links=${linkUrls.size} descriptions=${descriptions.size}",
+            )
             if (chooser) EnforcementStatus.note("read $pkg: several urls on offer, not a page (target held)")
 
-            val result = classifyInspection(pkg, feedKey, url, websiteMatchers, linkUrls)
-            EnforcementStatus.noteRead(pkg, url, feedKey, result, linkUrls.size)
+            val result = classifyInspection(pkg, feedKey, url, websiteMatchers, linkUrls, descriptions, title)
+            val signature = if (wantSignature) PageSignature.keyOf(descriptions, title, parsedBar?.host) else null
+            EnforcementStatus.noteRead(pkg, url, feedKey, result, linkUrls.size, signature)
             return result
         } finally {
             root.recycleCompat()
         }
     }
 
+    /** What one node-tree walk found, feeding both [LinkConsensus] and [PageSignature]. */
+    private data class PageSignals(
+        val linkUrls: List<String>,
+        val descriptions: List<String>,
+        val title: String?,
+    )
+
     /**
-     * Collects link destinations from the top of the document, depth-first and bounded.
+     * Collects link destinations and, when [collectSignature] is set, the page's `contentDescription`
+     * text and its `WebView` title -- one depth-first, bounded walk for both.
      *
      * Depth-first and not breadth-first because a page's own navigation sits at the start of its
      * DOM, so document order reaches links soonest -- and because breadth-first would sweep a
      * whole level of a feed before descending into anything.
      *
+     * The early stop at [MAX_LINK_SAMPLES] applies only when [collectSignature] is false: the
+     * descriptions a signature needs are not clustered with the navigation links, so stopping as
+     * soon as enough links are found could end the walk before they are ever seen. Either way the
+     * walk cannot exceed [MAX_LINK_SCAN_NODES], which is what actually bounds the cost.
+     *
      * Every node fetched here is recycled on the way out. The root is not: it belongs to the
      * caller, which recycles it in its own `finally`.
      */
-    private fun harvestLinkUrls(root: AccessibilityNodeInfo): List<String> {
+    private fun harvestPageSignals(root: AccessibilityNodeInfo, collectSignature: Boolean): PageSignals {
         val now = System.currentTimeMillis()
-        if (now - lastLinkHarvestMs < MIN_LINK_HARVEST_INTERVAL_MS) return emptyList()
-        lastLinkHarvestMs = now
+        if (now - lastPageScanMs < MIN_PAGE_SCAN_INTERVAL_MS) return PageSignals(emptyList(), emptyList(), null)
+        lastPageScanMs = now
 
         val urls = ArrayList<String>(MAX_LINK_SAMPLES)
+        val descriptions = ArrayList<String>(MAX_DESCRIPTION_SAMPLES)
+        var title: String? = null
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         pushChildren(root, stack)
         var visited = 0
         try {
-            while (stack.isNotEmpty() && visited < MAX_LINK_SCAN_NODES && urls.size < MAX_LINK_SAMPLES) {
+            while (
+                stack.isNotEmpty() &&
+                visited < MAX_LINK_SCAN_NODES &&
+                (collectSignature || urls.size < MAX_LINK_SAMPLES)
+            ) {
                 val node = stack.removeLast()
                 visited++
                 try {
@@ -892,7 +945,16 @@ class RotblockAccessibilityService : AccessibilityService() {
                         .getOrNull()
                         ?.toString()
                         ?.takeIf { it.isNotBlank() }
-                        ?.let { urls.add(it) }
+                        ?.let { if (urls.size < MAX_LINK_SAMPLES) urls.add(it) }
+                    if (collectSignature) {
+                        if (descriptions.size < MAX_DESCRIPTION_SAMPLES) {
+                            node.contentDescription?.toString()?.takeIf { it.isNotBlank() }
+                                ?.let { descriptions.add(it) }
+                        }
+                        if (title == null && node.className?.toString() == "android.webkit.WebView") {
+                            node.text?.toString()?.takeIf { it.isNotBlank() }?.let { title = it }
+                        }
+                    }
                     pushChildren(node, stack)
                 } finally {
                     node.recycleCompat()
@@ -901,8 +963,11 @@ class RotblockAccessibilityService : AccessibilityService() {
         } finally {
             stack.forEach { it.recycleCompat() }
         }
-        trace("harvest: visited=$visited urls=${urls.size} unexplored=${stack.size}")
-        return urls
+        trace(
+            "harvest: visited=$visited urls=${urls.size} descriptions=${descriptions.size} " +
+                "title=${title != null} unexplored=${stack.size}",
+        )
+        return PageSignals(urls, descriptions, title)
     }
 
     /** Pushes children in reverse so the stack pops them in document order. */
