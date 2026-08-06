@@ -188,11 +188,13 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
 /**
  * The countdown readout: a ring over the app, a notification, or neither.
  *
- * Off by default, because both put rotblock on top of something you are doing. What earns them the
- * space is the second thing they do: every failure this app has had presents as "the app is open
- * and nothing happens", and a readout that is *missing* while you sit in a quota'd app says the
- * service is not counting, without opening anything to find out. That is why the transparency
- * slider stops at 10% rather than at nothing.
+ * On by default now that the ring can be dragged out of the way instead of only ever accepted or
+ * hidden for good. What earns it the space either way is the second thing it does: every failure
+ * this app has had presents as "the app is open and nothing happens", and a readout that is
+ * *missing* while you sit in a quota'd app says the service is not counting, without opening
+ * anything to find out. That is why the transparency slider stops at 10% rather than at nothing --
+ * and why a drag-dismiss only lasts the one session rather than turning the ring off the way this
+ * toggle does. This switch is the only way to make that permanent.
  */
 @Composable
 private fun CountdownSection(settings: RotblockSettings) {
@@ -214,8 +216,10 @@ private fun CountdownSection(settings: RotblockSettings) {
     Spacer(Modifier.height(4.dp))
     Text(
         "A countdown of what is left of an allowance, shown only while that allowance is actually " +
-            "being spent. If it is not there, nothing is being counted — which is the other half " +
-            "of what it is for.",
+            "being spent — if it is not there, nothing is being counted. Drag the ring anywhere, " +
+            "or flick it onto the X at the bottom to get it out from under whatever you are " +
+            "reading; that only puts it away for now, and it comes back the next time something " +
+            "is being counted. Turning it off below is the one way to make that stick.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )

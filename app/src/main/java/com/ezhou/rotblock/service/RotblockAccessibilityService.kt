@@ -221,9 +221,28 @@ class RotblockAccessibilityService : AccessibilityService() {
      * depends on them -- if they were stale for a second, the ring would be a second late, and
      * that is the entire consequence.
      */
-    @Volatile private var hudEnabled = false
+    @Volatile private var hudEnabled = true
     @Volatile private var hudOpacityPercent = 55
     @Volatile private var hudNotification = false
+
+    /** Where the ring was last dropped; -1 means never, and [TimerHud] falls back to the corner. */
+    @Volatile private var hudPositionX = -1
+    @Volatile private var hudPositionY = -1
+
+    /**
+     * Whether the ring was dragged onto the dismiss target during the accrual session in progress.
+     *
+     * The only place this is set `true` is [TimerHud]'s `onDismissed` callback below. It is cleared
+     * `false` in three places, all of them "this session just ended": [hideCountdown] covers most
+     * of it (Allow, Blocked, one of our screens covering the app, screen off, teardown), but a
+     * target or foreground change can close the ledger session and open a new one directly, without
+     * an intervening call to [hideCountdown] -- so [onForegroundChanged] and the target-change
+     * branch of `applyTarget` clear it too, at exactly the two spots where [friction]'s own
+     * `endVisit()` already sits for the identical reason. [showCountdown] only ever *reads* this --
+     * if it also cleared it, a dismissal would not outlive the very next tick, which would make the
+     * gesture indistinguishable from doing nothing.
+     */
+    @Volatile private var hudDismissedThisSession = false
 
     /**
      * Whether the breathing countdown is still owed for this visit. Reset whenever the target
@@ -346,7 +365,24 @@ class RotblockAccessibilityService : AccessibilityService() {
             audit = Rotblock.audit(this)
             overlay = BlockOverlay(this)
             grayscale = Grayscale(this)
-            hud = TimerHud(this)
+            hud = TimerHud(
+                this,
+                onMoved = { x, y ->
+                    // Position is a preference, not enforcement state -- a lost write costs a ring
+                    // that resets to the corner once, nothing more, so it does not need guard()'s
+                    // audit trail on top of the coroutine already containing whatever it throws.
+                    scope.launch { runCatching { Rotblock.settings(this@RotblockAccessibilityService).setHudPosition(x, y) } }
+                },
+                onDismissed = {
+                    handler.post { guard("hudDismissed") {
+                        hudDismissedThisSession = true
+                        // The ring's whole value is that its absence means something specific --
+                        // see TimerHud's doc -- so an absence the user chose has to read
+                        // differently in the trail from an absence that means nothing is counting.
+                        EnforcementStatus.note("$currentTargetId: ring dismissed for this session")
+                    } }
+                },
+            )
             notification = TrackingNotification(this)
             ignoredPackages = buildIgnoredPackages()
             trace("onServiceConnected: fresh instance, state reset")
@@ -411,6 +447,8 @@ class RotblockAccessibilityService : AccessibilityService() {
                         hudEnabled = it.hudEnabled
                         hudOpacityPercent = it.hudOpacityPercent
                         hudNotification = it.hudNotification
+                        hudPositionX = it.hudPositionX
+                        hudPositionY = it.hudPositionY
                         // A pause starting or ending changes what should be on screen right now,
                         // and so does switching the countdown readout on or off.
                         handler.post { guard("pauseChanged") { reEvaluateCurrent() } }
@@ -563,6 +601,13 @@ class RotblockAccessibilityService : AccessibilityService() {
         // countdown reappears on top of an app you are already using.
         friction.endVisit()
 
+        // Same reasoning, one line down: a dismissal is scoped to the session that was open when
+        // the ring went away, and the line below ends that session unconditionally -- even when
+        // the target you land back on reads the same, ledger accounting starts a fresh session for
+        // it once this closes the open one. A dismissal from ten minutes ago on the same site must
+        // not silently apply to a visit that has not happened yet.
+        hudDismissedThisSession = false
+
         // Whatever was accruing time has stopped.
         ledger.closeSession(nowMs)
         stopTicking()
@@ -602,6 +647,11 @@ class RotblockAccessibilityService : AccessibilityService() {
             ledger.closeSession(nowMs)
             currentTargetId = targetId
             friction.endVisit()
+            // The other spot a session can end without an intervening hideCountdown() call --
+            // navigating within the same foreground from a dismissed target straight to a
+            // different one (a link inside a browser, say), which never routes through
+            // onForegroundChanged. See [hudDismissedThisSession]'s doc.
+            hudDismissedThisSession = false
             grayscale.restore()
         }
         evaluateAndEnforce(targetId, nowMs)
@@ -1111,16 +1161,19 @@ class RotblockAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Puts up whichever countdown readouts are switched on. Both are optional and both are off by
-     * default; see [com.ezhou.rotblock.block.TimerHud].
+     * Puts up whichever countdown readouts are switched on. The notification defaults off; the
+     * ring defaults on -- see [com.ezhou.rotblock.data.SettingsRepository.hudEnabled].
      *
      * Called only from the branch that opens a session, so the readout and the ledger can never
      * disagree -- an on-screen timer that keeps counting while nothing is being charged would be
      * worse than no timer at all, because its whole value is that you can trust its absence.
+     *
+     * A dismissal only ever suppresses the *ring*; a session the user dismissed the ring for is
+     * still charging, so the notification (unaffected by a dismissal by design) still reflects it.
      */
     private fun showCountdown(label: String, decision: Decision.Allowed, nowMs: Long) {
-        if (hudEnabled) {
-            hud.show(decision.remainingMs, decision.quotaMs, hudOpacityPercent)
+        if (hudEnabled && !hudDismissedThisSession) {
+            hud.show(decision.remainingMs, decision.quotaMs, hudOpacityPercent, hudPositionX, hudPositionY)
         } else {
             hud.hide()
         }
@@ -1131,8 +1184,17 @@ class RotblockAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** Both are no-ops when nothing is showing, so this is safe to call from anywhere. */
+    /**
+     * Both are no-ops when nothing is showing, so this is safe to call from anywhere.
+     *
+     * Also where a ring dismissal expires: called from every branch that closes the accrual
+     * session it applied to (Allow, Blocked, one of our screens covering the app, screen off,
+     * teardown), so clearing the flag here needs no separate bookkeeping for any of those. Two
+     * other spots close a session without routing through here -- a foreground change and a
+     * target change -- and clear it directly; see [hudDismissedThisSession]'s own doc.
+     */
     private fun hideCountdown() {
+        hudDismissedThisSession = false
         if (::hud.isInitialized) hud.hide()
         if (::notification.isInitialized) notification.hide()
     }

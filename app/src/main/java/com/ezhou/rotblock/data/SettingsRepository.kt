@@ -42,16 +42,31 @@ data class RotblockSettings(
     /**
      * Show a countdown ring over an app while its allowance is being spent.
      *
-     * Off by default, because it is an overlay on top of whatever you are doing. Its second job
-     * matters more than its first: every failure this app has had looks like "the app is open and
-     * nothing is happening", and a ring that is *absent* while you sit in a quota'd app says the
-     * service is not tracking, without opening rotblock to find out.
+     * On by default. It used to default off because it was an overlay on top of whatever you were
+     * doing -- but it is draggable now, and a flick onto the dismiss target puts it out of the way
+     * for the rest of the visit at no cost worse than a swipe. That undercuts the old reason to
+     * hide it, and its second job outweighs the first regardless: every failure this app has had
+     * looks like "the app is open and nothing is happening", and a ring that is *absent* while you
+     * sit in a quota'd app says the service is not tracking, without opening rotblock to find out.
+     * That signal is only honest from the first run if the ring starts on.
      */
-    val hudEnabled: Boolean = false,
+    val hudEnabled: Boolean = true,
     /** How opaque the ring is, 10..100. Low enough to ignore, high enough to notice missing. */
     val hudOpacityPercent: Int = 55,
     /** The same countdown as a notification instead of, or as well as, the ring. */
     val hudNotification: Boolean = false,
+    /**
+     * Where the ring was last dropped, in absolute screen px. -1 for either means "never placed",
+     * which falls back to the default corner. Not a relaxation and not a deadline: losing this is
+     * merely annoying, not a fail-open, so it is persisted for the same reason a window remembers
+     * where you left it -- nothing here changes what gets enforced.
+     *
+     * A drag-to-*dismiss* is deliberately not stored here or anywhere else on disk -- see
+     * [com.ezhou.rotblock.block.TimerHud]. Only the position survives a restart; whether the ring
+     * was dismissed does not, on purpose.
+     */
+    val hudPositionX: Int = -1,
+    val hudPositionY: Int = -1,
     /** When the first-run walkthrough was finished or dismissed. 0 means it has never been shown. */
     val onboardedAtMs: Long = 0L,
     /**
@@ -84,6 +99,8 @@ class SettingsRepository(context: Context) {
         val hudEnabled = booleanPreferencesKey("hud_enabled")
         val hudOpacityPercent = intPreferencesKey("hud_opacity_percent")
         val hudNotification = booleanPreferencesKey("hud_notification")
+        val hudPositionX = intPreferencesKey("hud_position_x")
+        val hudPositionY = intPreferencesKey("hud_position_y")
         val onboardedAt = longPreferencesKey("onboarded_at_ms")
         val accessibilityConsentAt = longPreferencesKey("accessibility_consent_at_ms")
     }
@@ -101,6 +118,8 @@ class SettingsRepository(context: Context) {
             hudEnabled = p[Keys.hudEnabled] ?: d.hudEnabled,
             hudOpacityPercent = p[Keys.hudOpacityPercent] ?: d.hudOpacityPercent,
             hudNotification = p[Keys.hudNotification] ?: d.hudNotification,
+            hudPositionX = p[Keys.hudPositionX] ?: d.hudPositionX,
+            hudPositionY = p[Keys.hudPositionY] ?: d.hudPositionY,
             onboardedAtMs = p[Keys.onboardedAt] ?: d.onboardedAtMs,
             accessibilityConsentAtMs = p[Keys.accessibilityConsentAt] ?: d.accessibilityConsentAtMs,
         )
@@ -147,6 +166,14 @@ class SettingsRepository(context: Context) {
 
     suspend fun setHudNotification(enabled: Boolean) {
         store.edit { it[Keys.hudNotification] = enabled }
+    }
+
+    /** One setter for both coordinates, so a caller can never persist an x from one drop and a y from another. */
+    suspend fun setHudPosition(x: Int, y: Int) {
+        store.edit {
+            it[Keys.hudPositionX] = x
+            it[Keys.hudPositionY] = y
+        }
     }
 
     suspend fun setOnboardedAt(atMs: Long) {
