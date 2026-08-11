@@ -19,8 +19,6 @@ import org.junit.Test
  */
 class HudGeometryTest {
 
-    // region isOverDismissTarget
-
     @Test
     fun `a bubble centred on the target is over it`() {
         assertTrue(isOverDismissTarget(500f, 2000f, 500f, 2000f, radiusPx = 100f))
@@ -44,10 +42,6 @@ class HudGeometryTest {
         assertFalse(isOverDismissTarget(580f, 1920f, 500f, 2000f, radiusPx = 100f))
     }
 
-    // endregion
-
-    // region snapEdgeX
-
     @Test
     fun `just past the midpoint snaps right`() {
         // Bubble centre at 501 on a 1000px screen, one past the 500 midline.
@@ -65,10 +59,6 @@ class HudGeometryTest {
         assertEquals(10, snapEdgeX(currentX = 10, sizePx = 100, screenWidthPx = 1000, insetPx = 10))
         assertEquals(890, snapEdgeX(currentX = 890, sizePx = 100, screenWidthPx = 1000, insetPx = 10))
     }
-
-    // endregion
-
-    // region clampX
 
     @Test
     fun `a stored x past the right edge lands at the right inset`() {
@@ -95,10 +85,6 @@ class HudGeometryTest {
         assertEquals(50, clampX(x = 9000, sizePx = 100, screenWidthPx = 100, insetPx = 50))
     }
 
-    // endregion
-
-    // region clampY
-
     @Test
     fun `dragged above the top inset clamps down to it`() {
         assertEquals(50, clampY(y = -500, sizePx = 100, screenHeightPx = 2000, topInsetPx = 50, bottomInsetPx = 80))
@@ -122,6 +108,4 @@ class HudGeometryTest {
         assertEquals(50, clampY(y = 40, sizePx = 100, screenHeightPx = 100, topInsetPx = 50, bottomInsetPx = 50))
         assertEquals(50, clampY(y = 9000, sizePx = 100, screenHeightPx = 100, topInsetPx = 50, bottomInsetPx = 50))
     }
-
-    // endregion
 }

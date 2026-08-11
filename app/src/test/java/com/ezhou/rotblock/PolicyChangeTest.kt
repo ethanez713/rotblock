@@ -117,8 +117,6 @@ class PolicyChangeTest {
         assertEquals(ChangeDirection.NEUTRAL, classify(p(), p().copy(label = "Reddit (bad)")))
     }
 
-    // region schedules
-
     @Test
     fun `putting an always-on rule on a schedule is weakening`() {
         assertEquals(
@@ -188,6 +186,4 @@ class PolicyChangeTest {
             classify(p(schedule = WEEKDAYS_10_TO_6), p(enabled = false, schedule = WEEKDAYS_10_TO_6)),
         )
     }
-
-    // endregion
 }

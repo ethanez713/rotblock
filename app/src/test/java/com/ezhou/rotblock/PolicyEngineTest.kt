@@ -142,8 +142,6 @@ class PolicyEngineTest {
         assertEquals(NOW + 2 * MIN, d.recheckAtMs)
     }
 
-    // region schedules
-
     @Test
     fun `outside its hours a hard block allows`() {
         val p = policy(null, schedule = WEEKDAYS_10_TO_6)
@@ -239,6 +237,4 @@ class PolicyEngineTest {
         val d = PolicyEngine.evaluate(p, emptyList(), now + 2 * HOUR, now, UTC)
         assertEquals(onWednesday(18), d.recheckAtMs)
     }
-
-    // endregion
 }

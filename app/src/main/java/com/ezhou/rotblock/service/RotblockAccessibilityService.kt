@@ -474,8 +474,6 @@ class RotblockAccessibilityService : AccessibilityService() {
         }
     }
 
-    // region event intake
-
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         guard("onAccessibilityEvent") {
             event ?: return@guard
@@ -700,8 +698,6 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     private fun appTargetFor(pkg: String): String = Policy.targetId(TargetKind.APP, pkg)
 
-    // region surviving a rebind
-
     /**
      * Works out what is already on screen, because a fresh instance knows nothing about it.
      *
@@ -782,8 +778,6 @@ class RotblockAccessibilityService : AccessibilityService() {
         }
     }
 
-    // endregion
-
     /**
      * Queues a node-tree read, if one could tell us anything.
      *
@@ -805,10 +799,6 @@ class RotblockAccessibilityService : AccessibilityService() {
         if (pkg !in inspectablePackages) return
         inspectRequests.trySend(pkg)
     }
-
-    // endregion
-
-    // region node inspection (worker thread only)
 
     /**
      * Reads the node tree off the event callback.
@@ -1075,10 +1065,6 @@ class RotblockAccessibilityService : AccessibilityService() {
             runCatching { recycle() }
         }
     }
-
-    // endregion
-
-    // region enforcement
 
     private fun evaluateAndEnforce(targetId: String, nowMs: Long) {
         val policy = policiesByTarget[targetId] ?: return
@@ -1372,8 +1358,6 @@ class RotblockAccessibilityService : AccessibilityService() {
         tickDueAtMs = 0L
         handler.removeCallbacks(tick)
     }
-
-    // endregion
 
     private fun buildIgnoredPackages(): Set<String> {
         val ignored = mutableSetOf(packageName, "com.android.systemui")
