@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.data.RotblockSettings
+import com.ezhou.rotblock.insights.RuleEffect
 import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicySort
 import com.ezhou.rotblock.policy.sortedFor
@@ -62,6 +63,7 @@ fun BlocksScreen(
     val usage by viewModel.usage.collectAsStateWithLifecycle()
     val budget by viewModel.budget.collectAsStateWithLifecycle()
     val pending by viewModel.pendingChanges.collectAsStateWithLifecycle()
+    val ruleEffects by viewModel.ruleEffects.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Policy?>(null) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -85,6 +87,10 @@ fun BlocksScreen(
             delay(1_000)
         }
     }
+
+    // Reloaded on the rule list, not the heartbeat: it scans a month of audit and usage history,
+    // which nothing about a passing second changes.
+    LaunchedEffect(policies) { viewModel.loadRuleEffects() }
 
     Scaffold(
         floatingActionButton = {
@@ -148,6 +154,7 @@ fun BlocksScreen(
                 PolicyCard(
                     policy = policy,
                     usage = usage[policy.id],
+                    effect = ruleEffects[policy.id],
                     nowMs = now,
                     paused = settings.isPaused(now),
                     onToggle = { viewModel.setPolicyEnabled(policy, it) },
@@ -373,6 +380,7 @@ private fun EmptyState() {
 private fun PolicyCard(
     policy: Policy,
     usage: PolicyUsage?,
+    effect: RuleEffect?,
     nowMs: Long,
     paused: Boolean,
     onToggle: (Boolean) -> Unit,
@@ -449,8 +457,52 @@ private fun PolicyCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+
+            // A rule written this morning has nothing to report, and "Blocked 0 times · paused
+            // past 0 times / Not enough history yet" is two lines of nothing on every new card.
+            if (effect != null && effect.hasAnythingToSay) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    effect.describeCounts(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    effect.describeTrend(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
+}
+
+/** "Blocked 34 times · paused past 6 times" -- what actually happened, no interpretation. */
+private fun RuleEffect.describeCounts(): String =
+    "Blocked $blocksShown ${if (blocksShown == 1) "time" else "times"} · " +
+        "paused past $pausesPastIt ${if (pausesPastIt == 1) "time" else "times"}"
+
+/**
+ * A trend within the retention window, never a claim about the rule causing it -- see
+ * insights/RuleEffect.kt. "Not enough history" is the common case (a fresh rule, or one that
+ * hasn't seen 28 days of regular use) and is written to read as expected, not as broken.
+ */
+private fun RuleEffect.describeTrend(): String {
+    if (!hasEnoughHistory) return "Not enough history yet"
+    val first = firstHalfDailyMeanMs ?: return "Not enough history yet"
+    val second = secondHalfDailyMeanMs ?: return "Not enough history yet"
+    val secondStr = formatDailyMean(second)
+    return when {
+        second < first -> "$secondStr/day, down from ${formatDailyMean(first)}/day"
+        second > first -> "$secondStr/day, up from ${formatDailyMean(first)}/day"
+        else -> "$secondStr/day, steady"
+    }
+}
+
+private fun formatDailyMean(ms: Long): String {
+    val minutes = ms / 60_000
+    return if (minutes > 0) "${minutes}m" else "<1m"
 }
 
 @Composable

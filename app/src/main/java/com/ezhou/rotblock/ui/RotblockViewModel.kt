@@ -8,9 +8,11 @@ import com.ezhou.rotblock.audit.AuditEvent
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.insights.DayBucket
+import com.ezhou.rotblock.insights.RuleEffect
 import com.ezhou.rotblock.insights.TargetSession
 import com.ezhou.rotblock.insights.bucketByDay
 import com.ezhou.rotblock.insights.countByDay
+import com.ezhou.rotblock.insights.effectOf
 import com.ezhou.rotblock.insights.recentDayStarts
 import com.ezhou.rotblock.data.PendingChange
 import com.ezhou.rotblock.data.PendingChangeQueue
@@ -21,6 +23,7 @@ import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicySort
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.RollingQuota
+import com.ezhou.rotblock.quota.USAGE_RETENTION_MS
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -102,6 +105,27 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _budget = MutableStateFlow<BudgetStatus?>(null)
     val budget: StateFlow<BudgetStatus?> = _budget.asStateFlow()
+
+    private val _ruleEffects = MutableStateFlow<Map<String, RuleEffect>>(emptyMap())
+    val ruleEffects: StateFlow<Map<String, RuleEffect>> = _ruleEffects.asStateFlow()
+
+    /**
+     * What each rule has actually done, over the ledger's full retention window. Kept off the
+     * one-second [refresh] heartbeat -- it scans 31 days of audit events and, per policy, 31 days
+     * of sessions -- and reloaded only when the Blocks screen's rule list changes.
+     */
+    fun loadRuleEffects() {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val since = now - USAGE_RETENTION_MS
+            val events = db.auditDao().since(since)
+            val all = db.policyDao().getAll()
+            _ruleEffects.value = all.associate { p ->
+                val sessions = db.usageDao().forTargetSince(p.id, since).map { it.toSession() }
+                p.id to effectOf(p, sessions, events, now)
+            }
+        }
+    }
 
     /**
      * Recomputes usage straight from the database rather than from the ledger's in-memory cache.
