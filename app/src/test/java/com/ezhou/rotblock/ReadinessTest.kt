@@ -40,6 +40,8 @@ class ReadinessTest {
         greyscaleRuleCount: Int = 0,
         processUptimeMs: Long = 60_000L,
         rottedFeeds: List<FeedProbe> = emptyList(),
+        blockTestAtMs: Long = 0L,
+        blockTestSeen: Boolean = false,
     ) = SetupFacts(
         accessibilityEnabled = accessibilityEnabled,
         serviceConnected = serviceConnected,
@@ -55,6 +57,8 @@ class ReadinessTest {
         packageName = "com.ezhou.rotblock",
         nowMs = t0,
         rottedFeeds = rottedFeeds,
+        blockTestAtMs = blockTestAtMs,
+        blockTestSeen = blockTestSeen,
     )
 
     private fun List<com.ezhou.rotblock.setup.Requirement>.byId(id: RequirementId) =
@@ -195,6 +199,36 @@ class ReadinessTest {
         assertEquals(Status.BROKEN, detection.status)
         assertTrue(detection.consequence.contains("YouTube Shorts"))
         assertTrue(rotted.blocking.isEmpty())
+    }
+
+    @Test
+    fun `a self test that saw nothing is broken even though the overlay permission is granted`() {
+        // The whole reason the self test exists: the permission check alone cannot see an OEM
+        // that grants SYSTEM_ALERT_WINDOW and then silently drops the window anyway.
+        val requirements = requirementsFor(
+            facts(overlayGranted = true, blockTestAtMs = t0, blockTestSeen = false),
+        )
+        val blockScreen = requirements.byId(RequirementId.BLOCK_SCREEN)!!
+        assertEquals(Status.BROKEN, blockScreen.status)
+        assertTrue(requirements.blocking.any { it.id == RequirementId.BLOCK_SCREEN })
+    }
+
+    @Test
+    fun `a self test that was seen leaves the block screen ready`() {
+        val requirements = requirementsFor(
+            facts(overlayGranted = true, blockTestAtMs = t0, blockTestSeen = true),
+        )
+        assertEquals(Status.READY, requirements.byId(RequirementId.BLOCK_SCREEN)?.status)
+        assertTrue(requirements.blocking.isEmpty())
+    }
+
+    @Test
+    fun `a block screen that has never been tested reads exactly as before`() {
+        val requirements = requirementsFor(facts(overlayGranted = true))
+        assertEquals(Status.READY, requirements.byId(RequirementId.BLOCK_SCREEN)?.status)
+
+        val ungranted = requirementsFor(facts(overlayGranted = false))
+        assertEquals(Status.MISSING, ungranted.byId(RequirementId.BLOCK_SCREEN)?.status)
     }
 
     @Test

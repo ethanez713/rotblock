@@ -96,6 +96,13 @@ data class RotblockSettings(
      * the one mechanism in the app opted into rather than always on.
      */
     val revealAddressBar: Boolean = false,
+    /**
+     * When Setup last ran the block-screen self test, and whether the user reported seeing it.
+     * 0 / false means the test has never been run. See
+     * [com.ezhou.rotblock.block.BlockSelfTest] and [com.ezhou.rotblock.setup.Readiness].
+     */
+    val blockTestAtMs: Long = 0L,
+    val blockTestSeen: Boolean = false,
 ) {
     fun isPaused(nowMs: Long): Boolean = nowMs < pausedUntilMs
 }
@@ -122,6 +129,8 @@ class SettingsRepository(context: Context) {
         val accessibilityConsentAt = longPreferencesKey("accessibility_consent_at_ms")
         val detectionCounters = stringPreferencesKey("detection_counters")
         val revealAddressBar = booleanPreferencesKey("reveal_address_bar")
+        val blockTestAt = longPreferencesKey("block_test_at_ms")
+        val blockTestSeen = booleanPreferencesKey("block_test_seen")
     }
 
     val settings: Flow<RotblockSettings> = store.data.map { p ->
@@ -143,6 +152,8 @@ class SettingsRepository(context: Context) {
             accessibilityConsentAtMs = p[Keys.accessibilityConsentAt] ?: d.accessibilityConsentAtMs,
             detectionCounters = p[Keys.detectionCounters] ?: d.detectionCounters,
             revealAddressBar = p[Keys.revealAddressBar] ?: d.revealAddressBar,
+            blockTestAtMs = p[Keys.blockTestAt] ?: d.blockTestAtMs,
+            blockTestSeen = p[Keys.blockTestSeen] ?: d.blockTestSeen,
         )
     }
 
@@ -212,5 +223,13 @@ class SettingsRepository(context: Context) {
 
     suspend fun setRevealAddressBar(enabled: Boolean) {
         store.edit { it[Keys.revealAddressBar] = enabled }
+    }
+
+    /** One setter for both, so a caller can never persist a timestamp without its outcome. */
+    suspend fun setBlockTestResult(atMs: Long, seen: Boolean) {
+        store.edit {
+            it[Keys.blockTestAt] = atMs
+            it[Keys.blockTestSeen] = seen
+        }
     }
 }

@@ -95,6 +95,14 @@ class BlockOverlay(private val context: Context) {
         liftsAtMs: Long?,
         onPauseRequested: () -> Unit,
         escape: Escape? = null,
+        /**
+         * True for [BlockSelfTest]: strips the screen down to the one button it advertises. A
+         * self test has no real policy behind it, so the "Close this app" and "I actually need
+         * this" links would either do nothing useful or, worse, open the pause flow for a policy
+         * that does not exist -- and either one going down a path other than [escape]'s own action
+         * would leave [BlockSelfTest] waiting for an end that never comes.
+         */
+        singleAction: Boolean = false,
     ): Boolean {
         // Text can be swapped in place; the way out cannot. A block screen that stays up while the
         // target changes underneath it -- a website block replaced by an app block on the same
@@ -112,7 +120,7 @@ class BlockOverlay(private val context: Context) {
         }
         if (!canDrawOverlays()) return false
 
-        val view = buildView(label, reason, escape)
+        val view = buildView(label, reason, escape, singleAction)
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -163,7 +171,12 @@ class BlockOverlay(private val context: Context) {
     private var reasonView: TextView? = null
 
     @SuppressLint("SetTextI18n")
-    private fun buildView(label: String, reason: BlockReason, escape: Escape?): LinearLayout {
+    private fun buildView(
+        label: String,
+        reason: BlockReason,
+        escape: Escape?,
+        singleAction: Boolean = false,
+    ): LinearLayout {
         val pad = dp(28)
         return LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -231,13 +244,15 @@ class BlockOverlay(private val context: Context) {
             // Everything below is deliberately not a button. A block screen with three equal
             // buttons puts "let me through" on the same footing as "fine, leave", and the way out
             // of a rule should never be the easiest-looking thing on the screen.
-            if (escape != null) {
-                addView(spacer(dp(18)))
-                addView(textLink(CLOSE_LABEL, "#9BA3AD") { goHome() })
-            }
+            if (!singleAction) {
+                if (escape != null) {
+                    addView(spacer(dp(18)))
+                    addView(textLink(CLOSE_LABEL, "#9BA3AD") { goHome() })
+                }
 
-            addView(spacer(dp(14)))
-            addView(textLink("I actually need this", "#6E7681") { onPauseRequested?.invoke() })
+                addView(spacer(dp(14)))
+                addView(textLink("I actually need this", "#6E7681") { onPauseRequested?.invoke() })
+            }
         }
     }
 

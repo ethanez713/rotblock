@@ -52,6 +52,8 @@ fun gatherSetupFacts(
     packageName = context.packageName,
     nowMs = nowMs,
     rottedFeeds = rottedFeedsFrom(settings, policies, nowMs),
+    blockTestAtMs = settings.blockTestAtMs,
+    blockTestSeen = settings.blockTestSeen,
 )
 
 /**

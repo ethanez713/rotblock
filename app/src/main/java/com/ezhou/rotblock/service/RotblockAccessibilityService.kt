@@ -17,6 +17,7 @@ import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditLog
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.block.BlockOverlay
+import com.ezhou.rotblock.block.BlockSelfTest
 import com.ezhou.rotblock.block.Escape
 import com.ezhou.rotblock.block.escapeLabelFor
 import com.ezhou.rotblock.block.FeedRegistry
@@ -36,6 +37,7 @@ import com.ezhou.rotblock.browser.shouldAttemptReveal
 import com.ezhou.rotblock.browser.typeEscape
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.pause.PauseController
+import com.ezhou.rotblock.policy.BlockReason
 import com.ezhou.rotblock.policy.Decision
 import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicyEngine
@@ -446,6 +448,16 @@ class RotblockAccessibilityService : AccessibilityService() {
                     friction.served(targetId)
                     persistVisit()
                 } }
+            }
+
+            // Runs on Setup's own thread, which is already the main thread this service does
+            // everything on -- no dispatch needed, unlike the callbacks above that can fire from a
+            // background coroutine. guard() returns Unit, not the Boolean this needs to report
+            // back to Setup, so the same never-crash contract is inlined here instead.
+            BlockSelfTest.onRequested = {
+                runCatching { runBlockSelfTest() }
+                    .onFailure { if (::audit.isInitialized) audit.recordError("blockSelfTest", it) }
+                    .getOrDefault(false)
             }
 
             // Undo a greyscale left on by a crash before doing anything else.
@@ -1413,6 +1425,37 @@ class RotblockAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Draws the real block overlay with a synthetic label, so Setup can prove the enforcement
+     * *output* actually paints without waiting for a real rule to fire. Refuses while a real block
+     * is already up -- this exists to check the pipe works, not to interrupt one that is already
+     * doing its job -- and refuses if the window itself could not be created, which is exactly the
+     * "SYSTEM_ALERT_WINDOW granted but the OEM still drops the window" state this exists to catch.
+     */
+    private fun runBlockSelfTest(): Boolean {
+        if (overlay.isShowing) return false
+        val shown = overlay.show(
+            label = "This is a test",
+            reason = BlockReason.HARD_BLOCK,
+            liftsAtMs = null,
+            onPauseRequested = {},
+            escape = Escape("I saw it") { guard("blockSelfTestDismiss") { endBlockSelfTest() } },
+            singleAction = true,
+        )
+        if (shown) {
+            handler.postDelayed(
+                { guard("blockSelfTestTimeout") { endBlockSelfTest() } },
+                BlockSelfTest.TIMEOUT_MS,
+            )
+        }
+        return shown
+    }
+
+    private fun endBlockSelfTest() {
+        overlay.hide()
+        BlockSelfTest.ended()
+    }
+
+    /**
      * How to get out of a block that covers more than it forbids.
      *
      * An app-level block needs nothing: the app *is* the target, so going home is a complete
@@ -1640,6 +1683,8 @@ class RotblockAccessibilityService : AccessibilityService() {
         Interstitial.onCleared = null
         FrictionGate.onShown = null
         FrictionGate.onServed = null
+        BlockSelfTest.onRequested = null
+        BlockSelfTest.ended()
         runCatching { unregisterReceiver(screenReceiver) }
         // onUnbind and onDestroy both land here; keep the first timestamp, which is when
         // enforcement actually stopped.

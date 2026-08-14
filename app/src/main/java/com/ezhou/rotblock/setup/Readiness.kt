@@ -119,6 +119,10 @@ data class SetupFacts(
     val nowMs: Long,
     /** Feeds whose view ids have stopped matching, per [rottedFeeds]. Usually empty. */
     val rottedFeeds: List<FeedProbe> = emptyList(),
+    /** When Setup last ran the block-screen self test. 0 means never. See [blockScreen]. */
+    val blockTestAtMs: Long = 0L,
+    /** Whether the user reported seeing the test overlay. Meaningless while [blockTestAtMs] is 0. */
+    val blockTestSeen: Boolean = false,
 )
 
 /**
@@ -222,23 +226,57 @@ private fun downFor(facts: SetupFacts): String {
     }
 }
 
-private fun blockScreen(facts: SetupFacts): Requirement = Requirement(
-    id = RequirementId.BLOCK_SCREEN,
-    title = "The block screen",
-    status = if (facts.overlayGranted) Status.READY else Status.MISSING,
-    need = Need.REQUIRED,
-    consequence = if (facts.overlayGranted) {
-        "Blocks can explain themselves, and offer a way back out."
-    } else {
-        // Not a fail-open, which is why the wording is about being stranded rather than about
-        // being unblocked: showBlock() still ejects you. It just cannot say why, and a website
-        // block loses the "Leave this site" button that stops the browser being a dead end.
-        "Blocked apps get closed with no explanation, and a blocked website has no way out " +
-            "except closing the browser, which reopens on the same page."
-    },
-    fix = "Settings → Apps → rotblock → Display over other apps.",
-    action = Fix.OpenSettings(SettingsScreen.OVERLAY),
-)
+/**
+ * Whether the last block-screen self test said the overlay never actually appeared.
+ *
+ * The permission check alone cannot tell this apart from a phone that is genuinely fine -- some
+ * OEMs grant `SYSTEM_ALERT_WINDOW` and still suppress the window, which is a state
+ * [SetupFacts.overlayGranted] reads as ready. Only a human looking at the screen can catch it, so
+ * this is the one requirement in the file driven by a self-report rather than a system query.
+ */
+private fun blockScreenTestFailed(facts: SetupFacts): Boolean =
+    facts.blockTestAtMs > 0L && !facts.blockTestSeen
+
+private fun blockScreen(facts: SetupFacts): Requirement {
+    val status = when {
+        !facts.overlayGranted -> Status.MISSING
+        blockScreenTestFailed(facts) -> Status.BROKEN
+        else -> Status.READY
+    }
+    return Requirement(
+        id = RequirementId.BLOCK_SCREEN,
+        title = "The block screen",
+        status = status,
+        need = Need.REQUIRED,
+        consequence = when (status) {
+            Status.READY -> "Blocks can explain themselves, and offer a way back out."
+            // Not a fail-open, which is why the wording is about being stranded rather than about
+            // being unblocked: showBlock() still ejects you. It just cannot say why, and a
+            // website block loses the "Leave this site" button that stops the browser being a
+            // dead end.
+            Status.MISSING ->
+                "Blocked apps get closed with no explanation, and a blocked website has no way " +
+                    "out except closing the browser, which reopens on the same page."
+            Status.BROKEN ->
+                "Android says rotblock can draw over other apps, but the test found nothing on " +
+                    "screen -- this phone is granting the permission and then silently dropping " +
+                    "the window, so a real block would do the same."
+        },
+        fix = when (status) {
+            // Says how to clear it, because nothing else will. This is the only requirement here
+            // resting on something the user typed rather than something the phone reports, so it
+            // cannot correct itself the way every other one does -- and a red banner with no way
+            // down is how a screen stops being read.
+            Status.BROKEN ->
+                "Run the test again from Setup if that was a mistake. Otherwise check Settings → " +
+                    "Apps → rotblock → Display over other apps is actually on; if it is, this " +
+                    "phone's manufacturer is dropping the window some other way, and there is no " +
+                    "setting here that fixes it."
+            else -> "Settings → Apps → rotblock → Display over other apps."
+        },
+        action = Fix.OpenSettings(SettingsScreen.OVERLAY),
+    )
+}
 
 private fun battery(facts: SetupFacts): Requirement = Requirement(
     id = RequirementId.BATTERY,

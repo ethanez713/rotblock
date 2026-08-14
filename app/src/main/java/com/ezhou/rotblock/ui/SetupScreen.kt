@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ezhou.rotblock.Rotblock
+import com.ezhou.rotblock.block.BlockSelfTest
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.service.EnforcementStatus
 import com.ezhou.rotblock.setup.blocking
@@ -175,6 +177,9 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
         RevealSection(settings)
 
         Spacer(Modifier.height(24.dp))
+        BlockScreenTestSection(context)
+
+        Spacer(Modifier.height(24.dp))
         ExportRow()
 
         Spacer(Modifier.height(28.dp))
@@ -291,6 +296,105 @@ private fun RevealSection(settings: RotblockSettings) {
         checked = settings.revealAddressBar,
         onChange = { scope.launch { Rotblock.settings(context).setRevealAddressBar(it) } },
     )
+}
+
+private sealed interface BlockTestState {
+    data class Idle(val message: String? = null) : BlockTestState
+    data object Running : BlockTestState
+    data object AwaitingReport : BlockTestState
+}
+
+/**
+ * Fires the real block screen with a synthetic label and asks whether it actually appeared.
+ *
+ * `overlayGranted` above only proves rotblock *asked* to draw over other apps -- some OEMs grant
+ * that and silently drop the window anyway, which nothing on the phone can query for. This runs
+ * the exact path a real block takes (`BlockOverlay`, via [BlockSelfTest]) rather than a mock, and
+ * records what the human looking at the screen reports back.
+ */
+@Composable
+private fun BlockScreenTestSection(context: Context) {
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var state by remember { mutableStateOf<BlockTestState>(BlockTestState.Idle()) }
+
+    // No event marks the overlay coming down -- a tap and the ten-second timeout both just stop
+    // it -- so this polls the same way EnforcementCard does, and only while this state is active.
+    LaunchedEffect(state) {
+        if (state !is BlockTestState.Running) return@LaunchedEffect
+        while (BlockSelfTest.isRunning) delay(250)
+        state = BlockTestState.AwaitingReport
+    }
+
+    Text(
+        "Testing the block screen",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "Puts the real block screen up for a few seconds, right here on top of this one. That " +
+            "checks the service is running and that the window actually paints — some phones " +
+            "grant the permission and drop the window anyway. It does not test foreground " +
+            "detection or whether a rule would fire.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
+
+    when (val current = state) {
+        is BlockTestState.Idle -> {
+            TextButton(
+                onClick = {
+                    state = when (BlockSelfTest.request()) {
+                        true -> BlockTestState.Running
+                        false -> BlockTestState.Idle(
+                            "A block is already on screen. Try again once it clears.",
+                        )
+                        null -> BlockTestState.Idle(
+                            "Enforcement is not running, so there is nothing to test.",
+                        )
+                    }
+                },
+                contentPadding = PaddingValues(0.dp),
+            ) { Text("Test the block screen") }
+            current.message?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+        }
+
+        BlockTestState.Running -> Text(
+            "Showing it now. Tap “I saw it” on the block screen, or wait for it to go.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        BlockTestState.AwaitingReport -> {
+            Text("Did it appear?", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            Rotblock.settings(context)
+                                .setBlockTestResult(System.currentTimeMillis(), seen = true)
+                        }
+                        state = BlockTestState.Idle()
+                    },
+                    contentPadding = PaddingValues(0.dp),
+                ) { Text("I saw it") }
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            Rotblock.settings(context)
+                                .setBlockTestResult(System.currentTimeMillis(), seen = false)
+                        }
+                        state = BlockTestState.Idle()
+                    },
+                    contentPadding = PaddingValues(0.dp),
+                ) { Text("Nothing appeared") }
+            }
+        }
+    }
 }
 
 @Composable
