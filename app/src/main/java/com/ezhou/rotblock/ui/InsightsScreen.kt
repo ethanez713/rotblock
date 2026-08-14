@@ -209,12 +209,20 @@ private fun KindSummaryCard(state: InsightsState) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
+            // Slots go to the categories actually present, in order -- not indexed by Category
+            // ordinal. Indexing by ordinal would hand out scattered slots and drop everything past
+            // the sixth into one undifferentiated grey, which is the colourblind-safety property
+            // the palette's slot order exists to provide. The enum's own order decides who is
+            // first so the colours do not reshuffle between refreshes; the rows below are still
+            // ordered by time, since that is what the reader wants to scan.
+            val slots = totals.byCategory.keys.sortedBy { it.ordinal }
+                .withIndex().associate { (slot, category) -> category to slot }
             val byCategory = totals.byCategory.toList().sortedByDescending { it.second }
             if (byCategory.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 byCategory.forEach { (category, ms) ->
                     LegendRow(
-                        color = ChartPalette.series(category.ordinal),
+                        color = ChartPalette.series(slots.getValue(category)),
                         label = category.name.lowercase().replaceFirstChar { it.uppercase() },
                         value = formatDuration(ms),
                     )
