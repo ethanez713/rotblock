@@ -32,6 +32,7 @@ import com.ezhou.rotblock.browser.BrowserSpec
 import com.ezhou.rotblock.browser.LinkConsensus
 import com.ezhou.rotblock.browser.PageSignature
 import com.ezhou.rotblock.browser.escapeIntent
+import com.ezhou.rotblock.browser.typeEscape
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.pause.PauseController
 import com.ezhou.rotblock.policy.Decision
@@ -1058,6 +1059,63 @@ class RotblockAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Re-finds the address-bar node itself, for [typeEscape] rather than a read.
+     *
+     * A node from the block screen is stale by the time an escape is tapped, so this looks again
+     * from a fresh [rootInActiveWindow] instead of holding one across that gap.
+     *
+     * Which node counts as *the* bar is [AddressBar.read]'s decision and is asked here rather than
+     * re-derived, so this cannot drift away from what a read would have concluded on the same
+     * screen. A [AddressBar.Read.Chooser] ends the search rather than falling through to the next
+     * id, for the same reason it does there: a screen offering a list of URLs has no bar on it to
+     * type into.
+     */
+    private fun AccessibilityNodeInfo.findAddressBarNode(spec: BrowserSpec): AccessibilityNodeInfo? {
+        for (viewId in spec.urlBarIds) {
+            val nodes = findAccessibilityNodeInfosByViewId(viewId) ?: continue
+            val candidates = nodes.map { node ->
+                AddressBar.Candidate(
+                    text = node.text?.toString() ?: node.contentDescription?.toString(),
+                    visible = runCatching { node.isVisibleToUser }.getOrDefault(true),
+                )
+            }
+            val read = AddressBar.read(candidates)
+            // Two nodes can carry the same text, and a visible one is the one read() resolved to.
+            val winner = (read as? AddressBar.Read.Text)?.let { text ->
+                nodes.indices
+                    .filter { candidates[it].text == text.value }
+                    .minByOrNull { if (candidates[it].visible) 0 else 1 }
+                    ?.let { nodes[it] }
+            }
+            nodes.filter { it !== winner }.forEach { it.recycleCompat() }
+            if (winner != null) return winner
+            if (read is AddressBar.Read.Chooser) return null
+        }
+        return null
+    }
+
+    /**
+     * Types [BrowserRegistry.ESCAPE_URL] straight into [browser]'s own address bar. This is tried
+     * before [escapeIntent] because it is what actually worked against Samsung Internet's
+     * rejection of that intent -- see [typeEscape].
+     */
+    private fun typeEscapeInBrowser(browser: String): Boolean {
+        val spec = BrowserRegistry.specFor(browser) ?: return false
+        val root = rootInActiveWindow ?: return false
+        try {
+            if (root.packageName?.toString() != browser) return false
+            val bar = root.findAddressBarNode(spec) ?: return false
+            try {
+                return typeEscape(bar, BrowserRegistry.ESCAPE_URL)
+            } finally {
+                bar.recycleCompat()
+            }
+        } finally {
+            root.recycleCompat()
+        }
+    }
+
     /** recycle() is a deprecated no-op from API 33; still worth calling below that. */
     private fun AccessibilityNodeInfo.recycleCompat() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -1237,13 +1295,21 @@ class RotblockAccessibilityService : AccessibilityService() {
             // own: a restored tab can have no history, in which case back closes the browser and
             // reopening lands on the same blocked page again. Loading a URL changes what the
             // active tab *is*, which survives the app being closed and reopened.
+            //
+            // Typing into the bar is tried first, since it is what actually works against a
+            // browser that rejects the escape intent outright (Samsung Internet: "Invalid
+            // address", page unchanged). The intent stays as the fallback for anything below API
+            // 30 or with no readable bar, and global back is the last resort if both refuse.
             TargetKind.WEBSITE -> {
                 {
                     guard("escapeSite") {
                         val browser = currentPackage
-                        val navigated = browser != null && runCatching {
+                        val typed = browser != null &&
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                            typeEscapeInBrowser(browser)
+                        val navigated = typed || (browser != null && runCatching {
                             startActivity(escapeIntent(browser))
-                        }.isSuccess
+                        }.isSuccess)
                         if (!navigated) performGlobalAction(GLOBAL_ACTION_BACK)
                     }
                 }
