@@ -67,7 +67,6 @@ have to come over ADB:
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell appops set com.ezhou.rotblock ACCESS_RESTRICTED_SETTINGS allow
 adb shell appops set com.ezhou.rotblock SYSTEM_ALERT_WINDOW allow
-adb shell appops set com.ezhou.rotblock android:get_usage_stats allow
 adb shell pm grant com.ezhou.rotblock android.permission.WRITE_SECURE_SETTINGS   # greyscale only
 ```
 
@@ -80,9 +79,13 @@ Battery → **Unrestricted** and remove rotblock from "Deep sleeping apps", or t
 |---|---|
 | Accessibility service | The only enforcement path: which app is in the foreground, and the address bar text in browsers. |
 | `SYSTEM_ALERT_WINDOW` | Draws the block screen. Without it, blocking degrades to ejecting you to the home screen. |
-| `QUERY_ALL_PACKAGES` | Lists installed apps so you can pick what to block. |
-| `PACKAGE_USAGE_STATS` | Backfills usage history. |
+| `POST_NOTIFICATIONS` | The countdown notification, which is off by default. |
 | `WRITE_SECURE_SETTINGS` | Greyscale only. Grantable solely over ADB; the app works fine without it. |
+| `<queries>`, not a permission | Two scoped lookups — what the user can launch, for the app picker, and who handles a given website, for a rule's logo. `QUERY_ALL_PACKAGES` was removed; Play refuses it when a scoped declaration does the job. |
+
+Usage history comes from rotblock's own ledger and nowhere else. There is no `PACKAGE_USAGE_STATS`
+grant and no `UsageStatsManager` call, which is also why the ledger has nothing to say about an app
+before a rule covering it existed.
 
 There is deliberately **no `INTERNET` permission**, and no networking library in the dependency
 tree. Cloud backup and device-to-device transfer are both excluded in

@@ -66,7 +66,7 @@ sealed interface Fix {
 
 enum class SettingsScreen { ACCESSIBILITY, OVERLAY, BATTERY, APP_NOTIFICATIONS }
 
-enum class RequirementId { ENFORCEMENT, BLOCK_SCREEN, BATTERY, NOTIFICATIONS, GREYSCALE }
+enum class RequirementId { ENFORCEMENT, BLOCK_SCREEN, BATTERY, NOTIFICATIONS, GREYSCALE, DETECTION }
 
 data class Requirement(
     val id: RequirementId,
@@ -117,6 +117,8 @@ data class SetupFacts(
     /** Ours, so the ADB advice is copyable rather than approximately right. */
     val packageName: String,
     val nowMs: Long,
+    /** Feeds whose view ids have stopped matching, per [rottedFeeds]. Usually empty. */
+    val rottedFeeds: List<FeedProbe> = emptyList(),
 )
 
 /**
@@ -154,6 +156,7 @@ fun requirementsFor(facts: SetupFacts): List<Requirement> = buildList {
     add(battery(facts))
     if (facts.notificationReadoutWanted) add(notifications(facts))
     if (facts.greyscaleRuleCount > 0) add(greyscale(facts))
+    if (facts.rottedFeeds.isNotEmpty()) add(detection(facts))
 }
 
 /** The ones that mean nothing is being enforced right now. Drives the banner. */
@@ -289,3 +292,29 @@ private fun greyscale(facts: SetupFacts): Requirement = Requirement(
         "adb shell pm grant ${facts.packageName} android.permission.WRITE_SECURE_SETTINGS",
     ),
 )
+
+/**
+ * A feed rule that is switched on and has never once recognised its feed.
+ *
+ * RECOMMENDED rather than REQUIRED on purpose, and it is the only requirement here built on a guess
+ * rather than a fact about the phone. The banner on the Blocks screen means "nothing is being
+ * enforced"; a heuristic that can be wrong must never be allowed to raise it, or the one signal
+ * this app has stops being believed.
+ */
+private fun detection(facts: SetupFacts): Requirement {
+    val names = facts.rottedFeeds.joinToString(" and ") { it.label }
+    return Requirement(
+        id = RequirementId.DETECTION,
+        title = "Feed detection",
+        // Not MISSING: the rule exists, it is switched on, and it is quietly doing nothing --
+        // the same shape as a greyscale rule on a phone that never granted the permission.
+        status = Status.BROKEN,
+        need = Need.RECOMMENDED,
+        consequence = "You have opened the app behind $names many times with the rule on and the " +
+            "feed itself was never recognised, so it has not been blocked. That usually means an " +
+            "app update renamed the thing rotblock looks for.",
+        fix = "Open the feed on this phone with a computer attached and run this, then look in " +
+            "w.xml for the container the feed sits in. The ids live in FeedRegistry.kt.",
+        action = Fix.RunOverAdb("adb shell uiautomator dump /sdcard/w.xml && adb pull /sdcard/w.xml"),
+    )
+}

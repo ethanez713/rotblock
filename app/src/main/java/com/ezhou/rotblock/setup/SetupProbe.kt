@@ -12,8 +12,10 @@ import android.provider.Settings
 import android.text.TextUtils
 import androidx.core.content.ContextCompat
 import com.ezhou.rotblock.Rotblock
+import com.ezhou.rotblock.block.FeedRegistry
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.service.EnforcementStatus
 import com.ezhou.rotblock.service.KEY_LAST_ALIVE
 import com.ezhou.rotblock.service.OUTAGE_PREFS
@@ -49,7 +51,28 @@ fun gatherSetupFacts(
     greyscaleRuleCount = policies.count { it.enabled && it.grayscale },
     packageName = context.packageName,
     nowMs = nowMs,
+    rottedFeeds = rottedFeedsFrom(settings, policies, nowMs),
 )
+
+/**
+ * Only feeds someone actually wrote a rule for, and only while that rule is on.
+ *
+ * The counters do not know about policies -- the service increments them wherever it looks, which
+ * is what keeps them off the enforcement path -- so the join happens here. A feed nobody asked to
+ * be blocked has never been failing to block.
+ */
+private fun rottedFeedsFrom(
+    settings: RotblockSettings,
+    policies: List<Policy>,
+    nowMs: Long,
+): List<FeedProbe> {
+    val counters = DetectionCounters.decode(settings.detectionCounters)
+    if (counters.windowStartMs == 0L) return emptyList()
+    val ruled = FeedRegistry.specs.filter { spec ->
+        policies.any { it.enabled && it.kind == TargetKind.FEED && it.matcher == spec.key }
+    }
+    return rottedFeeds(counters.probes(ruled), nowMs - counters.windowStartMs)
+}
 
 /**
  * Reads Android's own enabled-services list rather than tracking a flag of our own, so the answer

@@ -70,6 +70,7 @@ suspend fun buildExport(db: RotblockDatabase, settings: RotblockSettings, nowMs:
         .put("hudPositionY", settings.hudPositionY)
         .put("onboardedAtMs", settings.onboardedAtMs)
         .put("accessibilityConsentAtMs", settings.accessibilityConsentAtMs)
+        .put("detectionCounters", settings.detectionCounters)
 
     return JSONObject()
         .put("format", 1)

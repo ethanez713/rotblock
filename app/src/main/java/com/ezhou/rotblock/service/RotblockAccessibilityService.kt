@@ -40,6 +40,7 @@ import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicyEngine
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.UsageLedger
+import com.ezhou.rotblock.setup.DetectionCounters
 import com.ezhou.rotblock.ui.FrictionActivity
 import com.ezhou.rotblock.ui.PauseRequestActivity
 import kotlinx.coroutines.CoroutineScope
@@ -65,6 +66,15 @@ import kotlinx.coroutines.withContext
  */
 private const val MIN_TICK_MS = 1_000L
 private const val MAX_TICK_MS = 15_000L
+
+/**
+ * How often the feed-detection counters reach disk.
+ *
+ * Long, because nothing depends on them being current: the alarm they feed needs three days of
+ * counting before it says anything. Short enough that a process kill costs one window's worth of
+ * evidence rather than the window itself.
+ */
+private const val DETECTION_FLUSH_MS = 5 * 60 * 1000L
 
 /**
  * Ceiling for a tick that is purely waiting out a deadline.
@@ -253,6 +263,10 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     private val friction = FrictionGate()
 
+    /** See [noteDetectionLook]. Diagnostic only; never read by anything that decides a block. */
+    @Volatile private var detection = DetectionCounters()
+    private var detectionFlushedAtMs = 0L
+
     /** Read on every window change, so it stays a plain volatile map lookup. */
     @Volatile private var policiesByTarget: Map<String, Policy> = emptyMap()
 
@@ -438,6 +452,13 @@ class RotblockAccessibilityService : AccessibilityService() {
                 ledger.load(System.currentTimeMillis())
                 ledger.prune(System.currentTimeMillis())
                 pause.refresh()
+
+                // Read once rather than from the settings flow below: the flow re-emits on every
+                // unrelated settings change, and adopting the stored string again would throw away
+                // whatever has been counted since the last flush.
+                detection = DetectionCounters.decode(
+                    Rotblock.settings(this@RotblockAccessibilityService).current().detectionCounters,
+                )
 
                 // Off the main thread on purpose: this reads the node tree, which the event
                 // callback is never allowed to do.
@@ -869,9 +890,11 @@ class RotblockAccessibilityService : AccessibilityService() {
                 return Inspected.Unreadable
             }
 
-            val feedKey = FeedRegistry.specsFor(pkg)
+            val feedSpecs = FeedRegistry.specsFor(pkg)
+            val feedKey = feedSpecs
                 .firstOrNull { spec -> spec.viewIdHints.any { root.hasViewId(it) } }
                 ?.key
+            if (feedSpecs.isNotEmpty()) noteDetectionLook(pkg, feedKey)
             val browserSpec = BrowserRegistry.specFor(pkg)
             val bar = browserSpec?.let { root.readAddressBar(it) }
             val url = (bar as? AddressBar.Read.Text)?.value
@@ -1121,6 +1144,38 @@ class RotblockAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             @Suppress("DEPRECATION")
             runCatching { recycle() }
+        }
+    }
+
+    /**
+     * Tally one inspection of a package a feed rule cares about, and whether its ids were found.
+     *
+     * Two map increments and a clock comparison, deliberately: this runs on the inspector coroutine
+     * for every read of YouTube or Instagram, and anything heavier here would be paid for on the
+     * busiest path in the app. The disk write happens at most every [DETECTION_FLUSH_MS] and is
+     * fire-and-forget.
+     *
+     * Purely diagnostic. Nothing in [PolicyEngine], [classifyInspection] or [applyTarget] reads
+     * these, and losing a window to a crash costs a warning arriving later than it might have.
+     */
+    private fun noteDetectionLook(pkg: String, foundFeedKey: String?) {
+        val nowMs = System.currentTimeMillis()
+        val counted = detection.rolled(nowMs).withLook(pkg)
+        detection = if (foundFeedKey == null) counted else counted.withHit(foundFeedKey)
+        if (nowMs - detectionFlushedAtMs >= DETECTION_FLUSH_MS) flushDetection(nowMs)
+    }
+
+    /**
+     * Piggybacks on the inspection that just happened rather than arming anything of its own —
+     * `CLAUDE.md` forbids a new repeating callback, and a counter is not worth a wakeup.
+     */
+    private fun flushDetection(nowMs: Long) {
+        detectionFlushedAtMs = nowMs
+        val encoded = detection.encode()
+        scope.launch {
+            runCatching {
+                Rotblock.settings(this@RotblockAccessibilityService).setDetectionCounters(encoded)
+            }
         }
     }
 
@@ -1513,6 +1568,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         // going away, and nothing would be left to take that window down again.
         handler.removeCallbacksAndMessages(null)
         if (::ledger.isInitialized) ledger.closeSession(now)
+        flushDetection(now)
         if (::overlay.isInitialized) overlay.hide()
         // Enforcement going away must not leave a countdown on screen claiming it is still
         // counting. That is the one lie this readout cannot be allowed to tell.

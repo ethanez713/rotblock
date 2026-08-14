@@ -1,5 +1,6 @@
 package com.ezhou.rotblock
 
+import com.ezhou.rotblock.setup.FeedProbe
 import com.ezhou.rotblock.setup.Fix
 import com.ezhou.rotblock.setup.Need
 import com.ezhou.rotblock.setup.RequirementId
@@ -38,6 +39,7 @@ class ReadinessTest {
         notificationReadoutWanted: Boolean = false,
         greyscaleRuleCount: Int = 0,
         processUptimeMs: Long = 60_000L,
+        rottedFeeds: List<FeedProbe> = emptyList(),
     ) = SetupFacts(
         accessibilityEnabled = accessibilityEnabled,
         serviceConnected = serviceConnected,
@@ -52,6 +54,7 @@ class ReadinessTest {
         greyscaleRuleCount = greyscaleRuleCount,
         packageName = "com.ezhou.rotblock",
         nowMs = t0,
+        rottedFeeds = rottedFeeds,
     )
 
     private fun List<com.ezhou.rotblock.setup.Requirement>.byId(id: RequirementId) =
@@ -175,6 +178,23 @@ class ReadinessTest {
 
         val many = requirementsFor(facts(greyscaleRuleCount = 3, secureSettingsGranted = false))
         assertTrue(many.byId(RequirementId.GREYSCALE)!!.consequence.contains("3 rules"))
+    }
+
+    @Test
+    fun `a rotted feed is reported without raising the banner`() {
+        // The one requirement built on a guess rather than on a fact about the phone. The banner
+        // means "nothing is being enforced"; a heuristic must not be able to say that.
+        val quiet = requirementsFor(facts())
+        assertNull(quiet.byId(RequirementId.DETECTION))
+
+        val rotted = requirementsFor(
+            facts(rottedFeeds = listOf(FeedProbe("youtube_shorts", "YouTube Shorts", 200, 0))),
+        )
+        val detection = rotted.byId(RequirementId.DETECTION)!!
+        assertEquals(Need.RECOMMENDED, detection.need)
+        assertEquals(Status.BROKEN, detection.status)
+        assertTrue(detection.consequence.contains("YouTube Shorts"))
+        assertTrue(rotted.blocking.isEmpty())
     }
 
     @Test

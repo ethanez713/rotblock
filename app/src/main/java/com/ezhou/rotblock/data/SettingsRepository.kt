@@ -79,6 +79,14 @@ data class RotblockSettings(
      * decision rather than a tap on a button that said "Open settings".
      */
     val accessibilityConsentAtMs: Long = 0L,
+    /**
+     * How often each feed's host app was inspected and how often its view ids were found, encoded
+     * by [com.ezhou.rotblock.setup.DetectionCounters].
+     *
+     * Purely diagnostic: nothing in enforcement reads it, and losing it costs a later warning and
+     * nothing else.
+     */
+    val detectionCounters: String = "",
 ) {
     fun isPaused(nowMs: Long): Boolean = nowMs < pausedUntilMs
 }
@@ -103,6 +111,7 @@ class SettingsRepository(context: Context) {
         val hudPositionY = intPreferencesKey("hud_position_y")
         val onboardedAt = longPreferencesKey("onboarded_at_ms")
         val accessibilityConsentAt = longPreferencesKey("accessibility_consent_at_ms")
+        val detectionCounters = stringPreferencesKey("detection_counters")
     }
 
     val settings: Flow<RotblockSettings> = store.data.map { p ->
@@ -122,6 +131,7 @@ class SettingsRepository(context: Context) {
             hudPositionY = p[Keys.hudPositionY] ?: d.hudPositionY,
             onboardedAtMs = p[Keys.onboardedAt] ?: d.onboardedAtMs,
             accessibilityConsentAtMs = p[Keys.accessibilityConsentAt] ?: d.accessibilityConsentAtMs,
+            detectionCounters = p[Keys.detectionCounters] ?: d.detectionCounters,
         )
     }
 
@@ -183,5 +193,9 @@ class SettingsRepository(context: Context) {
     /** Only ever set forward, never cleared: consent given is a fact about what happened. */
     suspend fun setAccessibilityConsentAt(atMs: Long) {
         store.edit { it[Keys.accessibilityConsentAt] = atMs }
+    }
+
+    suspend fun setDetectionCounters(encoded: String) {
+        store.edit { it[Keys.detectionCounters] = encoded }
     }
 }
