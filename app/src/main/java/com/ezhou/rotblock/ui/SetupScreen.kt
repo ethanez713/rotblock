@@ -15,11 +15,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -41,17 +46,23 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.block.BlockSelfTest
 import com.ezhou.rotblock.data.RotblockSettings
+import com.ezhou.rotblock.data.buildExport
 import com.ezhou.rotblock.service.EnforcementStatus
+import com.ezhou.rotblock.setup.RequirementId
 import com.ezhou.rotblock.setup.blocking
 import com.ezhou.rotblock.setup.isInstalledFromStore
 import com.ezhou.rotblock.setup.hasNotificationPermission
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
     val context = LocalContext.current
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val policies by viewModel.policies.collectAsStateWithLifecycle()
 
     // One list, shared with onboarding and the Blocks banner, re-read while you look at it.
@@ -92,108 +103,196 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
             }
         }
 
-        Spacer(Modifier.height(24.dp))
-        Text("Pause rules", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "These shape how hard it is to let something through. None of them can switch " +
-                "blocking off permanently — every pause still ends by itself.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(16.dp))
-
-        SliderRow(
-            label = "Cooldown before a pause starts",
-            value = settings.cooldownSeconds.toFloat(),
-            range = 0f..120f,
-            steps = 11,
-            format = { if (it.toInt() == 0) "off" else "${it.toInt()}s" },
-            onChange = { scope.launch { Rotblock.settings(context).setCooldownSeconds(it.toInt()) } },
-        )
-        SliderRow(
-            label = "Pauses allowed per day",
-            value = settings.maxPausesPerDay.toFloat(),
-            range = 0f..10f,
-            steps = 9,
-            format = { if (it.toInt() == 0) "unlimited" else "${it.toInt()}" },
-            onChange = { scope.launch { Rotblock.settings(context).setMaxPausesPerDay(it.toInt()) } },
-        )
-        SliderRow(
-            label = "Pause minutes per day",
-            value = settings.maxPauseMinutesPerDay.toFloat(),
-            range = 0f..240f,
-            steps = 15,
-            format = { if (it.toInt() == 0) "unlimited" else "${it.toInt()} min" },
-            onChange = {
-                scope.launch { Rotblock.settings(context).setMaxPauseMinutesPerDay(it.toInt()) }
-            },
-        )
-        SliderRow(
-            label = "Day resets at",
-            value = settings.dayStartHour.toFloat(),
-            range = 0f..12f,
-            steps = 11,
-            format = { "${it.toInt()}:00" },
-            onChange = { scope.launch { Rotblock.settings(context).setDayStartHour(it.toInt()) } },
-        )
-
         Spacer(Modifier.height(20.dp))
-        Text(
-            "Loosening a rule",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "How long an edit waits before it takes effect, when that edit makes a rule weaker — " +
-                "raising a limit, turning a block off, deleting it. Tightening a rule is never " +
-                "delayed. Set it to 0 to turn the wait off entirely.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(12.dp))
-        SliderRow(
-            label = "Wait before it applies",
-            value = settings.weakeningDelayMinutes.toFloat(),
-            range = 0f..240f,
-            steps = 15,
-            format = {
-                when (val m = it.toInt()) {
-                    0 -> "off"
-                    in 1..59 -> "$m min"
-                    else -> "${m / 60}h ${m % 60}m".removeSuffix(" 0m")
-                }
-            },
-            onChange = {
-                scope.launch { Rotblock.settings(context).setWeakeningDelayMinutes(it.toInt()) }
-            },
-        )
 
-        Spacer(Modifier.height(24.dp))
-        CountdownSection(settings)
-
-        Spacer(Modifier.height(24.dp))
-        RevealSection(settings)
-
-        Spacer(Modifier.height(24.dp))
-        BlockScreenTestSection(context)
-
-        Spacer(Modifier.height(24.dp))
-        ExportRow()
+        // Everything below is collapsed, and each header carries the setting's current value, so
+        // the screen reads as a short list of answers rather than eight essays. The requirement
+        // cards above are the exception and stay open: they are the only part of this screen that
+        // is ever urgent, and one that has to be opened to be seen is one nobody sees.
+        Section("Letting something through", pauseSummary(settings)) {
+            LettingThroughControls(settings)
+        }
+        Section("The countdown readout", countdownSummary(settings)) {
+            CountdownControls(settings)
+        }
+        Section(
+            "Finding a scrolled-away page",
+            if (settings.revealAddressBar) "On" else "Off",
+        ) { RevealControls(settings) }
+        Section("Testing the block screen", blockTestSummary(settings)) {
+            BlockScreenTestControls(context)
+        }
+        Section("Keeping a copy", "Write every rule and all history to a file") {
+            ExportControls()
+        }
 
         Spacer(Modifier.height(28.dp))
         EnforcementCard()
 
-        // Only for sideloaded builds. "Restricted settings" does not apply to a store install, so
-        // on a normal phone this card is a paragraph about a problem that cannot happen, sitting
-        // under the one screen where every extra word costs.
-        if (sideloaded) {
+        // Only for a sideloaded build, and only while enforcement is not running. "Restricted
+        // settings" is a story about a switch that would not turn on, so once it is on this card
+        // is a paragraph about a problem that has already been solved, sitting under the one
+        // screen where every extra word costs.
+        val enforcementReady = requirements.firstOrNull {
+            it.id == RequirementId.ENFORCEMENT
+        }?.isReady ?: false
+        if (sideloaded && !enforcementReady) {
             Spacer(Modifier.height(28.dp))
             AdbCard(context)
         }
         Spacer(Modifier.height(40.dp))
     }
+}
+
+/**
+ * One collapsed setting group: what it is, what it is currently set to, and the controls behind a
+ * tap.
+ *
+ * The summary is the point rather than decoration. This screen is read to answer "what is it doing
+ * right now", and a header that says "60s wait · 3 a day" answers that without opening anything --
+ * which is what lets the explanations stay long enough to be worth reading when they are opened.
+ */
+@Composable
+private fun Section(title: String, summary: String, content: @Composable () -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                contentDescription = if (expanded) "Hide" else "Show",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (expanded) {
+            Column(Modifier.padding(bottom = 12.dp)) { content() }
+        }
+    }
+}
+
+private fun pauseSummary(settings: RotblockSettings): String {
+    val cooldown = if (settings.cooldownSeconds == 0) "no wait" else "${settings.cooldownSeconds}s wait"
+    val perDay = if (settings.maxPausesPerDay == 0) "unlimited" else "${settings.maxPausesPerDay} a day"
+    val loosening = when (val m = settings.weakeningDelayMinutes) {
+        0 -> "loosening applies at once"
+        in 1..59 -> "loosening waits ${m}m"
+        else -> "loosening waits ${"${m / 60}h ${m % 60}m".removeSuffix(" 0m")}"
+    }
+    return "$cooldown · $perDay · $loosening"
+}
+
+private fun countdownSummary(settings: RotblockSettings): String = when {
+    settings.hudEnabled && settings.hudNotification -> "Ring and notification"
+    settings.hudEnabled -> "Ring, ${settings.hudOpacityPercent}% solid"
+    settings.hudNotification -> "Notification only"
+    // Named rather than left as "Off", because an absent readout is supposed to mean "nothing is
+    // being counted" -- and that reading is only honest if it is obvious you switched it off.
+    else -> "Off — nothing will show while time is spent"
+}
+
+private fun blockTestSummary(settings: RotblockSettings): String = when {
+    settings.blockTestAtMs == 0L -> "Never tested"
+    settings.blockTestSeen -> "Last test: the block screen appeared"
+    else -> "Last test: nothing appeared"
+}
+
+/**
+ * Every knob that decides how hard it is to let something through, in one place.
+ *
+ * The pause budget and the weakening delay used to be two sections, and they are the same
+ * question asked twice: how much friction sits between wanting past a rule and being past it. A
+ * pause buys minutes now, a weakening delay taxes the edit that would buy them permanently, and
+ * neither can switch blocking off for good.
+ */
+@Composable
+private fun LettingThroughControls(settings: RotblockSettings) {
+    val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    Text(
+        "None of these can switch blocking off permanently — every pause still ends by itself.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(12.dp))
+
+    SliderRow(
+        label = "Cooldown before a pause starts",
+        value = settings.cooldownSeconds.toFloat(),
+        range = 0f..120f,
+        steps = 11,
+        format = { if (it.toInt() == 0) "off" else "${it.toInt()}s" },
+        onChange = { scope.launch { Rotblock.settings(context).setCooldownSeconds(it.toInt()) } },
+    )
+    SliderRow(
+        label = "Pauses allowed per day",
+        value = settings.maxPausesPerDay.toFloat(),
+        range = 0f..10f,
+        steps = 9,
+        format = { if (it.toInt() == 0) "unlimited" else "${it.toInt()}" },
+        onChange = { scope.launch { Rotblock.settings(context).setMaxPausesPerDay(it.toInt()) } },
+    )
+    SliderRow(
+        label = "Pause minutes per day",
+        value = settings.maxPauseMinutesPerDay.toFloat(),
+        range = 0f..240f,
+        steps = 15,
+        format = { if (it.toInt() == 0) "unlimited" else "${it.toInt()} min" },
+        onChange = {
+            scope.launch { Rotblock.settings(context).setMaxPauseMinutesPerDay(it.toInt()) }
+        },
+    )
+    SliderRow(
+        label = "Day resets at",
+        value = settings.dayStartHour.toFloat(),
+        range = 0f..12f,
+        steps = 11,
+        format = { "${it.toInt()}:00" },
+        onChange = { scope.launch { Rotblock.settings(context).setDayStartHour(it.toInt()) } },
+    )
+
+    Spacer(Modifier.height(12.dp))
+    Text(
+        "How long an edit waits before it takes effect, when that edit makes a rule weaker — " +
+            "raising a limit, turning a block off, deleting it. Tightening a rule is never " +
+            "delayed. Set it to 0 to turn the wait off entirely.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    SliderRow(
+        label = "Wait before a loosening applies",
+        value = settings.weakeningDelayMinutes.toFloat(),
+        range = 0f..240f,
+        steps = 15,
+        format = {
+            when (val m = it.toInt()) {
+                0 -> "off"
+                in 1..59 -> "$m min"
+                else -> "${m / 60}h ${m % 60}m".removeSuffix(" 0m")
+            }
+        },
+        onChange = {
+            scope.launch { Rotblock.settings(context).setWeakeningDelayMinutes(it.toInt()) }
+        },
+    )
 }
 
 /**
@@ -208,7 +307,7 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
  * toggle does. This switch is the only way to make that permanent.
  */
 @Composable
-private fun CountdownSection(settings: RotblockSettings) {
+private fun CountdownControls(settings: RotblockSettings) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
@@ -219,12 +318,6 @@ private fun CountdownSection(settings: RotblockSettings) {
         ActivityResultContracts.RequestPermission(),
     ) { }
 
-    Text(
-        "While you are using something",
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.SemiBold,
-    )
-    Spacer(Modifier.height(4.dp))
     Text(
         "A countdown of what is left of an allowance, shown only while that allowance is actually " +
             "being spent — if it is not there, nothing is being counted. Drag the ring anywhere, " +
@@ -273,16 +366,10 @@ private fun CountdownSection(settings: RotblockSettings) {
  * action on a page that might carry no rule at all, so it is opted into rather than assumed.
  */
 @Composable
-private fun RevealSection(settings: RotblockSettings) {
+private fun RevealControls(settings: RotblockSettings) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
-    Text(
-        "Finding a scrolled-away page",
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.SemiBold,
-    )
-    Spacer(Modifier.height(4.dp))
     Text(
         "Some browsers hide the address bar once you scroll, which can leave a site untracked " +
             "until you scroll back up. When this is on, rotblock will occasionally tap your " +
@@ -313,7 +400,7 @@ private sealed interface BlockTestState {
  * records what the human looking at the screen reports back.
  */
 @Composable
-private fun BlockScreenTestSection(context: Context) {
+private fun BlockScreenTestControls(context: Context) {
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var state by remember { mutableStateOf<BlockTestState>(BlockTestState.Idle()) }
 
@@ -325,12 +412,6 @@ private fun BlockScreenTestSection(context: Context) {
         state = BlockTestState.AwaitingReport
     }
 
-    Text(
-        "Testing the block screen",
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.SemiBold,
-    )
-    Spacer(Modifier.height(4.dp))
     Text(
         "Puts the real block screen up for a few seconds, right here on top of this one. That " +
             "checks the service is running and that the window actually paints — some phones " +
@@ -395,6 +476,45 @@ private fun BlockScreenTestSection(context: Context) {
             }
         }
     }
+}
+
+/** A copy of every rule, setting and history row, written wherever the user chooses. */
+@Composable
+private fun ExportControls() {
+    val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                val json = buildExport(
+                    db = Rotblock.database(context),
+                    settings = Rotblock.settings(context).current(),
+                    nowMs = System.currentTimeMillis(),
+                )
+                context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
+            }
+        }
+    }
+
+    Text(
+        "A reinstall or a lost phone loses every rule and all history, and this is the only way " +
+            "to keep a copy. There is deliberately no way to read one back in: restoring rules " +
+            "would apply any loosening in them instantly, which is the one thing this app exists " +
+            "to stop.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
+    TextButton(
+        onClick = {
+            launcher.launch("rotblock-${SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())}.json")
+        },
+        contentPadding = PaddingValues(0.dp),
+    ) { Text("Export a copy") }
 }
 
 @Composable
