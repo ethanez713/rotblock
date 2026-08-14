@@ -32,12 +32,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ezhou.rotblock.audit.AuditEvent
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.block.formatDuration
+import com.ezhou.rotblock.insights.AppCatalog
+import com.ezhou.rotblock.insights.Category
+import com.ezhou.rotblock.insights.Productivity
+import com.ezhou.rotblock.insights.TargetSession
+import com.ezhou.rotblock.insights.classifyTotals
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -96,6 +102,7 @@ fun InsightsScreen(viewModel: RotblockViewModel) {
             item { Text("Working it out…", style = MaterialTheme.typography.bodyMedium) }
         } else {
             item { Scorecard(current) }
+            item { KindSummaryCard(current) }
             item {
                 UsageChartCard(
                     state = current,
@@ -152,6 +159,68 @@ private fun Scorecard(state: InsightsState) {
             Modifier.weight(1f),
             emphasis = state.weakeningCount > 0,
         )
+    }
+}
+
+/**
+ * Not just per-target: what the time was actually *for*. Unclassified is named rather than folded
+ * into "neutral", since an unrecognised app saying nothing about itself is a different fact than
+ * one recognised and found harmless.
+ */
+@Composable
+private fun KindSummaryCard(state: InsightsState) {
+    val context = LocalContext.current
+    // The asset is read off the main thread, so the first composition classifies nothing. Keying
+    // the fold on this is what makes the card fill in once it lands rather than staying empty --
+    // AppCatalog holds a plain field, and nothing about it would recompose on its own.
+    var catalogLoaded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        AppCatalog.load(context)
+        catalogLoaded = true
+    }
+
+    // totalsByTarget already collapses each target to one duration over the range; wrapping each
+    // back into a session is the cheapest way to reuse the same fold Aggregation exposes for tests.
+    val totals = remember(state.totalsByTarget, catalogLoaded) {
+        val sessions = state.totalsByTarget.map { (id, ms) -> TargetSession(id, 0L, ms) }
+        classifyTotals(sessions, AppCatalog::classify)
+    }
+
+    val distractingMs = (totals.byProductivity[Productivity.DISTRACTING] ?: 0L) +
+        (totals.byProductivity[Productivity.VERY_DISTRACTING] ?: 0L)
+    val unclassifiedMs = totals.byProductivity[Productivity.UNCLASSIFIED] ?: 0L
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                "Where the time went",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "${formatDuration(state.totalUsageMs)}, of which " +
+                    "${formatDuration(distractingMs)} distracting and " +
+                    "${formatDuration(unclassifiedMs)} unclassified.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            val byCategory = totals.byCategory.toList().sortedByDescending { it.second }
+            if (byCategory.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                byCategory.forEach { (category, ms) ->
+                    LegendRow(
+                        color = ChartPalette.series(category.ordinal),
+                        label = category.name.lowercase().replaceFirstChar { it.uppercase() },
+                        value = formatDuration(ms),
+                    )
+                }
+            }
+        }
     }
 }
 

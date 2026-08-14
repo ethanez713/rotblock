@@ -1,5 +1,6 @@
 package com.ezhou.rotblock.insights
 
+import com.ezhou.rotblock.block.FeedRegistry
 import com.ezhou.rotblock.pause.dayStartMs
 import java.util.Calendar
 import java.util.TimeZone
@@ -71,4 +72,44 @@ fun countByDay(timestamps: List<Long>, dayStarts: List<Long>, endMs: Long): List
         val end = dayStarts.getOrNull(index + 1) ?: endMs
         timestamps.count { it in start until end }
     }
+}
+
+/** Milliseconds spent per [Category] and per [Productivity], over a set of sessions. */
+data class KindTotals(val byCategory: Map<Category, Long>, val byProductivity: Map<Productivity, Long>)
+
+/**
+ * The package behind a target id, when one can be read off the id itself with no device lookup.
+ *
+ * An app target's matcher already is the package. A feed target's matcher is a [FeedRegistry] key,
+ * which does resolve to a package. A website target's matcher is a bare host -- resolving that to
+ * an installed app needs [android.content.pm.PackageManager] (see `TargetIcon.kt`), which this pure
+ * fold has no access to and must not reach for, so it stays unresolved rather than guessing.
+ */
+private fun packageFor(targetId: String): String? {
+    val kind = targetId.substringBefore(':', "")
+    val matcher = targetId.substringAfter(':', "")
+    return when (kind) {
+        "app" -> matcher
+        "feed" -> FeedRegistry.specs.firstOrNull { it.key == matcher }?.packageName
+        else -> null
+    }
+}
+
+/**
+ * Folds sessions into totals by kind, so Insights can report "of which N distracting" alongside
+ * the per-target breakdown. [classify] is injected rather than read from [AppCatalog] directly so
+ * this stays testable with no bundled asset involved.
+ */
+fun classifyTotals(sessions: List<TargetSession>, classify: (String) -> Classification): KindTotals {
+    val byCategory = HashMap<Category, Long>()
+    val byProductivity = HashMap<Productivity, Long>()
+    for (session in sessions) {
+        val durationMs = session.endMs - session.startMs
+        if (durationMs <= 0) continue
+        val classification = packageFor(session.targetId)?.let(classify) ?: Classification()
+        byCategory[classification.category] = (byCategory[classification.category] ?: 0L) + durationMs
+        byProductivity[classification.productivity] =
+            (byProductivity[classification.productivity] ?: 0L) + durationMs
+    }
+    return KindTotals(byCategory, byProductivity)
 }
