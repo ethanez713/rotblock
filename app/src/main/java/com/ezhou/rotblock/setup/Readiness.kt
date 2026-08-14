@@ -57,6 +57,9 @@ sealed interface Fix {
     /** A runtime permission rotblock can ask for itself. */
     data object AskForNotifications : Fix
 
+    /** Kick the accessibility service's component so Android re-binds it. See [EnforcementRevival]. */
+    data object AttemptRebind : Fix
+
     /** Needs a computer. Shown as copyable text, never as a button that cannot work. */
     data class RunOverAdb(val command: String) : Fix
 }
@@ -191,11 +194,15 @@ private fun enforcement(facts: SetupFacts): Requirement {
             // Deliberately not "turn it on" -- it is already on, which is exactly why this state
             // is so confusing. Off and on again is the only thing that rebinds it.
             Status.BROKEN ->
-                "Turn the switch off and back on in Settings → Accessibility. If it keeps " +
+                "Try the button below first — it does the same thing from in here. Otherwise turn " +
+                    "the switch off and back on in Settings → Accessibility. If it keeps " +
                     "happening, the phone is killing rotblock in the background — set its battery " +
                     "usage to unrestricted."
         },
-        action = Fix.OpenSettings(SettingsScreen.ACCESSIBILITY),
+        action = when (status) {
+            Status.BROKEN -> Fix.AttemptRebind
+            else -> Fix.OpenSettings(SettingsScreen.ACCESSIBILITY)
+        },
     )
 }
 

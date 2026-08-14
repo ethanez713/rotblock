@@ -3,6 +3,7 @@ package com.ezhou.rotblock
 import com.ezhou.rotblock.setup.Fix
 import com.ezhou.rotblock.setup.Need
 import com.ezhou.rotblock.setup.RequirementId
+import com.ezhou.rotblock.setup.SettingsScreen
 import com.ezhou.rotblock.setup.SetupFacts
 import com.ezhou.rotblock.setup.Status
 import com.ezhou.rotblock.setup.blocking
@@ -80,6 +81,26 @@ class ReadinessTest {
         assertEquals(Status.BROKEN, enforcement?.status)
         assertTrue(requirements.blocking.any { it.id == RequirementId.ENFORCEMENT })
         assertTrue("should say to toggle it, not to turn it on", enforcement!!.fix.contains("off"))
+    }
+
+    @Test
+    fun `only the broken service offers the in-app restart`() {
+        // "Open accessibility settings" is the right button for a switch that was never turned on
+        // and useless advice for one that is already on -- which is the whole point of BROKEN.
+        val broken = requirementsFor(facts(accessibilityEnabled = true, serviceConnected = false))
+        assertEquals(Fix.AttemptRebind, broken.byId(RequirementId.ENFORCEMENT)?.action)
+
+        val missing = requirementsFor(facts(accessibilityEnabled = false, serviceConnected = false))
+        assertEquals(
+            Fix.OpenSettings(SettingsScreen.ACCESSIBILITY),
+            missing.byId(RequirementId.ENFORCEMENT)?.action,
+        )
+
+        val ready = requirementsFor(facts())
+        assertEquals(
+            Fix.OpenSettings(SettingsScreen.ACCESSIBILITY),
+            ready.byId(RequirementId.ENFORCEMENT)?.action,
+        )
     }
 
     @Test

@@ -33,6 +33,9 @@ enum class AuditType {
     SERVICE_DISABLED,
     SERVICE_ENABLED,
 
+    /** The user asked Setup to kick the accessibility service component back into binding. */
+    ENFORCEMENT_REVIVAL_ATTEMPTED,
+
     /** The service caught an exception it swallowed to stay alive. */
     INTERNAL_ERROR,
 }

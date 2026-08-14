@@ -37,8 +37,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.ezhou.rotblock.Rotblock
+import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.setup.EnforcementRevival
 import com.ezhou.rotblock.setup.Fix
 import com.ezhou.rotblock.setup.Requirement
 import com.ezhou.rotblock.setup.RequirementId
@@ -165,6 +167,24 @@ fun RequirementCard(
                                 },
                                 contentPadding = PaddingValues(0.dp),
                             ) { Text("Allow notifications") }
+                        }
+
+                        // No spinner, no toast, no result dialog: the list above re-reads itself
+                        // every couple of seconds, and this card turning green is the answer.
+                        Fix.AttemptRebind -> {
+                            TextButton(
+                                onClick = {
+                                    Rotblock.audit(context).record(
+                                        AuditType.ENFORCEMENT_REVIVAL_ATTEMPTED,
+                                        detail = if (EnforcementRevival.attemptRebind(context)) {
+                                            "component toggled"
+                                        } else {
+                                            "component toggle refused"
+                                        },
+                                    )
+                                },
+                                contentPadding = PaddingValues(0.dp),
+                            ) { Text("Try to restart it") }
                         }
 
                         // No button, on purpose: nothing rotblock can do from inside the phone

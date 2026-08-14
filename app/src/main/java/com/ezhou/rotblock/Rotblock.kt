@@ -9,6 +9,7 @@ import com.ezhou.rotblock.data.RotblockDatabase
 import com.ezhou.rotblock.data.SettingsRepository
 import com.ezhou.rotblock.pause.PauseController
 import com.ezhou.rotblock.quota.UsageLedger
+import com.ezhou.rotblock.setup.EnforcementRevival
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -93,6 +94,12 @@ class RotblockApp : Application() {
         // and re-enables accessibility, with no hint that is what is wrong. Doing it here means
         // simply opening rotblock puts the colour back, which is what anyone would try first.
         runCatching { Grayscale(this).restoreOnStart() }
+
+        // Undo a disabled service component that outlived the thing that set it. Same shape as the
+        // greyscale restore above and there for the same reason: EnforcementRevival.attemptRebind
+        // disables the component and re-enables it, and a process kill between those two calls
+        // would leave enforcement switched off at a level nothing else in the app ever reads.
+        runCatching { EnforcementRevival.ensureEnabled(this) }
 
         // Open the database now so the first accessibility event, which must stay fast, is not
         // the thing that pays for it.
