@@ -171,6 +171,9 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
         Spacer(Modifier.height(24.dp))
         CountdownSection(settings)
 
+        Spacer(Modifier.height(24.dp))
+        ExportRow()
+
         Spacer(Modifier.height(28.dp))
         EnforcementCard()
 

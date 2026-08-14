@@ -88,4 +88,7 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    // Android's org.json is a build-time stub that throws on every call in a plain JVM unit
+    // test; this pulls in a real implementation for ExportTest.
+    testImplementation("org.json:json:20240303")
 }
