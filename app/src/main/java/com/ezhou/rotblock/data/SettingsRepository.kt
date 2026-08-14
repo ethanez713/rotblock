@@ -87,6 +87,15 @@ data class RotblockSettings(
      * nothing else.
      */
     val detectionCounters: String = "",
+    /**
+     * Let rotblock tap a browser's toolbar-reveal control to bring the address bar back when a
+     * scrolled page has hidden it and every passive read has failed. Off by default: unlike every
+     * other signal in [com.ezhou.rotblock.browser.LinkConsensus] and
+     * [com.ezhou.rotblock.browser.PageSignature], this one acts on the screen -- a synthesised tap
+     * can focus the bar and raise the keyboard on a page that may carry no rule at all -- so it is
+     * the one mechanism in the app opted into rather than always on.
+     */
+    val revealAddressBar: Boolean = false,
 ) {
     fun isPaused(nowMs: Long): Boolean = nowMs < pausedUntilMs
 }
@@ -112,6 +121,7 @@ class SettingsRepository(context: Context) {
         val onboardedAt = longPreferencesKey("onboarded_at_ms")
         val accessibilityConsentAt = longPreferencesKey("accessibility_consent_at_ms")
         val detectionCounters = stringPreferencesKey("detection_counters")
+        val revealAddressBar = booleanPreferencesKey("reveal_address_bar")
     }
 
     val settings: Flow<RotblockSettings> = store.data.map { p ->
@@ -132,6 +142,7 @@ class SettingsRepository(context: Context) {
             onboardedAtMs = p[Keys.onboardedAt] ?: d.onboardedAtMs,
             accessibilityConsentAtMs = p[Keys.accessibilityConsentAt] ?: d.accessibilityConsentAtMs,
             detectionCounters = p[Keys.detectionCounters] ?: d.detectionCounters,
+            revealAddressBar = p[Keys.revealAddressBar] ?: d.revealAddressBar,
         )
     }
 
@@ -197,5 +208,9 @@ class SettingsRepository(context: Context) {
 
     suspend fun setDetectionCounters(encoded: String) {
         store.edit { it[Keys.detectionCounters] = encoded }
+    }
+
+    suspend fun setRevealAddressBar(enabled: Boolean) {
+        store.edit { it[Keys.revealAddressBar] = enabled }
     }
 }

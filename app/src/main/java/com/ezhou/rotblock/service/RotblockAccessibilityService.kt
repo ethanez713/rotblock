@@ -32,6 +32,7 @@ import com.ezhou.rotblock.browser.BrowserSpec
 import com.ezhou.rotblock.browser.LinkConsensus
 import com.ezhou.rotblock.browser.PageSignature
 import com.ezhou.rotblock.browser.escapeIntent
+import com.ezhou.rotblock.browser.shouldAttemptReveal
 import com.ezhou.rotblock.browser.typeEscape
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.pause.PauseController
@@ -153,6 +154,12 @@ private const val MIN_PAGE_SCAN_INTERVAL_MS = 3_000L
 private const val ESCAPE_VERIFY_MS = 3_000L
 
 /**
+ * How long a reveal tap is given before the next read is requested. Long enough for the toolbar
+ * animation to finish and settle; short enough that the visit is not left unread for a full tick.
+ */
+private const val REVEAL_FOLLOWUP_DELAY_MS = 500L
+
+/**
  * Enforcement gaps shorter than this are system rebinds, not you switching rotblock off, and are
  * not written to the log. Toggling the service in Settings and coming back takes far longer.
  */
@@ -236,6 +243,9 @@ class RotblockAccessibilityService : AccessibilityService() {
     @Volatile private var hudOpacityPercent = 55
     @Volatile private var hudNotification = false
 
+    /** Copied out of the settings flow the same way [hudEnabled] is. See [shouldAttemptReveal]. */
+    @Volatile private var revealAddressBarEnabled = false
+
     /** Where the ring was last dropped; -1 means never, and [TimerHud] falls back to the corner. */
     @Volatile private var hudPositionX = -1
     @Volatile private var hudPositionY = -1
@@ -300,6 +310,17 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     /** Inspector coroutine only, like [lastPageScanMs]. See [SearchPageMemory]. */
     private val searchPages = SearchPageMemory()
+
+    /** Inspector coroutine only. Last reveal-tap time per package, for [shouldAttemptReveal]'s cooldown. */
+    private val revealLastAttemptMs = HashMap<String, Long>()
+
+    /**
+     * Whether the reveal tap has already been tried for the visit in progress. A synthesised click
+     * is a real side effect on screen, so one guess per visit is the ceiling regardless of how many
+     * reads a sustained scroll asks for. Cleared on the main thread in [onForegroundChanged]; read
+     * by the inspector coroutine, hence volatile.
+     */
+    @Volatile private var revealAttemptedThisVisit = false
 
     /**
      * What a read last found inside each app that needs one, so re-entering a browser does not
@@ -471,6 +492,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                         hudNotification = it.hudNotification
                         hudPositionX = it.hudPositionX
                         hudPositionY = it.hudPositionY
+                        revealAddressBarEnabled = it.revealAddressBar
                         // A pause starting or ending changes what should be on screen right now,
                         // and so does switching the countdown readout on or off.
                         handler.post { guard("pauseChanged") { reEvaluateCurrent() } }
@@ -620,6 +642,10 @@ class RotblockAccessibilityService : AccessibilityService() {
         // change reaches here; a toast or a heads-up notification must never re-arm it, or the
         // countdown reappears on top of an app you are already using.
         friction.endVisit()
+
+        // Same visit-not-target reasoning as friction: a reveal already tried on the page you left
+        // says nothing about the page you are about to land on.
+        revealAttemptedThisVisit = false
 
         // Same reasoning, one line down: a dismissal is scoped to the session that was open when
         // the ring went away, and the line below ends that session unconditionally -- even when
@@ -953,9 +979,71 @@ class RotblockAccessibilityService : AccessibilityService() {
             val result = classifyInspection(pkg, feedKey, url, websiteMatchers, linkUrls, descriptions, title)
             val signature = if (wantSignature) PageSignature.keyOf(descriptions, title, parsedBar?.host) else null
             EnforcementStatus.noteRead(pkg, url, feedKey, result, linkUrls.size, signature)
+
+            // Last resort, after everything above -- including link consensus and the page
+            // signature -- has already had its turn and come up with nothing. The reveal never
+            // produces a target of its own; it only asks the browser to put the bar back so the
+            // *next* read has a chance to.
+            if (result == Inspected.Unreadable) {
+                maybeAttemptReveal(pkg, root, browserSpec, url, chooser, now)
+            }
             return result
         } finally {
             root.recycleCompat()
+        }
+    }
+
+    /**
+     * Taps [BrowserSpec.revealBarId], if [shouldAttemptReveal] says it is worth it, to try to bring
+     * a scrolled-away address bar back for the next read.
+     *
+     * This is a real click on the user's screen, not a read -- the one exception to this whole
+     * inspector reading and never acting. Every failure mode degrades silently on purpose: no id
+     * for this browser, no node found, or [AccessibilityNodeInfo.ACTION_CLICK] refused all fall
+     * through to `return` with no audit event and no retry this visit, the same as a stale id in
+     * [FeedRegistry] or [BrowserRegistry] degrades to "not blocked" rather than a crash.
+     */
+    private fun maybeAttemptReveal(
+        pkg: String,
+        root: AccessibilityNodeInfo,
+        browserSpec: BrowserSpec?,
+        url: String?,
+        chooser: Boolean,
+        nowMs: Long,
+    ) {
+        val revealId = browserSpec?.revealBarId
+        if (!shouldAttemptReveal(
+                enabled = revealAddressBarEnabled,
+                revealId = revealId,
+                url = url,
+                chooser = chooser,
+                heldTarget = currentTargetId,
+                matcherCount = websiteMatchers.size,
+                lastAttemptMs = revealLastAttemptMs[pkg] ?: 0L,
+                attemptedThisVisit = revealAttemptedThisVisit,
+                nowMs = nowMs,
+            )
+        ) {
+            return
+        }
+        // Counted against the cooldown and the once-per-visit ceiling regardless of what happens
+        // below -- a browser whose reveal control never actually works must not be clicked once a
+        // minute forever, and a missing node this time is not evidence it will appear next time.
+        revealLastAttemptMs[pkg] = nowMs
+        revealAttemptedThisVisit = true
+        val nodes = revealId?.let { root.findAccessibilityNodeInfosByViewId(it) }
+        try {
+            // Noted whatever happens, including nothing. "The reveal was tried and the control
+            // refused" and "the reveal never ran" look identical from inside the app, and telling
+            // those apart is the entire job of the Right now panel.
+            val clicked = nodes?.firstOrNull()
+                ?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+            EnforcementStatus.note(
+                if (clicked) "reveal tapped for $pkg" else "reveal for $pkg found nothing to tap",
+            )
+            if (clicked) handler.postDelayed({ requestInspect(pkg) }, REVEAL_FOLLOWUP_DELAY_MS)
+        } finally {
+            nodes?.forEach { it.recycleCompat() }
         }
     }
 

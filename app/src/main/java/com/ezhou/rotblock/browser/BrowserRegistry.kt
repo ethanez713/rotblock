@@ -11,7 +11,17 @@ package com.ezhou.rotblock.browser
  *   adb shell uiautomator dump /sdcard/w.xml && adb pull /sdcard/w.xml
  * and look for the resource-id on the node holding the URL text.
  */
-data class BrowserSpec(val packageName: String, val urlBarIds: List<String>)
+data class BrowserSpec(
+    val packageName: String,
+    val urlBarIds: List<String>,
+    /**
+     * A view id that, when tapped, brings the address bar back onto screen -- Samsung Internet's
+     * toolbar-reveal control, not the bar itself. Null everywhere: acting on a scrolled-away page
+     * by synthesising a click is opted into per [RotblockSettings.revealAddressBar] and gated hard
+     * by [shouldAttemptReveal], so a browser with no id here just never gets offered the reveal.
+     */
+    val revealBarId: String? = null,
+)
 
 object BrowserRegistry {
 
@@ -44,6 +54,12 @@ object BrowserRegistry {
                 "com.sec.android.app.sbrowser:id/sbrowser_url_bar",
                 "com.sec.android.app.sbrowser:id/url_bar",
             ),
+            // TODO: null until the real id is found on device --
+            //   adb shell uiautomator dump /sdcard/w.xml && adb pull /sdcard/w.xml
+            // on a scrolled-down page, looking for whatever node the toolbar-reveal gesture
+            // corresponds to. Samsung Internet is the browser this exists for: it is the one whose
+            // toolbar leaves the tree entirely on scroll, per CLAUDE.md's "Fragile by nature".
+            revealBarId = null,
         ),
         BrowserSpec(
             "org.mozilla.firefox",
@@ -69,4 +85,48 @@ object BrowserRegistry {
     val packages: Set<String> = byPackage.keys
 
     fun specFor(packageName: String): BrowserSpec? = byPackage[packageName]
+
+    /** Floor between two reveal-tap attempts on the same package. See [shouldAttemptReveal]. */
+    const val REVEAL_COOLDOWN_MS = 60_000L
 }
+
+/**
+ * Whether it is worth tapping the browser's toolbar-reveal control to try to get an address bar
+ * back onto screen.
+ *
+ * A synthesised click is a user-visible side effect on a page that may carry no rule at all, so
+ * every condition here narrows toward "there is nothing left to lose" rather than "this would be
+ * convenient":
+ *
+ * - [enabled] and [revealId] must both hold -- the setting is opt-in, and a browser with no known
+ *   reveal control has nothing to click.
+ * - [url] must be null and [chooser] false: a bar that read *something*, even a chooser, is
+ *   already the ground truth and a click can only disturb it.
+ * - [heldTarget] must be null. This acquires; it never contradicts a target already held.
+ * - [matcherCount] must be positive -- no website rule exists to acquire toward.
+ * - [attemptedThisVisit] must be false: at most one guess per visit, because the visit is the unit
+ *   the countdown and everything else in this app already thinks in, and a click retried on every
+ *   scroll event would be a much louder side effect than one per visit.
+ * - at least [BrowserRegistry.REVEAL_COOLDOWN_MS] must have passed since [lastAttemptMs] for this
+ *   package, so a browser with a reveal control that never actually works cannot be clicked once a
+ *   minute forever.
+ */
+fun shouldAttemptReveal(
+    enabled: Boolean,
+    revealId: String?,
+    url: String?,
+    chooser: Boolean,
+    heldTarget: String?,
+    matcherCount: Int,
+    lastAttemptMs: Long,
+    attemptedThisVisit: Boolean,
+    nowMs: Long,
+): Boolean =
+    enabled &&
+        revealId != null &&
+        url == null &&
+        !chooser &&
+        heldTarget == null &&
+        matcherCount > 0 &&
+        !attemptedThisVisit &&
+        nowMs - lastAttemptMs >= BrowserRegistry.REVEAL_COOLDOWN_MS

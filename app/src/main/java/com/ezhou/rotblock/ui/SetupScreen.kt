@@ -172,6 +172,9 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
         CountdownSection(settings)
 
         Spacer(Modifier.height(24.dp))
+        RevealSection(settings)
+
+        Spacer(Modifier.height(24.dp))
         ExportRow()
 
         Spacer(Modifier.height(28.dp))
@@ -255,6 +258,38 @@ private fun CountdownSection(settings: RotblockSettings) {
             }
             scope.launch { Rotblock.settings(context).setHudNotification(on) }
         },
+    )
+}
+
+/**
+ * Off by default, unlike everything else this app infers a page from. [LinkConsensus] and
+ * [PageSignature] only ever read what a page already shows; this instead taps the browser's own
+ * toolbar-reveal control to try to bring a scrolled-away address bar back -- a real, user-visible
+ * action on a page that might carry no rule at all, so it is opted into rather than assumed.
+ */
+@Composable
+private fun RevealSection(settings: RotblockSettings) {
+    val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    Text(
+        "Finding a scrolled-away page",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "Some browsers hide the address bar once you scroll, which can leave a site untracked " +
+            "until you scroll back up. When this is on, rotblock will occasionally tap your " +
+            "browser's toolbar to bring the bar back and check where you are.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
+    ToggleRow(
+        label = "Tap to find the page",
+        checked = settings.revealAddressBar,
+        onChange = { scope.launch { Rotblock.settings(context).setRevealAddressBar(it) } },
     )
 }
 
