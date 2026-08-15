@@ -275,6 +275,12 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     private val friction = FrictionGate()
 
+    /**
+     * Whether the currently-held target is a fact a read established or still a restore's guess.
+     * See [TargetConfidence] -- gates the friction countdown, never enforcement itself.
+     */
+    private val confidence = TargetConfidence()
+
     /** See [noteDetectionLook]. Diagnostic only; never read by anything that decides a block. */
     @Volatile private var detection = DetectionCounters()
     private var detectionFlushedAtMs = 0L
@@ -458,6 +464,13 @@ class RotblockAccessibilityService : AccessibilityService() {
                     trace("friction served for $targetId")
                     friction.served(targetId)
                     persistVisit()
+                } }
+            }
+            FrictionGate.onDeclined = { targetId ->
+                handler.post { guard("frictionDeclined") {
+                    trace("friction declined for $targetId")
+                    noteEscaped(targetId)
+                    verifyEscaped(targetId)
                 } }
             }
 
@@ -685,13 +698,24 @@ class RotblockAccessibilityService : AccessibilityService() {
         // covered", and coming back to a page you left scrolled reads as unreadable -- so the
         // website target would be dropped on the way in and never re-acquired while you kept
         // scrolling. The read that follows overrules this within about a second either way.
-        applyTarget(visits.resume(pkg) ?: appTargetFor(pkg), nowMs)
+        //
+        // The resumed target, if any, is a restore rather than a read -- see [TargetConfidence] --
+        // so it may enforce but must not drive the friction countdown until a read confirms it.
+        // Falling back to the app target needs no confirming: the package just came from a real
+        // accessibility event, which makes it a fact rather than a guess.
+        val resumed = visits.resume(pkg)
+        applyTarget(resumed ?: appTargetFor(pkg), nowMs, confirmed = resumed == null)
 
         requestInspect(pkg)
     }
 
-    /** Runs on the main thread; [targetId] null means nothing here is governed by a policy. */
-    private fun applyTarget(targetId: String?, nowMs: Long) {
+    /**
+     * Runs on the main thread; [targetId] null means nothing here is governed by a policy.
+     *
+     * @param confirmed whether [targetId] comes from a read rather than a restore -- see
+     *   [TargetConfidence]. Every call site must state which it is.
+     */
+    private fun applyTarget(targetId: String?, nowMs: Long, confirmed: Boolean) {
         val policy = targetId?.let { policiesByTarget[it] }
         trace("applyTarget($targetId) policy=${policy?.label} enabled=${policy?.enabled} cur=$currentTargetId servedFor=${friction.servedFor}")
         if (policy == null || !policy.enabled) {
@@ -700,6 +724,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 EnforcementStatus.note("target $currentTargetId -> none (nothing here is covered)")
             }
             currentTargetId = null
+            confidence.clear()
             friction.endVisit()
             ledger.closeSession(nowMs)
             stopTicking()
@@ -710,7 +735,8 @@ class RotblockAccessibilityService : AccessibilityService() {
             reportStatus()
             return
         }
-        if (currentTargetId != targetId) {
+        val changed = currentTargetId != targetId
+        if (changed) {
             trace("  target change $currentTargetId -> $targetId, re-arming friction")
             EnforcementStatus.note("target ${currentTargetId ?: "none"} -> $targetId")
             ledger.closeSession(nowMs)
@@ -723,6 +749,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             hudDismissedThisSession = false
             grayscale.restore()
         }
+        confidence.apply(changed, confirmed)
         evaluateAndEnforce(targetId, nowMs)
         // After enforcement, so a friction screen just shown is part of what gets carried over.
         persistVisit()
@@ -757,7 +784,10 @@ class RotblockAccessibilityService : AccessibilityService() {
             reseed()
             return
         }
-        applyTarget(currentTargetId ?: appTargetFor(pkg), now)
+        // Falling back to the app target needs no confirming, the same as everywhere else; simply
+        // re-applying a target already held says nothing new about it, so [confidence] is left as
+        // it was.
+        applyTarget(currentTargetId ?: appTargetFor(pkg), now, confirmed = currentTargetId == null)
         requestInspect(pkg)
     }
 
@@ -820,8 +850,14 @@ class RotblockAccessibilityService : AccessibilityService() {
 
         // Enforce the restored target straight away rather than waiting for the read to confirm
         // it. If the page moved on while we were unbound the read corrects it within the second,
-        // and a moment of over-blocking is the right way round to be wrong.
-        applyTarget(currentTargetId ?: appTargetFor(pkg), System.currentTimeMillis())
+        // and a moment of over-blocking is the right way round to be wrong. A restored website or
+        // feed target is still only a guess, though -- it must not throw up a countdown for a page
+        // the rebind never actually saw.
+        applyTarget(
+            currentTargetId ?: appTargetFor(pkg),
+            System.currentTimeMillis(),
+            confirmed = currentTargetId == null,
+        )
         requestInspect(pkg)
     }
 
@@ -911,7 +947,10 @@ class RotblockAccessibilityService : AccessibilityService() {
                         // blind read weakens a block; this one cannot.
                         Inspected.Unreadable -> return@guard
                     }
-                    applyTarget(targetId, System.currentTimeMillis())
+                    // Both branches above are a read that actually landed -- Unreadable already
+                    // returned above without reaching here -- so this is exactly the evidence
+                    // [TargetConfidence] exists to require before the friction countdown may fire.
+                    applyTarget(targetId, System.currentTimeMillis(), confirmed = true)
                 }
             }
         }
@@ -1514,8 +1553,28 @@ class RotblockAccessibilityService : AccessibilityService() {
         }
         return Escape(label) {
             leave()
+            noteEscaped(policy.id)
             verifyEscaped(policy.id)
         }
+    }
+
+    /**
+     * An escape just moved the browser off [targetId], or is about to -- the page [visits] still
+     * remembers is stale evidence, not merely unconfirmed.
+     *
+     * Positively forgetting rather than leaving the memory alone: the whole reason [VisitMemory]
+     * exists is so re-entering a browser resumes what a read last found there, and without this the
+     * very next re-entry would resume the site the user just paid to leave. [currentTargetId] is
+     * deliberately left untouched -- [verifyEscaped] reads it to decide whether the escape actually
+     * took, and that proof must not be disturbed by the same call that triggers it.
+     */
+    private fun noteEscaped(targetId: String) {
+        currentPackage?.let { visits.forget(it) }
+        // Whatever is still held is now an assumption again -- it may keep being enforced, since a
+        // page you scroll does not clear a block, but it may not throw up a countdown for a page
+        // you have just been told you left.
+        confidence.clear()
+        persistVisit()
     }
 
     /**
@@ -1556,6 +1615,20 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     private fun maybeShowFriction(policy: Policy, nowMs: Long) {
         if (policy.frictionSeconds <= 0) return
+        // A target restored by VisitMemory or the persisted visit, rather than confirmed by a read,
+        // may still be *enforced* -- a block it turns out to be wrong about is lifted by the very
+        // next read, which is the safe direction this app takes everywhere. It must not drive the
+        // countdown, though: unlike a block, a false countdown costs the wait before you can prove
+        // it wrong, and one popping up for a page you are not on -- coming back into a browser
+        // still sitting on the page you already served this visit's countdown for -- is exactly the
+        // false positive that trains distrust in the whole mechanism. So the countdown waits for a
+        // read to confirm the target, and if the page stays scrolled and unreadable for the rest of
+        // the visit, it simply never re-fires -- the wait was already served for that page.
+        if (!confidence.confirmed) {
+            trace("friction withheld for ${policy.id}: target not confirmed by a read yet")
+            EnforcementStatus.note("${policy.id}: countdown held, target not yet confirmed by a read")
+            return
+        }
         if (!friction.shouldLaunch(policy.id, Interstitial.isShowing(), nowMs)) {
             trace("friction not launched for ${policy.id} (served=${friction.servedFor})")
             return
@@ -1695,6 +1768,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         Interstitial.onShown = null
         FrictionGate.onShown = null
         FrictionGate.onServed = null
+        FrictionGate.onDeclined = null
         BlockSelfTest.onRequested = null
         BlockSelfTest.ended()
         runCatching { unregisterReceiver(screenReceiver) }

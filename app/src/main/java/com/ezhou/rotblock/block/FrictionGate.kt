@@ -101,5 +101,14 @@ class FrictionGate {
 
         @Volatile
         var onServed: ((String) -> Unit)? = null
+
+        /**
+         * The countdown was declined -- "Not really" or back -- rather than waited out or left to
+         * time out. Reported with the target it covered so the service can treat the page it moved
+         * away from as stale rather than merely unconfirmed; see
+         * [com.ezhou.rotblock.service.RotblockAccessibilityService]'s `noteEscaped`.
+         */
+        @Volatile
+        var onDeclined: ((String) -> Unit)? = null
     }
 }

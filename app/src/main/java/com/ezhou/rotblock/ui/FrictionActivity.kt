@@ -170,6 +170,11 @@ class FrictionActivity : ComponentActivity() {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
         }
+        // Reached from both the text button and the back-press callback, so both count as declining
+        // rather than waiting it out. Told which target this covered, the service can stop treating
+        // the page it just moved away from as merely unconfirmed and treat it as stale instead --
+        // otherwise the very next re-entry would resume the site this decline just left.
+        covering.targetId?.let { FrictionGate.onDeclined?.invoke(it) }
         finish()
     }
 }
