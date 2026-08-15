@@ -31,6 +31,7 @@ import com.ezhou.rotblock.browser.AddressBar
 import com.ezhou.rotblock.browser.BrowserRegistry
 import com.ezhou.rotblock.browser.BrowserSpec
 import com.ezhou.rotblock.browser.LinkConsensus
+import com.ezhou.rotblock.browser.LinkCorroboration
 import com.ezhou.rotblock.browser.PageSignature
 import com.ezhou.rotblock.browser.escapeIntent
 import com.ezhou.rotblock.browser.shouldAttemptReveal
@@ -119,21 +120,29 @@ private const val MIN_INSPECT_INTERVAL_MS = 1_000L
  * fallback (see [com.ezhou.rotblock.browser.LinkConsensus]) and the page-signature fallback (see
  * [com.ezhou.rotblock.browser.PageSignature]).
  *
- * A page's own navigation links cluster at the top of its tree: measured on device, ten of them
- * sit within thirty nodes of a depth-first walk. So when only links are wanted the scan stops at
- * the first [MAX_LINK_SAMPLES] it finds or [MAX_LINK_SCAN_NODES] nodes, whichever comes first,
- * which leaves generous headroom over the measurement while staying a fraction of a full traversal
- * -- the three `findAccessibilityNodeInfosByViewId` calls this runs *after* already cost far more
- * than this does, and on a scrolled page all three of them find nothing.
+ * [MAX_LINK_SCAN_NODES] is the only thing that bounds the cost of the walk. It used to look like
+ * [MAX_LINK_URLS_RETAINED] was a second, cheaper stopping point for a links-only walk -- but
+ * `wantLinks` requires the bar to be unreadable, and an unreadable bar makes `wantSignature` true
+ * as well (its own condition is satisfied outright once the bar said nothing), so a links-only
+ * walk that skips the signature collection never actually happens. Every walk that runs for links
+ * already pays the full [MAX_LINK_SCAN_NODES] budget collecting descriptions too, whether or not
+ * anything ends up wanting them. So [MAX_LINK_URLS_RETAINED] is a cap on memory only: how many of
+ * the links a full walk turns up are worth holding on to once past it there is nothing left to
+ * learn from more.
  *
- * The descriptions a signature needs are not clustered the same way -- a Shorts player's
- * "Previous video" / "Next video" buttons sit wherever the player puts its controls, not with the
- * page's navigation -- so stopping at [MAX_LINK_SAMPLES] would risk ending the walk before they
- * are ever seen. When a signature is wanted the walk instead runs to [MAX_LINK_SCAN_NODES]
- * regardless of how many links it has already found; the node budget still bounds the cost either
- * way. [MAX_DESCRIPTION_SAMPLES] bounds the description collection the same way link samples are
- * bounded -- a real Shorts player was measured at ~37 nodes total, so 60 is headroom, not a tight
- * fit.
+ * That matters because the old sample cap was silently discarding the evidence
+ * [com.ezhou.rotblock.browser.LinkConsensus] needs most: on a search-results page the walk had
+ * already visited every node in its budget, but kept only the first twelve links, which on a
+ * "reddit" search could all be results -- so the veto that should have discarded the vote for
+ * seeing a search engine's own navigation link never got to look at the rest of the page. Raising
+ * the cap to the walk's actual node budget costs nothing extra; it stops throwing evidence away
+ * that the walk had already paid to collect.
+ *
+ * A page's own navigation links still cluster at the top of its tree -- measured on device, ten of
+ * them sit within thirty nodes of a depth-first walk -- so 64 is generous headroom over what a real
+ * page needs while staying well under [MAX_LINK_SCAN_NODES]. [MAX_DESCRIPTION_SAMPLES] bounds the
+ * description collection the same way -- a real Shorts player was measured at ~37 nodes total, so
+ * 60 is headroom, not a tight fit.
  *
  * The interval is a floor on top of [MIN_INSPECT_INTERVAL_MS] rather than a substitute for it,
  * because a sustained scroll re-arms the read every second and none of those reads can see
@@ -141,7 +150,7 @@ private const val MIN_INSPECT_INTERVAL_MS = 1_000L
  * of unmetered time once per visit; paying for the scan every second costs it forever.
  */
 private const val MAX_LINK_SCAN_NODES = 120
-private const val MAX_LINK_SAMPLES = 12
+private const val MAX_LINK_URLS_RETAINED = 64
 private const val MAX_DESCRIPTION_SAMPLES = 60
 private const val MIN_PAGE_SCAN_INTERVAL_MS = 3_000L
 
@@ -318,6 +327,9 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     /** Inspector coroutine only, like [lastPageScanMs]. See [SearchPageMemory]. */
     private val searchPages = SearchPageMemory()
+
+    /** Inspector coroutine only, like [lastPageScanMs]. See [LinkCorroboration]. */
+    private val linkCorroboration = LinkCorroboration()
 
     /** Inspector coroutine only. Last reveal-tap time per package, for [shouldAttemptReveal]'s cooldown. */
     private val revealLastAttemptMs = HashMap<String, Long>()
@@ -1031,14 +1043,29 @@ class RotblockAccessibilityService : AccessibilityService() {
             val descriptions = if (wantSignature) signals?.descriptions.orEmpty() else emptyList()
             val title = if (wantSignature) signals?.title else null
 
+            // The decision lives here and nowhere else -- classifyInspection takes the already-
+            // corroborated verdict rather than re-deriving one from linkUrls, so there is exactly
+            // one place a link vote can be computed. Corroboration needs cross-call state (the
+            // previous scan's verdict for this package), which a pure function cannot hold, hence
+            // computing it up here rather than down in classifyInspection.
+            val linkConsensusHost = if (wantLinks) LinkConsensus.of(linkUrls)?.host else null
+            val corroboratedHost = if (wantLinks) linkCorroboration.offer(pkg, linkConsensusHost, now) else null
+            if (linkConsensusHost != null && corroboratedHost == null) {
+                // The one state with no other symptom: the links agreed, and nothing acted on it
+                // yet because the previous scan did not agree with this one. The very next matching
+                // scan, a few seconds away, is what turns this into an acquisition.
+                EnforcementStatus.note("read $pkg: links agree on $linkConsensusHost, awaiting a second scan")
+            }
+            val linkHost = corroboratedHost?.let { WebMatcher.ParsedUrl(host = it, path = "") }
+
             val barNote = if (chooser) " bar=chooser(${(bar as AddressBar.Read.Chooser).offered})" else ""
             trace(
                 "read($pkg): feed=$feedKey url=${url?.let { "\"$it\"" }}$barNote " +
-                    "links=${linkUrls.size} descriptions=${descriptions.size}",
+                    "links=${linkUrls.size} corroboratedHost=$corroboratedHost descriptions=${descriptions.size}",
             )
             if (chooser) EnforcementStatus.note("read $pkg: several urls on offer, not a page (target held)")
 
-            val result = classifyInspection(pkg, feedKey, url, websiteMatchers, linkUrls, descriptions, title)
+            val result = classifyInspection(pkg, feedKey, url, websiteMatchers, linkHost, descriptions, title)
             val signature = if (wantSignature) PageSignature.keyOf(descriptions, title, parsedBar?.host) else null
             EnforcementStatus.noteRead(pkg, url, feedKey, result, linkUrls.size, signature)
 
@@ -1124,10 +1151,16 @@ class RotblockAccessibilityService : AccessibilityService() {
      * DOM, so document order reaches links soonest -- and because breadth-first would sweep a
      * whole level of a feed before descending into anything.
      *
-     * The early stop at [MAX_LINK_SAMPLES] applies only when [collectSignature] is false: the
-     * descriptions a signature needs are not clustered with the navigation links, so stopping as
-     * soon as enough links are found could end the walk before they are ever seen. Either way the
-     * walk cannot exceed [MAX_LINK_SCAN_NODES], which is what actually bounds the cost.
+     * [MAX_LINK_SCAN_NODES] is the only thing that bounds this walk; [MAX_LINK_URLS_RETAINED] only
+     * bounds how many of the links found along the way are kept. There used to be a second, cheaper
+     * stopping point for a links-only walk, but nothing ever actually calls this with
+     * [collectSignature] false -- the caller only wants links when the bar is unreadable, and an
+     * unreadable bar makes it want the signature too, so every walk that runs for links already
+     * pays the full node budget. Capping the retained list separately, rather than stopping the walk
+     * early, is what stopped that cap from quietly discarding evidence the walk had already found:
+     * a search-results page can have a dozen results before its own navigation links appear, and a
+     * link cap that doubled as a scan limit meant [com.ezhou.rotblock.browser.LinkConsensus] never
+     * even saw them.
      *
      * Every node fetched here is recycled on the way out. The root is not: it belongs to the
      * caller, which recycles it in its own `finally`.
@@ -1137,18 +1170,14 @@ class RotblockAccessibilityService : AccessibilityService() {
         if (now - lastPageScanMs < MIN_PAGE_SCAN_INTERVAL_MS) return PageSignals(emptyList(), emptyList(), null)
         lastPageScanMs = now
 
-        val urls = ArrayList<String>(MAX_LINK_SAMPLES)
+        val urls = ArrayList<String>(MAX_LINK_URLS_RETAINED)
         val descriptions = ArrayList<String>(MAX_DESCRIPTION_SAMPLES)
         var title: String? = null
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         pushChildren(root, stack)
         var visited = 0
         try {
-            while (
-                stack.isNotEmpty() &&
-                visited < MAX_LINK_SCAN_NODES &&
-                (collectSignature || urls.size < MAX_LINK_SAMPLES)
-            ) {
+            while (stack.isNotEmpty() && visited < MAX_LINK_SCAN_NODES) {
                 val node = stack.removeLast()
                 visited++
                 try {
@@ -1159,7 +1188,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                         .getOrNull()
                         ?.toString()
                         ?.takeIf { it.isNotBlank() }
-                        ?.let { if (urls.size < MAX_LINK_SAMPLES) urls.add(it) }
+                        ?.let { if (urls.size < MAX_LINK_URLS_RETAINED) urls.add(it) }
                     if (collectSignature) {
                         if (descriptions.size < MAX_DESCRIPTION_SAMPLES) {
                             node.contentDescription?.toString()?.takeIf { it.isNotBlank() }

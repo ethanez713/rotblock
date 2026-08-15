@@ -41,10 +41,14 @@ sealed interface Inspected {
  *   found on screen, or null if none were.
  * @param url the text of the address bar, or null if this package has no address bar *or* the bar
  *   was not in the tree.
- * @param linkUrls destinations harvested from the page's own link nodes, used only to acquire a
- *   target when [url] told us nothing. See [LinkConsensus]; empty means the fallback did not run.
- * @param descriptions on-screen `contentDescription` text harvested alongside [linkUrls], used only
- *   by [PageSignature]; empty means that fallback did not run either.
+ * @param linkHost the host the page's own links have already agreed on and had that agreement
+ *   corroborated by a second, consecutive scan -- see [LinkConsensus] and
+ *   [com.ezhou.rotblock.browser.LinkCorroboration] -- or null if there is no such verdict yet. The
+ *   vote itself is computed by the caller, not here: corroboration needs state across calls that a
+ *   pure function cannot hold, and this repo has already had one bug from a decision computed in
+ *   two places.
+ * @param descriptions on-screen `contentDescription` text harvested alongside the link scan, used
+ *   only by [PageSignature]; empty means that fallback did not run either.
  * @param title the text of the page's `WebView` node, if any -- a weak confirmation for
  *   [PageSignature] when the descriptions alone are ambiguous.
  */
@@ -53,7 +57,7 @@ fun classifyInspection(
     feedKey: String?,
     url: String?,
     websiteMatchers: List<String>,
-    linkUrls: List<String> = emptyList(),
+    linkHost: WebMatcher.ParsedUrl? = null,
     descriptions: List<String> = emptyList(),
     title: String? = null,
 ): Inspected {
@@ -83,7 +87,7 @@ fun classifyInspection(
                 websiteMatchers.firstOrNull { WebMatcher.matches(fromSignature, it) }
                     ?.let { return Inspected.Target(Policy.targetId(TargetKind.WEBSITE, it)) }
             }
-            val fromLinks = LinkConsensus.of(linkUrls) ?: return Inspected.Unreadable
+            val fromLinks = linkHost ?: return Inspected.Unreadable
             val matched = websiteMatchers.firstOrNull { WebMatcher.matches(fromLinks, it) }
                 ?: return Inspected.Unreadable
             return Inspected.Target(Policy.targetId(TargetKind.WEBSITE, matched))

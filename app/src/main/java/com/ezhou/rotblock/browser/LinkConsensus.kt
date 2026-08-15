@@ -37,14 +37,19 @@ object LinkConsensus {
      * How many parsed link targets are needed before their agreement means anything.
      *
      * Below this a handful of navigation links on an otherwise unrelated page could carry the vote.
-     * Real pages clear it easily -- the measured Reddit post had 164, and the scan stops at
-     * [com.ezhou.rotblock.service.MAX_LINK_SAMPLES] anyway, so this is a floor on evidence rather
-     * than a page-size test.
+     * Real pages clear it easily -- the measured Reddit post had 164 -- and the sample now goes up
+     * to [com.ezhou.rotblock.service.MAX_LINK_URLS_RETAINED], which is what makes this a meaningful
+     * floor rather than close to the ceiling: a search-results page can put a dozen results before
+     * its own navigation links, so a low floor risked answering before the sample was large enough
+     * to contain the very links that were supposed to veto it.
      *
-     * Eight rather than five because five is two stray links away from a verdict, and the pages
-     * that get this wrong are exactly the ones full of links to somewhere else.
+     * Twelve rather than eight because eight was two-thirds of the *old*, twelve-link scan cap --
+     * comfortably reachable by a page whose links were exclusively results, with no room left in the
+     * sample for the search engine's own navigation to ever appear and trigger [SearchEngines.isSearchHost].
+     * Twelve is the same fraction of the new, wider sample, so a results page still has to spend
+     * most of its links on results before its own chrome cannot possibly show up to veto it.
      */
-    const val MIN_SAMPLES = 8
+    const val MIN_SAMPLES = 12
 
     /**
      * Share of the sample one host must hold.
