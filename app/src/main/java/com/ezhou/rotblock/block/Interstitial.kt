@@ -75,12 +75,16 @@ object Interstitial {
         // matching exited() could never bring depth back to 0 and onCleared would never fire again
         // for the life of the process.
         if (depth > 0 && nowMs - shutSinceMs >= MAX_SHOWING_MS) depth = 0
-        if (depth == 0) {
-            shutSinceMs = nowMs
-            onShown?.invoke()
-        }
+        val opening = depth == 0
+        if (opening) shutSinceMs = nowMs
         depth++
         trace()
+        // Announced after the state it describes, exactly like [exited] below. A listener that
+        // comes back through this object -- the service's does, by way of re-evaluating what
+        // should be on screen -- has to see the gate already shut. Firing first would have made
+        // that correctness depend on every listener happening to be asynchronous, which is not a
+        // property this object can enforce and not one a caller should have to know.
+        if (opening) onShown?.invoke()
     }
 
     /** Call from `onStop`. Main thread only. */
@@ -92,10 +96,7 @@ object Interstitial {
 
     private fun trace() {
         if (com.ezhou.rotblock.BuildConfig.DEBUG) {
-            // Swallowed rather than left to throw: android.util.Log is unmocked under
-            // testDebugUnitTest, and a debug trace line must never be what keeps this object from
-            // being tested as the pure JVM logic it otherwise is.
-            runCatching { android.util.Log.d("rotblockFG", "Interstitial depth=$depth") }
+            android.util.Log.d("rotblockFG", "Interstitial depth=$depth")
         }
     }
 }

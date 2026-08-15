@@ -60,6 +60,19 @@ android {
     ksp {
         arg("room.schemaLocation", "$projectDir/schemas")
     }
+
+    testOptions {
+        // So a debug `Log.d` cannot be the reason a piece of pure logic is untestable. The android.jar
+        // on the unit-test classpath is a stub whose every method throws, which makes an unrelated
+        // trace line inside an otherwise Android-free class fail the test that exercises it -- and the
+        // alternative, wrapping production logging in runCatching, puts test scaffolding on the
+        // enforcement path and reads as if Log.d were something that can fail in the field.
+        //
+        // A no-op is the right answer for Log specifically. Where a stub needs to actually *behave*,
+        // this flag is not enough and the fix is a real implementation on the test classpath -- see
+        // the org.json dependency below, which exists for exactly that reason.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
