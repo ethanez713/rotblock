@@ -1048,8 +1048,23 @@ class RotblockAccessibilityService : AccessibilityService() {
             // one place a link vote can be computed. Corroboration needs cross-call state (the
             // previous scan's verdict for this package), which a pure function cannot hold, hence
             // computing it up here rather than down in classifyInspection.
-            val linkConsensusHost = if (wantLinks) LinkConsensus.of(linkUrls)?.host else null
-            val corroboratedHost = if (wantLinks) linkCorroboration.offer(pkg, linkConsensusHost, now) else null
+            //
+            // Only a read whose walk actually ran may vote, or clear a pending vote -- hence the
+            // null check on [signals] rather than on [wantLinks] alone. A read throttled by
+            // MIN_PAGE_SCAN_INTERVAL_MS did not look, and on a page being scrolled two out of every
+            // three reads are exactly that. Letting those offer "no consensus" would clear the
+            // pending verdict between every pair of real scans, so no two consecutive votes could
+            // ever agree, and the link fallback -- the fix for a browser that sat on a quota'd site
+            // for eleven hours -- would silently never fire again. It is the same distinction
+            // [Inspected.Unreadable] draws against [Inspected.AppOnly], one layer down: not looking
+            // is not the same as finding nothing.
+            val scanned = signals != null
+            val linkConsensusHost = if (wantLinks && scanned) LinkConsensus.of(linkUrls)?.host else null
+            val corroboratedHost = if (wantLinks && scanned) {
+                linkCorroboration.offer(pkg, linkConsensusHost, now)
+            } else {
+                null
+            }
             if (linkConsensusHost != null && corroboratedHost == null) {
                 // The one state with no other symptom: the links agreed, and nothing acted on it
                 // yet because the previous scan did not agree with this one. The very next matching
@@ -1162,12 +1177,18 @@ class RotblockAccessibilityService : AccessibilityService() {
      * link cap that doubled as a scan limit meant [com.ezhou.rotblock.browser.LinkConsensus] never
      * even saw them.
      *
+     * Returns null when [MIN_PAGE_SCAN_INTERVAL_MS] has not elapsed, rather than an empty result.
+     * The two are not the same thing and the caller cannot tell them apart from empty lists: one
+     * says this page offered nothing, the other says nobody looked. Corroborating a link vote turns
+     * on that distinction -- see the caller -- and returning empty for both is what would let two
+     * throttled reads erase the verdict of the real scan sitting between them.
+     *
      * Every node fetched here is recycled on the way out. The root is not: it belongs to the
      * caller, which recycles it in its own `finally`.
      */
-    private fun harvestPageSignals(root: AccessibilityNodeInfo, collectSignature: Boolean): PageSignals {
+    private fun harvestPageSignals(root: AccessibilityNodeInfo, collectSignature: Boolean): PageSignals? {
         val now = System.currentTimeMillis()
-        if (now - lastPageScanMs < MIN_PAGE_SCAN_INTERVAL_MS) return PageSignals(emptyList(), emptyList(), null)
+        if (now - lastPageScanMs < MIN_PAGE_SCAN_INTERVAL_MS) return null
         lastPageScanMs = now
 
         val urls = ArrayList<String>(MAX_LINK_URLS_RETAINED)
