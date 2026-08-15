@@ -436,6 +436,17 @@ class RotblockAccessibilityService : AccessibilityService() {
                 } }
             }
 
+            // The moment one of our own screens goes up, not just when it comes down. Without this
+            // the friction countdown and the pause cooldown are charged against the target's quota
+            // in full, and the on-screen ring keeps visibly counting down over a screen that is not
+            // the target, until the next tick happens to notice.
+            Interstitial.onShown = {
+                handler.post { guard("interstitialShown") {
+                    trace("interstitial shown, re-evaluating")
+                    reEvaluateCurrent()
+                } }
+            }
+
             // The countdown is the only thing that can see itself: whether it came up at all, and
             // whether it was sat through rather than merely shown. Both arrive on the main thread
             // already; posting keeps every write to the gate on the same thread as the service's.
@@ -724,7 +735,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             pkg = currentPackage,
             targetId = currentTargetId,
             accruing = ledger.openTargetId,
-            interstitial = Interstitial.isShowing,
+            interstitial = Interstitial.isShowing(),
         )
     }
 
@@ -1312,7 +1323,7 @@ class RotblockAccessibilityService : AccessibilityService() {
 
             is Decision.Allowed -> {
                 overlay.hide()
-                if (Interstitial.isShowing) {
+                if (Interstitial.isShowing()) {
                     // One of our own screens is covering the app. You are not using it, so it does
                     // not get to charge you -- friction and cooldowns cost time, not quota.
                     ledger.closeSession(nowMs)
@@ -1545,7 +1556,7 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     private fun maybeShowFriction(policy: Policy, nowMs: Long) {
         if (policy.frictionSeconds <= 0) return
-        if (!friction.shouldLaunch(policy.id, Interstitial.isShowing, nowMs)) {
+        if (!friction.shouldLaunch(policy.id, Interstitial.isShowing(), nowMs)) {
             trace("friction not launched for ${policy.id} (served=${friction.servedFor})")
             return
         }
@@ -1681,6 +1692,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         EnforcementStatus.setConnected(false)
         stopTicking()
         Interstitial.onCleared = null
+        Interstitial.onShown = null
         FrictionGate.onShown = null
         FrictionGate.onServed = null
         BlockSelfTest.onRequested = null

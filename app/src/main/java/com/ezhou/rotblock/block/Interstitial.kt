@@ -38,8 +38,8 @@ object Interstitial {
     @Volatile
     private var shutSinceMs: Long = 0L
 
-    val isShowing: Boolean
-        get() = depth > 0 && System.currentTimeMillis() - shutSinceMs < MAX_SHOWING_MS
+    fun isShowing(nowMs: Long = System.currentTimeMillis()): Boolean =
+        depth > 0 && nowMs - shutSinceMs < MAX_SHOWING_MS
 
     /**
      * Fired on the main thread the moment the last of our screens goes away.
@@ -53,9 +53,32 @@ object Interstitial {
     @Volatile
     var onCleared: (() -> Unit)? = null
 
+    /**
+     * Fired on the main thread the moment the gate goes from open to shut.
+     *
+     * Symmetric with [onCleared], and exists for the same reason: nothing else tells the service
+     * one of our screens just went up. Without it a friction countdown or a pause cooldown keeps
+     * charging the target's quota, and the on-screen ring keeps counting down over a screen that
+     * is not the target, until the next tick happens to notice -- up to [MAX_TICK_MS] away.
+     *
+     * Only on the 0 -> 1 transition: the friction screen handing off to the pause flow is one
+     * continuous cover, not a fresh entry, and must not re-fire this.
+     */
+    @Volatile
+    var onShown: (() -> Unit)? = null
+
     /** Call from `onStart`. Main thread only. */
-    fun entered() {
-        if (depth == 0) shutSinceMs = System.currentTimeMillis()
+    fun entered(nowMs: Long = System.currentTimeMillis()) {
+        // A gate left shut past MAX_SHOWING_MS has already self-healed via [isShowing] while depth
+        // was left non-zero -- some exited() call was lost. Treating this as a fresh entry resets
+        // shutSinceMs so the new gate is not born already-expired, which would otherwise mean the
+        // matching exited() could never bring depth back to 0 and onCleared would never fire again
+        // for the life of the process.
+        if (depth > 0 && nowMs - shutSinceMs >= MAX_SHOWING_MS) depth = 0
+        if (depth == 0) {
+            shutSinceMs = nowMs
+            onShown?.invoke()
+        }
         depth++
         trace()
     }
@@ -69,7 +92,10 @@ object Interstitial {
 
     private fun trace() {
         if (com.ezhou.rotblock.BuildConfig.DEBUG) {
-            android.util.Log.d("rotblockFG", "Interstitial depth=$depth")
+            // Swallowed rather than left to throw: android.util.Log is unmocked under
+            // testDebugUnitTest, and a debug trace line must never be what keeps this object from
+            // being tested as the pure JVM logic it otherwise is.
+            runCatching { android.util.Log.d("rotblockFG", "Interstitial depth=$depth") }
         }
     }
 }
