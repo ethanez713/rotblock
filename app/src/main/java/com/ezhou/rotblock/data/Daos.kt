@@ -56,6 +56,10 @@ interface AuditDao {
     @Query("SELECT * FROM audit_events ORDER BY tsMs DESC LIMIT :limit")
     fun observeRecent(limit: Int): Flow<List<AuditEvent>>
 
+    /** One-shot form of [observeRecent], for a diagnostic capture that needs a single read. */
+    @Query("SELECT * FROM audit_events ORDER BY tsMs DESC LIMIT :limit")
+    suspend fun recent(limit: Int): List<AuditEvent>
+
     @Query("SELECT * FROM audit_events WHERE tsMs >= :sinceMs ORDER BY tsMs")
     suspend fun since(sinceMs: Long): List<AuditEvent>
 

@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -37,6 +38,23 @@ import com.ezhou.rotblock.browser.escapeIntent
 import com.ezhou.rotblock.browser.shouldAttemptReveal
 import com.ezhou.rotblock.browser.typeEscape
 import com.ezhou.rotblock.browser.WebMatcher
+import com.ezhou.rotblock.diag.CaptureInput
+import com.ezhou.rotblock.diag.CaptureStore
+import com.ezhou.rotblock.diag.Diagnostics
+import com.ezhou.rotblock.diag.NodeDumpSnapshot
+import com.ezhou.rotblock.diag.NodeSnapshot
+import com.ezhou.rotblock.diag.OutageSnapshot
+import com.ezhou.rotblock.diag.PauseBudgetSnapshot
+import com.ezhou.rotblock.diag.RequirementSnapshot
+import com.ezhou.rotblock.diag.ServiceInternals
+import com.ezhou.rotblock.diag.SessionRow
+import com.ezhou.rotblock.diag.buildCapture
+import com.ezhou.rotblock.diag.gatherAppInfo
+import com.ezhou.rotblock.diag.gatherOutageSnapshot
+import com.ezhou.rotblock.diag.gatherPhoneSnapshot
+import com.ezhou.rotblock.diag.toAuditEventSnapshot
+import com.ezhou.rotblock.diag.toDecisionSnapshot
+import com.ezhou.rotblock.diag.toPolicySnapshot
 import com.ezhou.rotblock.pause.PauseController
 import com.ezhou.rotblock.policy.BlockReason
 import com.ezhou.rotblock.policy.Decision
@@ -45,6 +63,8 @@ import com.ezhou.rotblock.policy.PolicyEngine
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.UsageLedger
 import com.ezhou.rotblock.setup.DetectionCounters
+import com.ezhou.rotblock.setup.gatherSetupFacts
+import com.ezhou.rotblock.setup.requirementsFor
 import com.ezhou.rotblock.ui.FrictionActivity
 import com.ezhou.rotblock.ui.PauseRequestActivity
 import kotlinx.coroutines.CoroutineScope
@@ -198,12 +218,14 @@ internal const val KEY_LAST_ALIVE = "last_alive"
  * Not a relaxation and not a deadline — losing these three strings is what *breaks* enforcement,
  * so persisting them is on the same side of the invariant as everything else here.
  */
-private const val KEY_VISIT_PACKAGE = "visit_package"
-private const val KEY_VISIT_TARGET = "visit_target"
+// Internal, like the outage keys above: a diagnostic capture reads these directly, both from
+// inside the service and, when nothing is bound, from com.ezhou.rotblock.diag.Diagnostics itself.
+internal const val KEY_VISIT_PACKAGE = "visit_package"
+internal const val KEY_VISIT_TARGET = "visit_target"
 // A new key rather than the old "visit_friction_shown": that one recorded a countdown having been
 // *put up*, which is exactly the thing that no longer spends the wait. Reading a stale one back as
 // "served" would hand out one free bypass per upgrade.
-private const val KEY_VISIT_FRICTION_SERVED = "visit_friction_served"
+internal const val KEY_VISIT_FRICTION_SERVED = "visit_friction_served"
 
 /**
  * Attempts to read the already-open window at startup, before giving up until the next event.
@@ -222,6 +244,26 @@ private const val SEED_RETRY_MS = 500L
 
 /** How often the service records that it was still running. */
 private const val HEARTBEAT_MS = 60_000L
+
+/**
+ * How long a diagnostic capture keeps polling for a window it can read before giving up.
+ *
+ * The tap that triggers a capture happens from the Quick Settings shade, so `rootInActiveWindow`
+ * belongs to systemui at the moment of the request -- there is no event for "the shade closed", so
+ * this polls for one instead. That is normally forbidden by `CLAUDE.md`'s no-repeating-callbacks
+ * rule; it is allowed here because it is user-initiated (one QS tile tap), deadline-bounded by this
+ * constant, only running while the screen is on (nothing else could have opened the shade), fires
+ * once per capture rather than on a schedule, and exists specifically to catch a state -- the shade
+ * closing back onto whatever was blocked -- that by definition emits no accessibility event of its
+ * own. `requestInspect` cannot stand in for it: that channel only ever queues a read for a browser
+ * or feed package, and a capture has to work for a plain app target too.
+ */
+private const val DIAG_DUMP_DEADLINE_MS = 15_000L
+private const val DIAG_DUMP_POLL_MS = 1_000L
+
+/** Bounds on the diagnostic tree dump -- generous, since this runs once per capture, not per event. */
+private const val DIAG_DUMP_MAX_NODES = 1_500
+private const val DIAG_DUMP_MAX_DEPTH = 40
 
 /**
  * The single service that enforces everything.
@@ -498,6 +540,12 @@ class RotblockAccessibilityService : AccessibilityService() {
                 runCatching { runBlockSelfTest() }
                     .onFailure { if (::audit.isInitialized) audit.recordError("blockSelfTest", it) }
                     .getOrDefault(false)
+            }
+
+            // Posted rather than run inline: the QS tile that triggers this is not on this
+            // service's main thread by contract, and everything the capture reads below is.
+            Diagnostics.onCaptureRequested = { requestedAtMs ->
+                handler.post { guard("diagnosticsCapture") { startDiagnosticsCapture(requestedAtMs) } }
             }
 
             // Undo a greyscale left on by a crash before doing anything else.
@@ -1825,6 +1873,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         FrictionGate.onDeclined = null
         BlockSelfTest.onRequested = null
         BlockSelfTest.ended()
+        Diagnostics.onCaptureRequested = null
         runCatching { unregisterReceiver(screenReceiver) }
         // onUnbind and onDestroy both land here; keep the first timestamp, which is when
         // enforcement actually stopped.
@@ -1852,6 +1901,257 @@ class RotblockAccessibilityService : AccessibilityService() {
         inspectorJob?.cancel()
         watchJob?.cancel()
         reseedJob?.cancel()
+    }
+
+    /**
+     * Starts a diagnostic capture: everything that does not need the node tree is gathered here,
+     * on the main thread, from live service state; everything that needs a suspending DataStore or
+     * Room read is filled in by [withCaptureFacts]; the node dump is last, because it is the one
+     * part that has to wait for the shade to close. See [com.ezhou.rotblock.diag.Diagnostics].
+     */
+    private fun startDiagnosticsCapture(requestedAtMs: Long) {
+        val basics = gatherCaptureBasics(requestedAtMs)
+        scope.launch {
+            val enriched = runCatching { withCaptureFacts(basics, requestedAtMs) }.getOrDefault(basics)
+            handler.post {
+                guard("diagnosticsNodeDump") {
+                    attemptNodeDump(enriched, requestedAtMs + DIAG_DUMP_DEADLINE_MS)
+                }
+            }
+        }
+    }
+
+    private fun gatherCaptureBasics(now: Long): CaptureInput {
+        val appInfo = gatherAppInfo(this)
+        val targetId = currentTargetId
+        val sessions = targetId?.let { ledger.sessionsFor(it, now) }.orEmpty()
+        val decision = targetId?.let { id ->
+            toDecisionSnapshot(PolicyEngine.evaluate(policiesByTarget[id], sessions, pause.pausedUntilMs, now))
+        }
+        return CaptureInput(
+            capturedAtMs = now,
+            processUptimeMs = now - Rotblock.processStartedAtMs,
+            versionName = appInfo.first,
+            versionCode = appInfo.second,
+            manufacturer = Build.MANUFACTURER,
+            model = Build.MODEL,
+            sdkInt = Build.VERSION.SDK_INT,
+            osRelease = Build.VERSION.RELEASE,
+            enforcement = EnforcementStatus.snapshot(),
+            service = ServiceInternals(
+                tickerArmed = ticking,
+                tickerDueAtMs = if (ticking) tickDueAtMs else null,
+                frictionServedFor = friction.servedFor,
+                targetConfidenceConfirmed = confidence.confirmed,
+                visitMemory = visits.snapshot(),
+                searchPageMemory = searchPages.snapshot(),
+                linkCorroborationPending = linkCorroboration.snapshot(),
+                revealAttemptedThisVisit = revealAttemptedThisVisit,
+                hudDismissedThisSession = hudDismissedThisSession,
+                enabledTargets = policiesByTarget.values.filter { it.enabled }.map { it.id },
+                websiteMatchers = websiteMatchers,
+            ),
+            interstitialDepth = Interstitial.currentDepth,
+            interstitialShowing = Interstitial.isShowing(now),
+            openTargetId = ledger.openTargetId,
+            currentDecision = decision,
+            currentSessions = sessions.map { SessionRow(it.startMs, it.endMs) },
+            pausedUntilMs = pause.pausedUntilMs,
+            // Filled in by withCaptureFacts, which needs a suspending read this main-thread pass
+            // cannot do.
+            pauseBudget = null,
+            requirements = emptyList(),
+            outage = gatherOutageSnapshot(this),
+            phone = gatherPhoneSnapshot(this),
+            policies = policiesByTarget.values.map { toPolicySnapshot(it) },
+            auditEvents = emptyList(),
+            nodeDump = null,
+        )
+    }
+
+    private suspend fun withCaptureFacts(basics: CaptureInput, now: Long): CaptureInput {
+        val settings = Rotblock.settings(this).current()
+        val policies = policiesByTarget.values.toList()
+        val requirements = requirementsFor(gatherSetupFacts(this, settings, policies, now)).map {
+            RequirementSnapshot(it.id.name, it.status.name, it.need.name)
+        }
+        val budget = runCatching { pause.budgetStatus(now) }.getOrNull()?.let {
+            PauseBudgetSnapshot(it.pausesUsed, it.minutesUsed, it.maxPauses, it.maxMinutes)
+        }
+        val events = runCatching { Rotblock.database(this).auditDao().recent(50) }
+            .getOrDefault(emptyList())
+            .map { toAuditEventSnapshot(it) }
+        return basics.copy(requirements = requirements, pauseBudget = budget, auditEvents = events)
+    }
+
+    /**
+     * Polls for a window this capture is allowed to read, once every [DIAG_DUMP_POLL_MS] until
+     * [deadlineMs]. See [DIAG_DUMP_DEADLINE_MS] for why this is the one repeating callback this app
+     * adds.
+     */
+    private fun attemptNodeDump(input: CaptureInput, deadlineMs: Long) {
+        val pkg = currentPackage
+        val root = rootInActiveWindow
+        val rootPkg = root?.packageName?.toString()
+        val readable = root != null && rootPkg != null &&
+            rootPkg != packageName && rootPkg != "com.android.systemui" && rootPkg == pkg
+        if (readable) {
+            val dump = try {
+                buildNodeDump(root!!, rootPkg!!)
+            } finally {
+                root.recycleCompat()
+            }
+            finishDiagnosticsCapture(input.copy(nodeDump = dump))
+            return
+        }
+        root?.recycleCompat()
+        val now = System.currentTimeMillis()
+        if (now >= deadlineMs) {
+            finishDiagnosticsCapture(
+                input.copy(
+                    nodeDump = NodeDumpSnapshot(
+                        status = "no readable window within 15s",
+                        packageName = pkg,
+                        nodeCount = 0,
+                        truncated = false,
+                        nodes = emptyList(),
+                        addressBar = null,
+                        linkUrls = emptyList(),
+                        linkDescriptions = emptyList(),
+                        linkConsensusHost = null,
+                        pageSignatureKey = null,
+                        classification = null,
+                    ),
+                ),
+            )
+        } else {
+            handler.postDelayed(
+                { guard("diagnosticsNodeDump") { attemptNodeDump(input, deadlineMs) } },
+                DIAG_DUMP_POLL_MS,
+            )
+        }
+    }
+
+    private fun finishDiagnosticsCapture(input: CaptureInput) {
+        scope.launch {
+            runCatching {
+                val json = buildCapture(input)
+                CaptureStore(CaptureStore.directoryFor(this@RotblockAccessibilityService))
+                    .write(input.capturedAtMs, json)
+            }.onFailure { audit.recordError("diagnosticsCapture", it) }
+        }
+    }
+
+    /**
+     * One depth-first walk of the tree a capture found readable, bounded by [DIAG_DUMP_MAX_NODES]
+     * and [DIAG_DUMP_MAX_DEPTH] -- generous next to [MAX_LINK_SCAN_NODES], because this runs once
+     * per capture rather than on every scroll event. Collects the same link-target and
+     * content-description evidence [harvestPageSignals] does, without that function's throttle:
+     * a capture has to look regardless of when the inspector coroutine last scanned.
+     *
+     * Alongside the raw tree this records what rotblock's own machinery makes of it -- the address
+     * bar read, the link consensus, the page signature, and [classifyInspection]'s verdict -- so a
+     * tree that looks fine next to a wrong conclusion is distinguishable from a tree with nothing
+     * on it at all.
+     */
+    private fun buildNodeDump(root: AccessibilityNodeInfo, pkg: String): NodeDumpSnapshot {
+        val nodes = ArrayList<NodeSnapshot>()
+        val linkUrls = ArrayList<String>()
+        val descriptions = ArrayList<String>()
+        var title: String? = null
+        var truncated = false
+
+        val stack = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+        for (i in root.childCount - 1 downTo 0) {
+            runCatching { root.getChild(i) }.getOrNull()?.let { stack.addLast(it to 1) }
+        }
+        var visited = 0
+        try {
+            while (stack.isNotEmpty()) {
+                if (visited >= DIAG_DUMP_MAX_NODES) {
+                    truncated = true
+                    break
+                }
+                val (node, depth) = stack.removeLast()
+                visited++
+                try {
+                    val bounds = Rect().also { node.getBoundsInScreen(it) }
+                    val targetUrl = runCatching {
+                        node.extras?.getCharSequence(LinkConsensus.EXTRA_TARGET_URL)
+                    }.getOrNull()?.toString()
+                    nodes.add(
+                        NodeSnapshot(
+                            depth = depth,
+                            className = node.className?.toString(),
+                            viewId = runCatching { node.viewIdResourceName }.getOrNull(),
+                            text = node.text?.toString()?.take(200),
+                            contentDescription = node.contentDescription?.toString()?.take(200),
+                            bounds = bounds.toShortString(),
+                            visibleToUser = runCatching { node.isVisibleToUser }.getOrDefault(false),
+                            clickable = node.isClickable,
+                            targetUrl = targetUrl,
+                        ),
+                    )
+                    targetUrl?.takeIf { it.isNotBlank() }?.let { linkUrls.add(it) }
+                    node.contentDescription?.toString()?.takeIf { it.isNotBlank() }?.let { descriptions.add(it) }
+                    if (title == null && node.className?.toString() == "android.webkit.WebView") {
+                        node.text?.toString()?.takeIf { it.isNotBlank() }?.let { title = it }
+                    }
+                    if (depth < DIAG_DUMP_MAX_DEPTH) {
+                        for (i in node.childCount - 1 downTo 0) {
+                            runCatching { node.getChild(i) }.getOrNull()?.let { stack.addLast(it to depth + 1) }
+                        }
+                    }
+                } finally {
+                    node.recycleCompat()
+                }
+            }
+        } finally {
+            stack.forEach { it.first.recycleCompat() }
+        }
+
+        val browserSpec = BrowserRegistry.specFor(pkg)
+        val barRead = browserSpec?.let { root.readAddressBar(it) }
+        val addressBarText = when (barRead) {
+            is AddressBar.Read.Text -> "Text(\"${barRead.value}\")"
+            is AddressBar.Read.Chooser -> "Chooser(${barRead.offered})"
+            AddressBar.Read.Absent, null -> "Absent"
+        }
+        val parsedBar = (barRead as? AddressBar.Read.Text)?.value?.let { WebMatcher.parse(it) }
+        val linkConsensusHost = LinkConsensus.of(linkUrls)?.host
+        val linkHost = linkConsensusHost?.let { WebMatcher.ParsedUrl(host = it, path = "") }
+        val signature = PageSignature.keyOf(descriptions, title, parsedBar?.host)
+        val feedKey = FeedRegistry.specsFor(pkg)
+            .firstOrNull { spec -> spec.viewIdHints.any { root.hasViewId(it) } }
+            ?.key
+        val classification = classifyInspection(
+            pkg,
+            feedKey,
+            (barRead as? AddressBar.Read.Text)?.value,
+            websiteMatchers,
+            linkHost,
+            descriptions,
+            title,
+        )
+        val classificationText = when (classification) {
+            is Inspected.Target -> "Target(${classification.targetId})"
+            Inspected.AppOnly -> "AppOnly"
+            Inspected.Unreadable -> "Unreadable"
+        }
+
+        return NodeDumpSnapshot(
+            status = "ok",
+            packageName = pkg,
+            nodeCount = nodes.size,
+            truncated = truncated,
+            nodes = nodes,
+            addressBar = addressBarText,
+            linkUrls = linkUrls,
+            linkDescriptions = descriptions,
+            linkConsensusHost = linkConsensusHost,
+            pageSignatureKey = signature,
+            classification = classificationText,
+        )
     }
 
     /**

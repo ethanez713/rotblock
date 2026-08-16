@@ -47,6 +47,7 @@ import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.block.BlockSelfTest
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.data.buildExport
+import com.ezhou.rotblock.diag.Diagnostics
 import com.ezhou.rotblock.service.EnforcementStatus
 import com.ezhou.rotblock.setup.RequirementId
 import com.ezhou.rotblock.setup.blocking
@@ -124,6 +125,9 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
         }
         Section("Keeping a copy", "Write every rule and all history to a file") {
             ExportControls()
+        }
+        Section("Diagnostic captures", diagnosticsSummary()) {
+            DiagnosticsControls()
         }
 
         Spacer(Modifier.height(28.dp))
@@ -212,6 +216,11 @@ private fun blockTestSummary(settings: RotblockSettings): String = when {
     settings.blockTestAtMs == 0L -> "Never tested"
     settings.blockTestSeen -> "Last test: the block screen appeared"
     else -> "Last test: nothing appeared"
+}
+
+private fun diagnosticsSummary(): String {
+    val at = Diagnostics.lastCaptureAtMs
+    return if (at == 0L) "Never captured" else "Last capture ${clockTime(at)}"
 }
 
 /**
@@ -515,6 +524,145 @@ private fun ExportControls() {
         },
         contentPadding = PaddingValues(0.dp),
     ) { Text("Export a copy") }
+}
+
+/** One row of the diagnostics list: the file plus a summary read out of its own JSON. */
+private data class CaptureRow(val file: java.io.File, val atMs: Long, val summary: String)
+
+private fun captureTimeLabel(atMs: Long): String {
+    val local = java.time.Instant.ofEpochMilli(atMs).atZone(java.time.ZoneId.systemDefault())
+    return "%04d-%02d-%02d %02d:%02d:%02d".format(
+        local.year, local.monthValue, local.dayOfMonth, local.hour, local.minute, local.second,
+    )
+}
+
+/**
+ * A capture is read back just far enough to show one honest line per row -- what was in front of
+ * you and whether the service was even bound to say -- without parsing the whole file for a list
+ * nobody is reading closely yet.
+ */
+private fun summarize(json: org.json.JSONObject): String {
+    val enforcement = json.optJSONObject("enforcement")
+    if (enforcement == null || !enforcement.optBoolean("connected", false)) {
+        return "service not bound"
+    }
+    val targetId = enforcement.optString("currentTargetId", "").takeIf { it.isNotBlank() }
+    val pkg = enforcement.optString("currentPackage", "").takeIf { it.isNotBlank() }
+    return when {
+        targetId != null -> "$pkg → $targetId"
+        pkg != null -> pkg
+        else -> "nothing in front"
+    }
+}
+
+private fun loadCaptureRows(dir: java.io.File): List<CaptureRow> =
+    com.ezhou.rotblock.diag.CaptureStore(dir).list().map { file ->
+        val parsed = runCatching { org.json.JSONObject(file.readText()) }
+        CaptureRow(
+            file = file,
+            atMs = parsed.getOrNull()?.optLong("capturedAtMs") ?: 0L,
+            summary = parsed.map { summarize(it) }.getOrDefault("unreadable capture"),
+        )
+    }
+
+/**
+ * One capture per tap of the diagnostics Quick Settings tile, kept as plain files rather than
+ * anything in the database -- see [com.ezhou.rotblock.diag.CaptureStore]. Export is SAF-only, the
+ * same as [ExportControls]: no `ACTION_SEND`, because a capture holds page URLs and on-screen
+ * text and this app does not get to decide that leaving the device is fine.
+ */
+@Composable
+private fun DiagnosticsControls() {
+    val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val dir = remember { com.ezhou.rotblock.diag.CaptureStore.directoryFor(context) }
+    var rows by remember { mutableStateOf<List<CaptureRow>>(emptyList()) }
+    var refreshToken by remember { mutableStateOf(0) }
+    var pendingSave by remember { mutableStateOf<java.io.File?>(null) }
+
+    LaunchedEffect(refreshToken) {
+        rows = withContext(Dispatchers.IO) { loadCaptureRows(dir) }
+    }
+
+    val saveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        val file = pendingSave
+        pendingSave = null
+        if (uri == null || file == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { it.write(file.readBytes()) }
+                }
+            }
+        }
+    }
+
+    Text(
+        "A capture writes down everything rotblock currently believes about your phone to one " +
+            "file: which app or site is in front and why it would or would not be blocked, plus " +
+            "the on-screen text and page URLs that led to that answer. That makes a capture the " +
+            "most sensitive thing this app holds -- treat one the way you would a screenshot, and " +
+            "only save or share it when you mean to.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(6.dp))
+    SelectionContainer {
+        Text(
+            "Files stay on this phone, never uploaded, at " +
+                "/sdcard/Android/data/com.ezhou.rotblock/files/diagnostics/ -- pull one with a " +
+                "computer attached:\nadb pull /sdcard/Android/data/com.ezhou.rotblock/files/diagnostics/",
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    Spacer(Modifier.height(10.dp))
+
+    if (rows.isEmpty()) {
+        Text(
+            "No captures yet. Open Quick Settings and tap the rotblock diagnostics tile.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+
+    rows.forEach { row ->
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(captureTimeLabel(row.atMs), style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    row.summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(
+                onClick = {
+                    pendingSave = row.file
+                    saveLauncher.launch(row.file.name)
+                },
+                contentPadding = PaddingValues(0.dp),
+            ) { Text("Save a copy") }
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+    TextButton(
+        onClick = {
+            scope.launch {
+                withContext(Dispatchers.IO) { com.ezhou.rotblock.diag.CaptureStore(dir).deleteAll() }
+                refreshToken++
+            }
+        },
+        contentPadding = PaddingValues(0.dp),
+    ) { Text("Delete all") }
 }
 
 @Composable

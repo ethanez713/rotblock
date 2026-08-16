@@ -102,6 +102,17 @@
             </intent-filter>
         </service>
 
+        <service
+            android:name=".diag.CaptureTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_rotblock"
+            android:label="@string/diagnostics_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <!--
           exported MUST be true: the system binds this from another process, and the
           BIND_ACCESSIBILITY_SERVICE permission is what keeps anyone else out. With exported="false"

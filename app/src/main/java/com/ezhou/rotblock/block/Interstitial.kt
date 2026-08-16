@@ -41,6 +41,9 @@ object Interstitial {
     fun isShowing(nowMs: Long = System.currentTimeMillis()): Boolean =
         depth > 0 && nowMs - shutSinceMs < MAX_SHOWING_MS
 
+    /** The raw counter, for diagnostics only -- [isShowing] is what enforcement actually reads. */
+    val currentDepth: Int get() = depth
+
     /**
      * Fired on the main thread the moment the last of our screens goes away.
      *

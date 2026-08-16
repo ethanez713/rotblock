@@ -60,6 +60,9 @@ class VisitMemory {
 
     /** What to enforce on re-entry to [pkg], until a read says otherwise. */
     fun resume(pkg: String): String? = byPackage[pkg]
+
+    /** Diagnostic only -- a copy, so nothing outside this class can mutate the live map. */
+    fun snapshot(): Map<String, String> = byPackage.toMap()
 }
 
 /**
@@ -103,4 +106,7 @@ class SearchPageMemory {
         }
         return true
     }
+
+    /** Diagnostic only -- a copy, so nothing outside this class can mutate the live map. */
+    fun snapshot(): Map<String, Long> = since.toMap()
 }

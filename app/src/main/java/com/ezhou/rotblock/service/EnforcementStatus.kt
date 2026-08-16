@@ -15,8 +15,14 @@ package com.ezhou.rotblock.service
  */
 object EnforcementStatus {
 
-    /** Kept small: this is the last few seconds of reasoning, not a history. */
-    private const val CAPACITY = 40
+    /**
+     * A diagnostic capture (see [com.ezhou.rotblock.diag.Diagnostics]) is taken *after* something
+     * has already gone wrong, which means the useful part of the trail is whatever happened before
+     * the user noticed and went looking for the Quick Settings tile -- so this has to hold minutes,
+     * not seconds. A few hundred short strings is a few KB, and nothing on the path that writes
+     * them gets any heavier for it.
+     */
+    private const val CAPACITY = 300
 
     data class Entry(val atMs: Long, val text: String, val repeats: Int = 1)
 

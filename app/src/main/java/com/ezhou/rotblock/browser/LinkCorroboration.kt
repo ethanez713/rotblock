@@ -42,4 +42,8 @@ class LinkCorroboration(private val freshMs: Long = 30_000L) {
         if (nowMs - prev.atMs >= freshMs) return null
         return host
     }
+
+    /** Diagnostic only -- what each package's most recent, not-yet-corroborated offer said. */
+    fun snapshot(): Map<String, Pair<String, Long>> =
+        pendingByPackage.mapValues { it.value.host to it.value.atMs }
 }

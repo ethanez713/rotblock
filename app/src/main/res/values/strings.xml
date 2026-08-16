@@ -2,4 +2,5 @@
     <string name="app_name">rotblock</string>
     <string name="accessibility_service_label">rotblock enforcement</string>
     <string name="accessibility_service_description">Lets rotblock see which app is in the foreground and read the address bar in browsers, so it can enforce the limits you set. Nothing is sent off the device.</string>
+    <string name="diagnostics_tile_label">rotblock diagnostics</string>
 </resources>
