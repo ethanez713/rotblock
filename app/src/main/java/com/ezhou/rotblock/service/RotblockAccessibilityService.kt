@@ -184,7 +184,11 @@ private const val MIN_REPORTABLE_OUTAGE_MS = 30_000L
  * different fix, from "it is off". See [com.ezhou.rotblock.setup.gatherSetupFacts].
  */
 internal const val OUTAGE_PREFS = "rotblock_outage"
-private const val KEY_DOWN_SINCE = "down_since"
+// Internal rather than private for the same reason as the heartbeat below: whether the service was
+// *told* to stop is what tells a force-stop apart from the user switching rotblock off, and
+// [com.ezhou.rotblock.setup.shouldRestoreEnrolment] needs to know which happened before it puts
+// rotblock back in Android's list.
+internal const val KEY_DOWN_SINCE = "down_since"
 private const val KEY_DOWN_REASON = "down_reason"
 internal const val KEY_LAST_ALIVE = "last_alive"
 

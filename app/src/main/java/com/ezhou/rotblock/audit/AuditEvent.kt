@@ -36,6 +36,14 @@ enum class AuditType {
     /** The user asked Setup to kick the accessibility service component back into binding. */
     ENFORCEMENT_REVIVAL_ATTEMPTED,
 
+    /**
+     * rotblock put itself back into Android's enabled-accessibility-services list after the phone
+     * dropped it. Worth its own entry rather than a [SERVICE_ENABLED]: the gap it ends is one
+     * nothing else in the app could have closed, and it should be visible that the app did it
+     * rather than the user. See [com.ezhou.rotblock.setup.AccessibilityEnrolment].
+     */
+    ENFORCEMENT_RE_ENROLLED,
+
     /** The service caught an exception it swallowed to stay alive. */
     INTERNAL_ERROR,
 }

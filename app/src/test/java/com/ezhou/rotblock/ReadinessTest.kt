@@ -111,6 +111,35 @@ class ReadinessTest {
     }
 
     @Test
+    fun `a phone that granted secure settings is offered the switch rather than a walk to it`() {
+        // The list rotblock has been dropped from is a secure setting, so with that grant it can
+        // put itself back -- see AccessibilityEnrolment. Without it the only honest answer is
+        // still Settings.
+        val withGrant = requirementsFor(
+            facts(accessibilityEnabled = false, serviceConnected = false, secureSettingsGranted = true),
+        )
+        assertEquals(Fix.SelfEnable, withGrant.byId(RequirementId.ENFORCEMENT)?.action)
+
+        val withoutGrant = requirementsFor(
+            facts(accessibilityEnabled = false, serviceConnected = false, secureSettingsGranted = false),
+        )
+        assertEquals(
+            Fix.OpenSettings(SettingsScreen.ACCESSIBILITY),
+            withoutGrant.byId(RequirementId.ENFORCEMENT)?.action,
+        )
+    }
+
+    @Test
+    fun `writing the list is not offered for a service that is listed and merely unbound`() {
+        // BROKEN is a different fault: the component is already enrolled, so writing that list
+        // again changes nothing and would look like a button that does not work.
+        val broken = requirementsFor(
+            facts(accessibilityEnabled = true, serviceConnected = false, secureSettingsGranted = true),
+        )
+        assertEquals(Fix.AttemptRebind, broken.byId(RequirementId.ENFORCEMENT)?.action)
+    }
+
+    @Test
     fun `a service that has not had time to bind yet is not called broken`() {
         // Opening the app after the process was killed means a moment where accessibility is on
         // and the service is not bound. A red banner that clears itself two seconds later teaches

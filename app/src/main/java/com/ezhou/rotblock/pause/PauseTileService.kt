@@ -7,6 +7,7 @@ import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.block.formatDuration
+import com.ezhou.rotblock.setup.AccessibilityEnrolment
 import com.ezhou.rotblock.ui.PauseRequestActivity
 import kotlinx.coroutines.launch
 
@@ -21,6 +22,11 @@ class PauseTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
+        // Pulling the shade down is a system event this tile is already bound for, so checking here
+        // costs no wakeup of rotblock's own -- which matters, because there is no other moment the
+        // app is reliably running to notice it has been dropped from Android's accessibility list.
+        // Opening rotblock does it too, but a blocker nobody opens is exactly the one that needs it.
+        runCatching { AccessibilityEnrolment.restoreIfDropped(this) }
         refreshTile()
     }
 

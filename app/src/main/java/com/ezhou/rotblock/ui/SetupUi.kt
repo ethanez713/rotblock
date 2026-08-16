@@ -40,6 +40,7 @@ import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.setup.AccessibilityEnrolment
 import com.ezhou.rotblock.setup.EnforcementRevival
 import com.ezhou.rotblock.setup.Fix
 import com.ezhou.rotblock.setup.Requirement
@@ -185,6 +186,30 @@ fun RequirementCard(
                                 },
                                 contentPadding = PaddingValues(0.dp),
                             ) { Text("Try to restart it") }
+                        }
+
+                        // Gated on the same disclosure as opening the accessibility screen would
+                        // be. Doing the switching-on ourselves makes accepting it *more* load
+                        // bearing, not less: it is the only place the user is told what an
+                        // accessibility service can see before one starts running.
+                        Fix.SelfEnable -> {
+                            TextButton(
+                                onClick = {
+                                    if (onNeedsConsent != null) {
+                                        onNeedsConsent()
+                                    } else {
+                                        Rotblock.audit(context).record(
+                                            AuditType.ENFORCEMENT_RE_ENROLLED,
+                                            detail = if (AccessibilityEnrolment.enrol(context)) {
+                                                "put back in Android's accessibility list from Setup"
+                                            } else {
+                                                "could not write Android's accessibility list"
+                                            },
+                                        )
+                                    }
+                                },
+                                contentPadding = PaddingValues(0.dp),
+                            ) { Text("Turn enforcement back on") }
                         }
 
                         // No button, on purpose: nothing rotblock can do from inside the phone

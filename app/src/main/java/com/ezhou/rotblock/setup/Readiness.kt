@@ -60,6 +60,16 @@ sealed interface Fix {
     /** Kick the accessibility service's component so Android re-binds it. See [EnforcementRevival]. */
     data object AttemptRebind : Fix
 
+    /**
+     * Write rotblock back into Android's enabled-accessibility-services list, which it can do for
+     * itself where `WRITE_SECURE_SETTINGS` was granted. See [AccessibilityEnrolment].
+     *
+     * Offered whether or not [shouldRestoreEnrolment] would have acted unprompted: that guard exists
+     * to keep the app from undoing a decision nobody asked it to undo, and a finger on this button
+     * *is* the asking.
+     */
+    data object SelfEnable : Fix
+
     /** Needs a computer. Shown as copyable text, never as a button that cannot work. */
     data class RunOverAdb(val command: String) : Fix
 }
@@ -190,7 +200,14 @@ private fun enforcement(facts: SetupFacts): Requirement {
         },
         fix = when (status) {
             Status.READY -> ""
-            Status.MISSING ->
+            // With the secure-settings grant rotblock can write itself back into Android's list, so
+            // the honest instruction is the button rather than a walk to Settings. The walk is still
+            // spelled out underneath it, because the grant can be there and the write still fail.
+            Status.MISSING -> if (facts.secureSettingsGranted) {
+                "The button below puts rotblock back in Android's accessibility list without " +
+                    "leaving the app. If it does not take, Settings → Accessibility → Installed " +
+                    "apps → rotblock enforcement, and turn it on."
+            } else {
                 "Settings → Accessibility → Installed apps → rotblock enforcement, and turn it on." +
                     if (facts.installedFromStore) {
                         ""
@@ -198,6 +215,7 @@ private fun enforcement(facts: SetupFacts): Requirement {
                         " Android hides that switch for apps installed outside the Play Store; if " +
                             "it is greyed out, the ADB command below unhides it."
                     }
+            }
             // Deliberately not "turn it on" -- it is already on, which is exactly why this state
             // is so confusing. Off and on again is the only thing that rebinds it.
             Status.BROKEN ->
@@ -206,8 +224,11 @@ private fun enforcement(facts: SetupFacts): Requirement {
                     "happening, the phone is killing rotblock in the background — set its battery " +
                     "usage to unrestricted."
         },
-        action = when (status) {
-            Status.BROKEN -> Fix.AttemptRebind
+        action = when {
+            status == Status.BROKEN -> Fix.AttemptRebind
+            // Listed-but-not-bound is a different fault and is not this one's to repair: the
+            // component is enrolled already, so writing the list again changes nothing.
+            status == Status.MISSING && facts.secureSettingsGranted -> Fix.SelfEnable
             else -> Fix.OpenSettings(SettingsScreen.ACCESSIBILITY)
         },
     )

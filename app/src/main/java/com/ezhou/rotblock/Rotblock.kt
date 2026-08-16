@@ -9,6 +9,7 @@ import com.ezhou.rotblock.data.RotblockDatabase
 import com.ezhou.rotblock.data.SettingsRepository
 import com.ezhou.rotblock.pause.PauseController
 import com.ezhou.rotblock.quota.UsageLedger
+import com.ezhou.rotblock.setup.AccessibilityEnrolment
 import com.ezhou.rotblock.setup.EnforcementRevival
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -100,6 +101,12 @@ class RotblockApp : Application() {
         // disables the component and re-enables it, and a process kill between those two calls
         // would leave enforcement switched off at a level nothing else in the app ever reads.
         runCatching { EnforcementRevival.ensureEnabled(this) }
+
+        // And undo Android having dropped rotblock from its accessibility list, which a force-stop
+        // does on its own. Same shape again, and the last of the three states where simply opening
+        // the app is what puts enforcement back. Heavily fenced -- see [shouldRestoreEnrolment] --
+        // so it can only ever restore something that was already running, never switch it on.
+        runCatching { AccessibilityEnrolment.restoreIfDropped(this) }
 
         // Open the database now so the first accessibility event, which must stay fast, is not
         // the thing that pays for it.
