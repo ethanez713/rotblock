@@ -1993,36 +1993,39 @@ class RotblockAccessibilityService : AccessibilityService() {
         val pkg = currentPackage
         val root = rootInActiveWindow
         val rootPkg = root?.packageName?.toString()
-        val readable = root != null && rootPkg != null &&
-            rootPkg != packageName && rootPkg != "com.android.systemui" && rootPkg == pkg
+        // A null currentPackage is not a reason to refuse. It means the service never established
+        // what is in front -- which is one of the actual failures a capture gets taken to
+        // investigate, and the one where a tree dump is worth most. Refusing there would have made
+        // the tool blindest in exactly the case it exists for. So the window only has to not be
+        // ours and not be the shade; agreeing with currentPackage is recorded rather than required.
+        val ours = rootPkg == packageName || rootPkg == "com.android.systemui"
+        val readable = root != null && rootPkg != null && !ours && (pkg == null || rootPkg == pkg)
         if (readable) {
             val dump = try {
-                buildNodeDump(root!!, rootPkg!!)
+                // Losing the whole capture because the walk threw would be the worst possible
+                // failure for a diagnostic: the user taps the tile, nothing appears, and the state
+                // they were trying to preserve is gone. Record the failure and write the rest.
+                runCatching { buildNodeDump(root!!, rootPkg!!) }
+                    .getOrElse { emptyNodeDump("tree walk failed: ${it.javaClass.simpleName}", rootPkg) }
             } finally {
                 root.recycleCompat()
             }
-            finishDiagnosticsCapture(input.copy(nodeDump = dump))
+            finishDiagnosticsCapture(
+                input.copy(
+                    nodeDump = if (pkg == null) {
+                        dump.copy(status = "${dump.status} (service had no foreground package)")
+                    } else {
+                        dump
+                    },
+                ),
+            )
             return
         }
         root?.recycleCompat()
         val now = System.currentTimeMillis()
         if (now >= deadlineMs) {
             finishDiagnosticsCapture(
-                input.copy(
-                    nodeDump = NodeDumpSnapshot(
-                        status = "no readable window within 15s",
-                        packageName = pkg,
-                        nodeCount = 0,
-                        truncated = false,
-                        nodes = emptyList(),
-                        addressBar = null,
-                        linkUrls = emptyList(),
-                        linkDescriptions = emptyList(),
-                        linkConsensusHost = null,
-                        pageSignatureKey = null,
-                        classification = null,
-                    ),
-                ),
+                input.copy(nodeDump = emptyNodeDump("no readable window within 15s", pkg)),
             )
         } else {
             handler.postDelayed(
@@ -2031,6 +2034,21 @@ class RotblockAccessibilityService : AccessibilityService() {
             )
         }
     }
+
+    /** A dump that carries only why there is no tree, so [status] is never the missing field. */
+    private fun emptyNodeDump(status: String, pkg: String?) = NodeDumpSnapshot(
+        status = status,
+        packageName = pkg,
+        nodeCount = 0,
+        truncated = false,
+        nodes = emptyList(),
+        addressBar = null,
+        linkUrls = emptyList(),
+        linkDescriptions = emptyList(),
+        linkConsensusHost = null,
+        pageSignatureKey = null,
+        classification = null,
+    )
 
     private fun finishDiagnosticsCapture(input: CaptureInput) {
         scope.launch {
