@@ -51,4 +51,46 @@ object SearchEngines {
     /** True if [host] belongs to a search engine. [host] is a parsed, lowercased host. */
     fun isSearchHost(host: String): Boolean =
         host.split('.').any { it in BRANDS }
+
+    /**
+     * Separators a document title uses before its site's own branding: `"query - Google Search"`,
+     * `"query at DuckDuckGo"`, `"query - Brave Search"`, `"query : r/subreddit"`. Ordered longest
+     * dash-like variants first only because it reads that way; matching is by last-occurrence, not
+     * by trying these in order.
+     */
+    private val TITLE_SEPARATORS = listOf(" - ", " – ", " — ", " | ", " · ", ": ", " at ")
+
+    /** Held rather than built per call: this runs on the inspector coroutine, on every page scan. */
+    private val NON_BRAND_CHARS = Regex("[^a-z0-9]+")
+
+    /**
+     * True if [title] names a search engine in its own branding slot -- the tail after the last
+     * separator, never the query or subject that makes up the rest of the title.
+     *
+     * This is the fallback for [isSearchHost] on the page that broke it: a Samsung Internet search
+     * results page with no google.* host anywhere in its own links, because the results all pointed
+     * to reddit.com, youtube.com and other third parties. `"how do magnets work - Google
+     * Search"` was the measured title. A results page still carries its own title even with the
+     * address bar scrolled away, so this is evidence [LinkConsensus] can reach when the per-link
+     * veto has nothing to look at.
+     *
+     * Titles are strings other products chose, in whatever language the device is set to --
+     * `"- Google Search"` becomes `"- Google Suche"` in German -- and a redesign can reshuffle the
+     * format overnight with no warning here. So this over-matches exactly like [isSearchHost], and
+     * a page whose tail happens to name a brand goes with it: a thread in `r/google` reads back as
+     * the tail `r/Google` and is vetoed, as is anything titled `"Look at Google Maps"`. Such a page
+     * cannot be acquired from links and has to wait for a readable address bar. That is the whole
+     * cost, and it degrades to "not blocked" the same way every miss in this package does.
+     *
+     * Only the tail is ever tested, and a title with no separator at all gets no verdict, because a
+     * reddit post titled "Why is Google bad?" is entirely tail -- testing the whole string would
+     * fail open on a real reddit page, which is the direction that must not happen.
+     */
+    fun isSearchPageTitle(title: String): Boolean {
+        val (start, separator) = TITLE_SEPARATORS
+            .mapNotNull { sep -> title.lastIndexOf(sep).takeIf { it >= 0 }?.let { it to sep } }
+            .maxByOrNull { (start, _) -> start } ?: return false
+        val tail = title.substring(start + separator.length)
+        return tail.lowercase().split(NON_BRAND_CHARS).any { it in BRANDS }
+    }
 }

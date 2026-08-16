@@ -1111,7 +1111,10 @@ class RotblockAccessibilityService : AccessibilityService() {
             // [Inspected.Unreadable] draws against [Inspected.AppOnly], one layer down: not looking
             // is not the same as finding nothing.
             val scanned = signals != null
-            val linkConsensusHost = if (wantLinks && scanned) LinkConsensus.of(linkUrls)?.host else null
+            // title is safe to pass here unconditionally: wantLinks requires url == null, which
+            // alone satisfies wantSignature's condition, so a read that wants links always
+            // harvested the title too.
+            val linkConsensusHost = if (wantLinks && scanned) LinkConsensus.of(linkUrls, title)?.host else null
             val corroboratedHost = if (wantLinks && scanned) {
                 linkCorroboration.offer(pkg, linkConsensusHost, now)
             } else {
@@ -2136,7 +2139,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             AddressBar.Read.Absent, null -> "Absent"
         }
         val parsedBar = (barRead as? AddressBar.Read.Text)?.value?.let { WebMatcher.parse(it) }
-        val linkConsensusHost = LinkConsensus.of(linkUrls)?.host
+        val linkConsensusHost = LinkConsensus.of(linkUrls, title)?.host
         val linkHost = linkConsensusHost?.let { WebMatcher.ParsedUrl(host = it, path = "") }
         val signature = PageSignature.keyOf(descriptions, title, parsedBar?.host)
         val feedKey = FeedRegistry.specsFor(pkg)

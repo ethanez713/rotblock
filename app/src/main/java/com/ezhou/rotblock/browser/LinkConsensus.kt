@@ -70,8 +70,17 @@ object LinkConsensus {
      * Parsing goes through [WebMatcher.parse] rather than a URL library so that hosts are
      * normalised exactly the way address-bar text is -- same scheme stripping, same `www.`
      * handling, same refusal to guess at things that are not URLs.
+     *
+     * [title] is checked before anything else in [urls] is even tallied. The per-link veto below
+     * assumes a search engine's own navigation survives into the sample, and a results page that
+     * spends its whole retained sample on results before that navigation appears defeats it --
+     * measured on device: a Google results page whose links were exclusively youtube.com,
+     * reddit.com and fandom.com, no google.* host anywhere. The title is evidence the links never
+     * had a chance to be. See [SearchEngines.isSearchPageTitle] for what it does and does not match.
      */
-    fun of(urls: List<String>): WebMatcher.ParsedUrl? {
+    fun of(urls: List<String>, title: String?): WebMatcher.ParsedUrl? {
+        if (title != null && SearchEngines.isSearchPageTitle(title)) return null
+
         val hosts = urls.mapNotNull { WebMatcher.parse(it)?.host }
         if (hosts.size < MIN_SAMPLES) return null
 
