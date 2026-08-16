@@ -84,7 +84,7 @@ class PolicyOrderTest {
         )
         assertEquals(
             listOf("Hard block", "Twenty a day", "Three an hour", "Work hours only"),
-            list.sortedFor(PolicySort.STRICTEST).map { it.label },
+            list.sortedFor(PolicySort.STRICTEST, emptyMap()).map { it.label },
         )
     }
 
@@ -96,7 +96,7 @@ class PolicyOrderTest {
         )
         assertEquals(
             listOf("Barely there", "Off but absolute"),
-            list.sortedFor(PolicySort.STRICTEST).map { it.label },
+            list.sortedFor(PolicySort.STRICTEST, emptyMap()).map { it.label },
         )
     }
 
@@ -109,7 +109,7 @@ class PolicyOrderTest {
         )
         assertEquals(
             listOf("Unlimited", "Off"),
-            list.sortedFor(PolicySort.STRICTEST).map { it.label },
+            list.sortedFor(PolicySort.STRICTEST, emptyMap()).map { it.label },
         )
     }
 
@@ -123,7 +123,7 @@ class PolicyOrderTest {
         )
         assertEquals(
             listOf("Absolute", "Quota"),
-            list.sortedFor(PolicySort.STRICTEST).map { it.label },
+            list.sortedFor(PolicySort.STRICTEST, emptyMap()).map { it.label },
         )
     }
 
@@ -132,7 +132,7 @@ class PolicyOrderTest {
         val list = listOf(policy("Zed"), policy("apple"), policy("Beta"))
         assertEquals(
             listOf("apple", "Beta", "Zed"),
-            list.sortedFor(PolicySort.STRICTEST).map { it.label },
+            list.sortedFor(PolicySort.STRICTEST, emptyMap()).map { it.label },
         )
     }
 
@@ -144,7 +144,7 @@ class PolicyOrderTest {
         )
         assertEquals(
             listOf("Zzz", "Aaa"),
-            list.sortedFor(PolicySort.STRICTEST).map { it.label },
+            list.sortedFor(PolicySort.STRICTEST, emptyMap()).map { it.label },
         )
     }
 
@@ -157,7 +157,40 @@ class PolicyOrderTest {
         )
         assertEquals(
             listOf("Apple", "banana", "zebra"),
-            list.sortedFor(PolicySort.NAME).map { it.label },
+            list.sortedFor(PolicySort.NAME, emptyMap()).map { it.label },
+        )
+    }
+
+    @Test
+    fun `most blocked ranks the higher count first`() {
+        val list = listOf(policy("Rare"), policy("Frequent"))
+        val counts = mapOf(
+            list[0].id to 2,
+            list[1].id to 40,
+        )
+        assertEquals(
+            listOf("Frequent", "Rare"),
+            list.sortedFor(PolicySort.MOST_BLOCKED, counts).map { it.label },
+        )
+    }
+
+    @Test
+    fun `a rule absent from the counts sorts as never blocked`() {
+        val list = listOf(policy("Untracked"), policy("Blocked once"))
+        val counts = mapOf(list[1].id to 1)
+        assertEquals(
+            listOf("Blocked once", "Untracked"),
+            list.sortedFor(PolicySort.MOST_BLOCKED, counts).map { it.label },
+        )
+    }
+
+    @Test
+    fun `equal block counts fall back to name, not insertion order`() {
+        val list = listOf(policy("Zed"), policy("apple"))
+        val counts = mapOf(list[0].id to 5, list[1].id to 5)
+        assertEquals(
+            listOf("apple", "Zed"),
+            list.sortedFor(PolicySort.MOST_BLOCKED, counts).map { it.label },
         )
     }
 

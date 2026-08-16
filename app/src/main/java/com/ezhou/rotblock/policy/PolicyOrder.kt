@@ -5,6 +5,9 @@ enum class PolicySort(val label: String) {
     /** Hardest rules first, by how much of the week they actually take the target away. */
     STRICTEST("Strictest"),
 
+    /** Rules that have blocked most often first, counted over the ledger's retention window. */
+    MOST_BLOCKED("Most blocked"),
+
     /** By name, the order the policy table has always returned. */
     NAME("A–Z"),
     ;
@@ -61,7 +64,11 @@ private val byStrictness: Comparator<Policy> = compareByDescending<Policy> { it.
     .thenByDescending { it.frictionSeconds }
     .then(byName)
 
-fun List<Policy>.sortedFor(sort: PolicySort): List<Policy> = when (sort) {
+private fun byMostBlocked(blocksShown: Map<String, Int>): Comparator<Policy> =
+    compareByDescending<Policy> { blocksShown[it.id] ?: 0 }.then(byName)
+
+fun List<Policy>.sortedFor(sort: PolicySort, blocksShown: Map<String, Int>): List<Policy> = when (sort) {
     PolicySort.STRICTEST -> sortedWith(byStrictness)
+    PolicySort.MOST_BLOCKED -> sortedWith(byMostBlocked(blocksShown))
     PolicySort.NAME -> sortedWith(byName)
 }

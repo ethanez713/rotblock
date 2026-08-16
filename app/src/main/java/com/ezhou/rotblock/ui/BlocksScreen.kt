@@ -70,9 +70,13 @@ fun BlocksScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val grayscaleAvailable = remember { com.ezhou.rotblock.block.Grayscale(context).isAvailable }
 
-    // Re-sorted only when the list or the choice changes, not on every heartbeat: strictness is a
-    // property of the rules, so nothing here moves just because a second passed.
-    val sorted = remember(policies, settings.blocksSort) { policies.sortedFor(settings.blocksSort) }
+    // Re-sorted on the rules, the choice, and the counts — never on the heartbeat. Strictness is a
+    // property of the rules, and a block count only moves when loadRuleEffects re-reads the audit
+    // log, so nothing here reshuffles just because a second passed.
+    val blockCounts = remember(ruleEffects) { ruleEffects.mapValues { it.value.blocksShown } }
+    val sorted = remember(policies, settings.blocksSort, blockCounts) {
+        policies.sortedFor(settings.blocksSort, blockCounts)
+    }
 
     // A list of rules that is quietly enforcing none of them is the worst screen in this app, and
     // it is indistinguishable from a working one. This is the difference.
