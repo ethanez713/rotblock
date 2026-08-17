@@ -410,6 +410,15 @@ class RotblockAccessibilityService : AccessibilityService() {
     private var reseedJob: Job? = null
 
     /**
+     * The capture that has been requested but not yet written, so [teardown] can flush it rather
+     * than let [handler]'s cancelled poll drop it. Set as soon as the request is gathered, before
+     * the poll -- or even the suspending [withCaptureFacts] read -- exists, because a teardown
+     * landing in that gap must not lose the capture either. Main thread only, like the rest of this
+     * service's mutable state.
+     */
+    private var captureInFlight: CaptureInput? = null
+
+    /**
      * Screen off is the one way a target leaves the foreground without an accessibility event.
      * Without this, locking the phone on Reddit would keep burning quota until the next window
      * change -- charging you for time the screen was dark.
@@ -1801,7 +1810,7 @@ class RotblockAccessibilityService : AccessibilityService() {
     }
 
     private fun buildIgnoredPackages(): Set<String> {
-        val ignored = mutableSetOf(packageName, "com.android.systemui")
+        val ignored = mutableSetOf(packageName, ASSUMED_SHADE_PACKAGE)
         runCatching {
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.enabledInputMethodList.mapTo(ignored) { it.packageName }
@@ -1889,6 +1898,26 @@ class RotblockAccessibilityService : AccessibilityService() {
                     .commit()
             }
         }
+        // A capture still waiting on the node-dump poll below is one this teardown is about to
+        // cancel outright -- and teardown is frequently followed by process death, which is exactly
+        // the 15s window a capture taken right before a kill spends waiting. Written synchronously,
+        // on this thread, for the same reason the outage timestamp above uses commit() rather than
+        // apply(): a write dispatched to Dispatchers.IO here is precisely the write that will not
+        // finish before the process is gone.
+        captureInFlight?.let { pending ->
+            runCatching {
+                val json = buildCapture(
+                    pending.copy(
+                        nodeDump = emptyNodeDump(
+                            "service torn down while waiting for a readable window",
+                            currentPackage,
+                        ),
+                    ),
+                )
+                CaptureStore(CaptureStore.directoryFor(this)).write(pending.capturedAtMs, json)
+            }
+            captureInFlight = null
+        }
         // Including any pending escape check: it would re-show the overlay on a service that is
         // going away, and nothing would be left to take that window down again.
         handler.removeCallbacksAndMessages(null)
@@ -1914,10 +1943,15 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     private fun startDiagnosticsCapture(requestedAtMs: Long) {
         val basics = gatherCaptureBasics(requestedAtMs)
+        // Held from here, not from when the poll is first posted: the withCaptureFacts suspend
+        // below can itself outlive the service, and a capture lost in that gap is just as gone as
+        // one lost to a cancelled poll.
+        captureInFlight = basics
         scope.launch {
             val enriched = runCatching { withCaptureFacts(basics, requestedAtMs) }.getOrDefault(basics)
             handler.post {
                 guard("diagnosticsNodeDump") {
+                    captureInFlight = enriched
                     attemptNodeDump(enriched, requestedAtMs + DIAG_DUMP_DEADLINE_MS)
                 }
             }
@@ -1996,14 +2030,12 @@ class RotblockAccessibilityService : AccessibilityService() {
         val pkg = currentPackage
         val root = rootInActiveWindow
         val rootPkg = root?.packageName?.toString()
-        // A null currentPackage is not a reason to refuse. It means the service never established
-        // what is in front -- which is one of the actual failures a capture gets taken to
-        // investigate, and the one where a tree dump is worth most. Refusing there would have made
-        // the tool blindest in exactly the case it exists for. So the window only has to not be
-        // ours and not be the shade; agreeing with currentPackage is recorded rather than required.
-        val ours = rootPkg == packageName || rootPkg == "com.android.systemui"
-        val readable = root != null && rootPkg != null && !ours && (pkg == null || rootPkg == pkg)
-        if (readable) {
+        // A null currentPackage, or a window that disagrees with it, is not a reason to refuse --
+        // both are among the actual failures a capture gets taken to investigate, and the ones
+        // where a tree dump is worth most. Refusing there would have made the tool blindest in
+        // exactly the case it exists for. See canDumpWindow and dumpStatus for the rule and how the
+        // disagreement still reaches the reader instead of being recorded as if it agreed.
+        if (canDumpWindow(rootPkg, packageName)) {
             val dump = try {
                 // Losing the whole capture because the walk threw would be the worst possible
                 // failure for a diagnostic: the user taps the tile, nothing appears, and the state
@@ -2014,13 +2046,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 root.recycleCompat()
             }
             finishDiagnosticsCapture(
-                input.copy(
-                    nodeDump = if (pkg == null) {
-                        dump.copy(status = "${dump.status} (service had no foreground package)")
-                    } else {
-                        dump
-                    },
-                ),
+                input.copy(nodeDump = dump.copy(status = dumpStatus(dump.status, pkg, rootPkg!!))),
             )
             return
         }
@@ -2054,6 +2080,9 @@ class RotblockAccessibilityService : AccessibilityService() {
     )
 
     private fun finishDiagnosticsCapture(input: CaptureInput) {
+        // Cleared here, before the write is even dispatched, so a teardown landing after this point
+        // never finds the capture still in flight and writes it a second time.
+        captureInFlight = null
         scope.launch {
             runCatching {
                 val json = buildCapture(input)

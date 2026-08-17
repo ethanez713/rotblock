@@ -119,3 +119,41 @@ fun classifyInspection(
     }
     return Inspected.AppOnly
 }
+
+/**
+ * The shade's own package, assumed rather than derived: there is no structural way to ask Android
+ * "which package owns the notification shade", only a name that has held across every stock and
+ * Samsung build this app has run on. A device shipping a different SystemUI package would have its
+ * shade recorded in a capture as an ordinary window -- named once, here, so that assumption stays
+ * greppable instead of quietly duplicated.
+ */
+const val ASSUMED_SHADE_PACKAGE = "com.android.systemui"
+
+/**
+ * Whether a window a diagnostic capture found is one worth reading.
+ *
+ * Only [ourPackage] and [shadePackage] are refused. Matching what the service believed was in
+ * front is deliberately *not* required: a capture taken while the service has lost track of the
+ * foreground, or mid-transition to some other window, is precisely the failure a capture exists to
+ * investigate, and refusing to dump there would make the tool blindest exactly where it is needed.
+ * The disagreement itself still has to reach the reader -- see [dumpStatus] -- because recording it
+ * silently as if it agreed would be its own kind of misleading capture.
+ */
+fun canDumpWindow(
+    rootPackage: String?,
+    ourPackage: String,
+    shadePackage: String = ASSUMED_SHADE_PACKAGE,
+): Boolean = rootPackage != null && rootPackage != ourPackage && rootPackage != shadePackage
+
+/**
+ * Annotates a node dump's [status] with why the window read may not be the one the service
+ * expected, so a reader can tell "this tree is the window the service thought was in front" from
+ * "this tree is some other window, recorded because refusing would have given nothing at all."
+ * [expectedPackage] is null when the service never established a foreground package in the first
+ * place -- also worth recording, and also not a reason to refuse the read (see [canDumpWindow]).
+ */
+fun dumpStatus(status: String, expectedPackage: String?, rootPackage: String): String = when {
+    expectedPackage == null -> "$status (service had no foreground package)"
+    expectedPackage != rootPackage -> "$status (service expected $expectedPackage, window was $rootPackage)"
+    else -> status
+}
