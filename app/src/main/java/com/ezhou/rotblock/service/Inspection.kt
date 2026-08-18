@@ -157,3 +157,41 @@ fun dumpStatus(status: String, expectedPackage: String?, rootPackage: String): S
     expectedPackage != rootPackage -> "$status (service expected $expectedPackage, window was $rootPackage)"
     else -> status
 }
+
+/**
+ * Whether a content-change event disagreeing with [currentPackage] is worth verifying against
+ * `rootInActiveWindow`.
+ *
+ * A content-change event's package name is structural -- the framework stamps it, not the app --
+ * but a package *emitting* content changes is only heuristic evidence that it owns the foreground:
+ * a background browser tab keeps rendering and firing these events while some other app is really
+ * in front. That is why this never adopts [eventPackage] outright the way the `currentPackage ==
+ * null` branch does; it only asks whether a foreground check is owed, and the caller settles the
+ * question against the one structural signal that can, `rootInActiveWindow`.
+ *
+ * [currentPackage] null is excluded on purpose -- that case has nothing to lose and is handled by
+ * adopting the event package directly, without a check. Here there is a competing belief already
+ * on the books, so no answer may be returned without verification.
+ *
+ * [relevant] mirrors [RotblockAccessibilityService.isForegroundChange]'s asymmetry: an event from a
+ * package with no policy, that is not a browser or feed app, and is not a real activity must never
+ * trigger a check, or a churning toast could burn the throttle window a real recovery needs.
+ *
+ * Throttled to [minIntervalMs] because nothing here can tell "the real foreground changed and
+ * `currentPackage` is now stale" apart from "a background tab is still rendering" without paying
+ * for a `rootInActiveWindow` read -- so the only way to bound the cost is spacing the reads out
+ * rather than judging them.
+ */
+fun shouldRecheckForeground(
+    eventPackage: String,
+    currentPackage: String?,
+    relevant: Boolean,
+    nowMs: Long,
+    lastRecheckAtMs: Long,
+    minIntervalMs: Long,
+): Boolean {
+    if (currentPackage == null) return false
+    if (eventPackage == currentPackage) return false
+    if (!relevant) return false
+    return nowMs - lastRecheckAtMs >= minIntervalMs
+}

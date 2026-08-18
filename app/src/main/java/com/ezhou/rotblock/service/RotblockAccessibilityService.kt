@@ -246,6 +246,23 @@ private const val SEED_RETRY_MS = 500L
 private const val HEARTBEAT_MS = 60_000L
 
 /**
+ * Floor between foreground rechecks triggered by a content-change event that disagrees with
+ * [RotblockAccessibilityService.currentPackage].
+ *
+ * In the healthy case `currentPackage` is already correct, every content-change matches it, and
+ * this path never runs at all -- the cost is not "constant background polling", it is "one
+ * `rootInActiveWindow` read every two seconds for as long as a policy-relevant package keeps
+ * disagreeing with a stale belief". That is the bounded worst case, not free, and it only starts
+ * once the state that gave rise to this fix -- a missed window-state change -- has already
+ * happened.
+ *
+ * Two seconds bounds how long a real recovery can be stuck behind an already-in-flight,
+ * not-yet-resolved check (see [RotblockAccessibilityService.requestForegroundRecheck]) without
+ * being so tight that a churning background tab could keep the read firing on every event.
+ */
+private const val FOREGROUND_RECHECK_MIN_INTERVAL_MS = 2_000L
+
+/**
  * How long a diagnostic capture keeps polling for a window it can read before giving up.
  *
  * The tap that triggers a capture happens from the Quick Settings shade, so `rootInActiveWindow`
@@ -408,6 +425,10 @@ class RotblockAccessibilityService : AccessibilityService() {
     private var watchJob: Job? = null
     private var inspectorJob: Job? = null
     private var reseedJob: Job? = null
+    private var foregroundRecheckJob: Job? = null
+
+    /** Callback thread. Last time [requestForegroundRecheck] fired, for its own throttle. */
+    private var lastForegroundRecheckAtMs = 0L
 
     /**
      * The capture that has been requested but not yet written, so [teardown] can flush it rather
@@ -665,6 +686,25 @@ class RotblockAccessibilityService : AccessibilityService() {
                         // toast still cannot claim the foreground.
                         trace("WCC adopting $pkg: nothing established yet")
                         onForegroundChanged(pkg, System.currentTimeMillis())
+                    } else if (
+                        shouldRecheckForeground(
+                            eventPackage = pkg,
+                            currentPackage = currentPackage,
+                            relevant = isForegroundChange(pkg, null),
+                            nowMs = System.currentTimeMillis(),
+                            lastRecheckAtMs = lastForegroundRecheckAtMs,
+                            minIntervalMs = FOREGROUND_RECHECK_MIN_INTERVAL_MS,
+                        )
+                    ) {
+                        // Unlike the null-currentPackage case above, there is a competing belief
+                        // here: something already holds the target. Adopting pkg on the strength
+                        // of a content-change alone -- as the branch above does when there is
+                        // nothing to lose -- would let a background browser tab that is still
+                        // rendering claim the foreground and start charging its quota while the
+                        // real foreground is some other app entirely. That is over-charging, the
+                        // direction this app must not fail in, so this only ever verifies.
+                        trace("WCC currentPackage=$currentPackage stale against $pkg, verifying")
+                        requestForegroundRecheck(pkg)
                     }
                 }
             }
@@ -868,6 +908,36 @@ class RotblockAccessibilityService : AccessibilityService() {
     private fun reseed() {
         if (reseedJob?.isActive == true) return
         reseedJob = scope.launch { seedForegroundFromScreen() }
+    }
+
+    /**
+     * Verifies a stale [currentPackage] against the one structural signal that can settle it,
+     * fired when [shouldRecheckForeground] says a content-change event's package is worth
+     * checking. Never walks the node tree on the callback thread -- see [seedForegroundFromScreen]
+     * for the same shape, reading `rootInActiveWindow` off [scope] and hopping back to the main
+     * thread only with an answer in hand.
+     *
+     * If the active window is not [pkg], this does nothing at all: that is exactly what a
+     * background browser tab still emitting content changes looks like, and it is precisely what
+     * this check exists to reject rather than adopt.
+     */
+    private fun requestForegroundRecheck(pkg: String) {
+        if (foregroundRecheckJob?.isActive == true) return
+        lastForegroundRecheckAtMs = System.currentTimeMillis()
+        foregroundRecheckJob = scope.launch {
+            val rootPkg = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
+            if (rootPkg != pkg) return@launch
+            withContext(Dispatchers.Main) {
+                guard("foregroundRecheck") {
+                    // May have already been corrected by a window-state change that arrived
+                    // while this read was in flight.
+                    if (currentPackage == pkg) return@guard
+                    trace("foreground recheck confirmed $pkg over stale $currentPackage")
+                    EnforcementStatus.note("foreground recheck: $currentPackage was stale, corrected to $pkg")
+                    onForegroundChanged(pkg, System.currentTimeMillis())
+                }
+            }
+        }
     }
 
     private fun appTargetFor(pkg: String): String = Policy.targetId(TargetKind.APP, pkg)
@@ -1933,6 +2003,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         inspectorJob?.cancel()
         watchJob?.cancel()
         reseedJob?.cancel()
+        foregroundRecheckJob?.cancel()
     }
 
     /**
