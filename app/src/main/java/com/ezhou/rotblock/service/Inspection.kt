@@ -51,6 +51,11 @@ sealed interface Inspected {
  *   only by [PageSignature]; empty means that fallback did not run either.
  * @param title the text of the page's `WebView` node, if any -- a weak confirmation for
  *   [PageSignature] when the descriptions alone are ambiguous.
+ * @param linkUrls every link destination the same walk harvested, unfiltered. Passed separately
+ *   from [linkHost] because the two ask different questions of the same evidence: [linkHost] is a
+ *   corroborated verdict about which *host* the page is on, while [PageSignature] reads these raw
+ *   to ask whether the page's own links carry a *path* -- the half a host vote deliberately throws
+ *   away. Empty means the walk did not run.
  */
 fun classifyInspection(
     pkg: String,
@@ -60,6 +65,7 @@ fun classifyInspection(
     linkHost: WebMatcher.ParsedUrl? = null,
     descriptions: List<String> = emptyList(),
     title: String? = null,
+    linkUrls: List<String> = emptyList(),
 ): Inspected {
     if (feedKey != null) return Inspected.Target(Policy.targetId(TargetKind.FEED, feedKey))
 
@@ -83,7 +89,7 @@ fun classifyInspection(
             // inference from navigation, and unlike the links it can carry a path -- the whole
             // reason a Shorts rule can ever fire where the bar cannot be read at all. A miss falls
             // straight through to the weaker link vote, exactly as it would with no signature here.
-            PageSignature.of(descriptions, title)?.let { fromSignature ->
+            PageSignature.of(descriptions, title, linkUrls)?.let { fromSignature ->
                 websiteMatchers.firstOrNull { WebMatcher.matches(fromSignature, it) }
                     ?.let { return Inspected.Target(Policy.targetId(TargetKind.WEBSITE, it)) }
             }
@@ -112,7 +118,7 @@ fun classifyInspection(
         // but never contradict one, which is why it is only ever consulted here with the parsed
         // host as a filter -- an embedded Shorts player on some other site must not borrow
         // youtube.com's identity from a bar that is not on youtube.com.
-        PageSignature.of(descriptions, title, compatibleWith = parsed.host)?.let { fromSignature ->
+        PageSignature.of(descriptions, title, linkUrls, compatibleWith = parsed.host)?.let { fromSignature ->
             websiteMatchers.firstOrNull { WebMatcher.matches(fromSignature, it) }
                 ?.let { return Inspected.Target(Policy.targetId(TargetKind.WEBSITE, it)) }
         }

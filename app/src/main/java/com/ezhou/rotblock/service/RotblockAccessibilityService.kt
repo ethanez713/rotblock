@@ -1173,6 +1173,13 @@ class RotblockAccessibilityService : AccessibilityService() {
             val linkUrls = if (wantLinks) signals?.linkUrls.orEmpty() else emptyList()
             val descriptions = if (wantSignature) signals?.descriptions.orEmpty() else emptyList()
             val title = if (wantSignature) signals?.title else null
+            // Gated on wantSignature rather than wantLinks, because the two want the same harvest
+            // for opposite reasons and are not on at the same times. A bar that read
+            // `m.youtube.com` switches the link *vote* off -- there is nothing left to acquire --
+            // while leaving the signature on to refine that host into a path, and a signature that
+            // needs its links would otherwise be handed an empty list in exactly the case it was
+            // added for.
+            val signatureLinkUrls = if (wantSignature) signals?.linkUrls.orEmpty() else emptyList()
 
             // The decision lives here and nowhere else -- classifyInspection takes the already-
             // corroborated verdict rather than re-deriving one from linkUrls, so there is exactly
@@ -1214,8 +1221,14 @@ class RotblockAccessibilityService : AccessibilityService() {
             )
             if (chooser) EnforcementStatus.note("read $pkg: several urls on offer, not a page (target held)")
 
-            val result = classifyInspection(pkg, feedKey, url, websiteMatchers, linkHost, descriptions, title)
-            val signature = if (wantSignature) PageSignature.keyOf(descriptions, title, parsedBar?.host) else null
+            val result = classifyInspection(
+                pkg, feedKey, url, websiteMatchers, linkHost, descriptions, title, signatureLinkUrls,
+            )
+            val signature = if (wantSignature) {
+                PageSignature.keyOf(descriptions, title, signatureLinkUrls, parsedBar?.host)
+            } else {
+                null
+            }
             EnforcementStatus.noteRead(pkg, url, feedKey, result, linkUrls.size, signature)
 
             // Last resort, after everything above -- including link consensus and the page
@@ -2241,7 +2254,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         val parsedBar = (barRead as? AddressBar.Read.Text)?.value?.let { WebMatcher.parse(it) }
         val linkConsensusHost = LinkConsensus.of(linkUrls, title)?.host
         val linkHost = linkConsensusHost?.let { WebMatcher.ParsedUrl(host = it, path = "") }
-        val signature = PageSignature.keyOf(descriptions, title, parsedBar?.host)
+        val signature = PageSignature.keyOf(descriptions, title, linkUrls, parsedBar?.host)
         val feedKey = FeedRegistry.specsFor(pkg)
             .firstOrNull { spec -> spec.viewIdHints.any { root.hasViewId(it) } }
             ?.key
@@ -2253,6 +2266,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             linkHost,
             descriptions,
             title,
+            linkUrls,
         )
         val classificationText = when (classification) {
             is Inspected.Target -> "Target(${classification.targetId})"
