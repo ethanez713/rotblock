@@ -12,6 +12,7 @@ import android.service.notification.StatusBarNotification
 class WorkoutListener : NotificationListenerService() {
 
     override fun onListenerConnected() {
+        WorkoutMode.setListenerConnected(true)
         // Re-derive from scratch rather than trusting whatever WorkoutMode already believes -- this
         // is what makes the state survive this listener's own process dying and reconnecting, the
         // same way PolicyEngine re-derives a schedule from the clock instead of a stored flag.
@@ -22,6 +23,7 @@ class WorkoutListener : NotificationListenerService() {
     }
 
     override fun onListenerDisconnected() {
+        WorkoutMode.setListenerConnected(false)
         runCatching { WorkoutMode.onListenerDisconnected() }
     }
 

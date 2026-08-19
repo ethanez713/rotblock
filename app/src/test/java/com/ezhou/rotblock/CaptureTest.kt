@@ -12,11 +12,13 @@ import com.ezhou.rotblock.diag.PolicySnapshot
 import com.ezhou.rotblock.diag.RequirementSnapshot
 import com.ezhou.rotblock.diag.ServiceInternals
 import com.ezhou.rotblock.diag.SessionRow
+import com.ezhou.rotblock.diag.WorkoutSnapshot
 import com.ezhou.rotblock.diag.buildCapture
 import com.ezhou.rotblock.service.EnforcementStatus
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -48,6 +50,8 @@ class CaptureTest {
             trail = listOf(
                 EnforcementStatus.Entry(1_699_999_999_000L, "web:reddit.com: charging", 3),
             ),
+            workoutUntilMs = null,
+            workoutSource = null,
         ),
         service = ServiceInternals(
             tickerArmed = true,
@@ -78,6 +82,14 @@ class CaptureTest {
         currentSessions = listOf(SessionRow(1_699_999_900_000L, 1_700_000_000_000L)),
         pausedUntilMs = 0L,
         pauseBudget = PauseBudgetSnapshot(pausesUsed = 1, minutesUsed = 20, maxPauses = 3, maxMinutes = 60),
+        workout = WorkoutSnapshot(
+            enabled = true,
+            appPackage = "io.strongapp.strong",
+            source = "notification",
+            startedAtMs = 1_699_990_000_000L,
+            activeUntilMs = 1_700_001_000_000L,
+            capMs = 3 * 60 * 60 * 1000L,
+        ),
         requirements = listOf(RequirementSnapshot(id = "ENFORCEMENT", status = "READY", need = "REQUIRED")),
         outage = OutageSnapshot(
             heartbeatAtMs = 1_700_000_000_000L,
@@ -187,6 +199,9 @@ class CaptureTest {
         assertEquals(1, json.getJSONArray("currentSessions").length())
 
         assertEquals(1, json.getJSONObject("pauseBudget").getInt("pausesUsed"))
+        val workout = json.getJSONObject("workout")
+        assertEquals("notification", workout.getString("source"))
+        assertEquals(1_700_001_000_000L, workout.getLong("activeUntilMs"))
         assertEquals("ENFORCEMENT", json.getJSONArray("requirements").getJSONObject(0).getString("id"))
         assertEquals("web:reddit.com", json.getJSONObject("outage").getString("visitTarget"))
         assertTrue(json.getJSONObject("phone").getBoolean("rotblockInEnabledList"))
@@ -237,5 +252,38 @@ class CaptureTest {
         assertTrue(decision.isNull("reason"))
         assertTrue(decision.isNull("recheckAtMs"))
         assertFalse(decision.has("subtypeXyz"))
+    }
+
+    /**
+     * Live, enabled-but-idle, and switched-off all leave [WorkoutSnapshot.enabled] and
+     * [WorkoutSnapshot.activeUntilMs] in different combinations -- telling the three apart is the
+     * entire reason the field exists, so this checks the rendered JSON distinguishes all three
+     * rather than just that it parses.
+     */
+    @Test
+    fun `workout mode renders differently live, idle, and switched off`() {
+        val live = fullInput().workout
+        val idle = live.copy(activeUntilMs = null, startedAtMs = 0L, source = "none")
+        val off = idle.copy(enabled = false)
+
+        val liveJson = JSONObject(buildCapture(fullInput().copy(workout = live))).getJSONObject("workout")
+        val idleJson = JSONObject(buildCapture(fullInput().copy(workout = idle))).getJSONObject("workout")
+        val offJson = JSONObject(buildCapture(fullInput().copy(workout = off))).getJSONObject("workout")
+
+        assertTrue(liveJson.getBoolean("enabled"))
+        assertFalse(liveJson.isNull("activeUntilMs"))
+        assertEquals("notification", liveJson.getString("source"))
+
+        assertTrue(idleJson.getBoolean("enabled"))
+        assertTrue(idleJson.isNull("activeUntilMs"))
+        assertEquals("none", idleJson.getString("source"))
+
+        assertFalse(offJson.getBoolean("enabled"))
+        assertTrue(offJson.isNull("activeUntilMs"))
+
+        // Live and idle must not render identically -- the whole point of carrying activeUntilMs
+        // separately from enabled.
+        assertNotEquals(liveJson.toString(), idleJson.toString())
+        assertNotEquals(idleJson.toString(), offJson.toString())
     }
 }

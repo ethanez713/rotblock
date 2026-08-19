@@ -54,6 +54,7 @@ import com.ezhou.rotblock.diag.buildCapture
 import com.ezhou.rotblock.diag.gatherAppInfo
 import com.ezhou.rotblock.diag.gatherOutageSnapshot
 import com.ezhou.rotblock.diag.gatherPhoneSnapshot
+import com.ezhou.rotblock.diag.gatherWorkoutSnapshot
 import com.ezhou.rotblock.diag.toAuditEventSnapshot
 import com.ezhou.rotblock.diag.toDecisionSnapshot
 import com.ezhou.rotblock.diag.toPolicySnapshot
@@ -909,11 +910,17 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     /** Publishes what enforcement believes, for the "Right now" panel. See [EnforcementStatus]. */
     private fun reportStatus() {
+        val nowMs = System.currentTimeMillis()
+        // Both or neither: a source without a deadline would read as a live workout that never
+        // ends, which is the state this panel exists to make impossible to mistake.
+        val workoutUntil = WorkoutMode.activeUntilMs(nowMs)
         EnforcementStatus.update(
             pkg = currentPackage,
             targetId = currentTargetId,
             accruing = ledger.openTargetId,
             interstitial = Interstitial.isShowing(),
+            workoutUntil = workoutUntil,
+            workoutSource = workoutUntil?.let { WorkoutMode.source.name.lowercase() },
         )
     }
 
@@ -2310,6 +2317,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             // Filled in by withCaptureFacts, which needs a suspending read this main-thread pass
             // cannot do.
             pauseBudget = null,
+            workout = gatherWorkoutSnapshot(now),
             requirements = emptyList(),
             outage = gatherOutageSnapshot(this),
             phone = gatherPhoneSnapshot(this),

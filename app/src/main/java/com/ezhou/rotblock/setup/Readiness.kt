@@ -74,9 +74,11 @@ sealed interface Fix {
     data class RunOverAdb(val command: String) : Fix
 }
 
-enum class SettingsScreen { ACCESSIBILITY, OVERLAY, BATTERY, APP_NOTIFICATIONS }
+enum class SettingsScreen { ACCESSIBILITY, OVERLAY, BATTERY, APP_NOTIFICATIONS, NOTIFICATION_LISTENER }
 
-enum class RequirementId { ENFORCEMENT, BLOCK_SCREEN, BATTERY, NOTIFICATIONS, GREYSCALE, DETECTION }
+enum class RequirementId {
+    ENFORCEMENT, BLOCK_SCREEN, BATTERY, NOTIFICATIONS, GREYSCALE, DETECTION, WORKOUT_DETECTION
+}
 
 data class Requirement(
     val id: RequirementId,
@@ -133,6 +135,12 @@ data class SetupFacts(
     val blockTestAtMs: Long = 0L,
     /** Whether the user reported seeing the test overlay. Meaningless while [blockTestAtMs] is 0. */
     val blockTestSeen: Boolean = false,
+    /** The user asked for workout mode. Nothing below matters when this is off. */
+    val workoutModeWanted: Boolean = false,
+    /** Notification-listener access is granted to rotblock. */
+    val notificationListenerGranted: Boolean = false,
+    /** The listener is bound right now. Meaningless while [notificationListenerGranted] is false. */
+    val notificationListenerConnected: Boolean = false,
 )
 
 /**
@@ -171,6 +179,7 @@ fun requirementsFor(facts: SetupFacts): List<Requirement> = buildList {
     if (facts.notificationReadoutWanted) add(notifications(facts))
     if (facts.greyscaleRuleCount > 0) add(greyscale(facts))
     if (facts.rottedFeeds.isNotEmpty()) add(detection(facts))
+    if (facts.workoutModeWanted) add(workoutDetection(facts))
 }
 
 /** The ones that mean nothing is being enforced right now. Drives the banner. */
@@ -375,5 +384,53 @@ private fun detection(facts: SetupFacts): Requirement {
         fix = "Open the feed on this phone with a computer attached and run this, then look in " +
             "w.xml for the container the feed sits in. The ids live in FeedRegistry.kt.",
         action = Fix.RunOverAdb("adb shell uiautomator dump /sdcard/w.xml && adb pull /sdcard/w.xml"),
+    )
+}
+
+/**
+ * Workout mode's automatic half depends on Android's notification-listener grant, which is a
+ * different permission from everything else here and one nobody has a reason to grant until they
+ * switch workout mode on -- so, like [greyscale], it is only listed at all once they have.
+ *
+ * Same shape as [enforcement]: MISSING is the ordinary "never granted" case, and BROKEN is granted
+ * with the listener not bound, which reads identically from a permission check alone and needs its
+ * own advice. The same [BIND_GRACE_MS] applies for the same reason -- opening the app can catch the
+ * listener a moment before Android has rebound it.
+ */
+private fun workoutDetection(facts: SetupFacts): Requirement {
+    val status = when {
+        !facts.notificationListenerGranted -> Status.MISSING
+        facts.notificationListenerConnected -> Status.READY
+        facts.processUptimeMs < BIND_GRACE_MS -> Status.READY
+        else -> Status.BROKEN
+    }
+    return Requirement(
+        id = RequirementId.WORKOUT_DETECTION,
+        title = "Workout detection",
+        status = status,
+        // Manual start/stop still works either way -- this only decides whether workout mode can
+        // switch itself on, not whether it works at all.
+        need = Need.OPTIONAL,
+        consequence = when (status) {
+            Status.READY -> "Workout mode starts and ends on its own when you start a workout."
+            Status.MISSING ->
+                "rotblock cannot tell when a workout starts, so workout mode only runs when you " +
+                    "start it here by hand."
+            Status.BROKEN ->
+                "Notification access is granted, but the listener is not running -- so a workout " +
+                    "will not switch this on by itself."
+        },
+        fix = when (status) {
+            Status.READY -> ""
+            Status.MISSING ->
+                "Settings → Notifications → Notification access, and turn rotblock on. Over ADB, " +
+                    "this does the same thing: adb shell cmd notification allow_listener " +
+                    "${facts.packageName}/.workout.WorkoutListener"
+            Status.BROKEN ->
+                "Turn it off and back on in Settings → Notifications → Notification access. If it " +
+                    "keeps happening, the phone is killing rotblock in the background -- set its " +
+                    "battery usage to unrestricted."
+        },
+        action = Fix.OpenSettings(SettingsScreen.NOTIFICATION_LISTENER),
     )
 }

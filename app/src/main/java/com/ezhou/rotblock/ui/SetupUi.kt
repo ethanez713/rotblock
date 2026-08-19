@@ -239,6 +239,7 @@ private fun actionLabel(screen: SettingsScreen): String = when (screen) {
     SettingsScreen.OVERLAY -> "Allow the block screen"
     SettingsScreen.BATTERY -> "Open battery settings"
     SettingsScreen.APP_NOTIFICATIONS -> "Open notification settings"
+    SettingsScreen.NOTIFICATION_LISTENER -> "Open notification access settings"
 }
 
 private fun openSettings(context: Context, screen: SettingsScreen) {

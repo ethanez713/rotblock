@@ -534,7 +534,7 @@ private fun CustomMinutesChip(
  * fire — it would just sit in the list looking like protection that isn't there, and offering to
  * block the thing holding the unblock button is a confusing thing to offer at all.
  */
-private fun loadLaunchableApps(pm: PackageManager, exclude: String): List<InstalledApp> {
+internal fun loadLaunchableApps(pm: PackageManager, exclude: String): List<InstalledApp> {
     val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
     @Suppress("DEPRECATION")
     val resolved = pm.queryIntentActivities(intent, 0)

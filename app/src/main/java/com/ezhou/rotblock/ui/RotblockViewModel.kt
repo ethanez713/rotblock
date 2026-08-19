@@ -24,6 +24,7 @@ import com.ezhou.rotblock.policy.PolicySort
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.RollingQuota
 import com.ezhou.rotblock.quota.USAGE_RETENTION_MS
+import com.ezhou.rotblock.workout.WorkoutMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -289,6 +290,31 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
             pauseController.endPauseNow()
             refresh()
         }
+    }
+
+    fun setWorkoutModeEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepo.setWorkoutModeEnabled(enabled) }
+    }
+
+    fun setWorkoutAppPackage(pkg: String) {
+        viewModelScope.launch { settingsRepo.setWorkoutAppPackage(pkg) }
+    }
+
+    fun setWorkoutReminderSeconds(seconds: Int) {
+        viewModelScope.launch { settingsRepo.setWorkoutReminderSeconds(seconds) }
+    }
+
+    fun setWorkoutCapMinutes(minutes: Int) {
+        viewModelScope.launch { settingsRepo.setWorkoutCapMinutes(minutes) }
+    }
+
+    /** For when notification access was never granted, or the listener is not running right now. */
+    fun startWorkoutNow() {
+        WorkoutMode.startManually()
+    }
+
+    fun endWorkoutNow() {
+        WorkoutMode.endManually()
     }
 }
 

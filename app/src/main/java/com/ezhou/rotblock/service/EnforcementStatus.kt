@@ -35,6 +35,10 @@ object EnforcementStatus {
         val lastReadAtMs: Long,
         val lastRead: String?,
         val trail: List<Entry>,
+        /** Null when workout mode is not live. The deadline it lapses at otherwise. */
+        val workoutUntilMs: Long?,
+        /** How the live workout was established -- "notification", "manual", or null. */
+        val workoutSource: String?,
     )
 
     @Volatile private var connected: Boolean = false
@@ -44,6 +48,8 @@ object EnforcementStatus {
     @Volatile private var interstitialShowing: Boolean = false
     @Volatile private var lastReadAtMs: Long = 0L
     @Volatile private var lastRead: String? = null
+    @Volatile private var workoutUntilMs: Long? = null
+    @Volatile private var workoutSource: String? = null
 
     private val trail = ArrayDeque<Entry>()
 
@@ -58,11 +64,15 @@ object EnforcementStatus {
         targetId: String?,
         accruing: String?,
         interstitial: Boolean,
+        workoutUntil: Long?,
+        workoutSource: String?,
     ) {
         currentPackage = pkg
         currentTargetId = targetId
         accruingTargetId = accruing
         interstitialShowing = interstitial
+        this.workoutUntilMs = workoutUntil
+        this.workoutSource = workoutSource
     }
 
     fun noteRead(
@@ -124,5 +134,7 @@ object EnforcementStatus {
         lastReadAtMs = lastReadAtMs,
         lastRead = lastRead,
         trail = synchronized(trail) { trail.toList().asReversed() },
+        workoutUntilMs = workoutUntilMs,
+        workoutSource = workoutSource,
     )
 }

@@ -48,6 +48,7 @@ import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.pause.BudgetStatus
 import com.ezhou.rotblock.pause.PauseResult
+import com.ezhou.rotblock.workout.WorkoutMode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -372,6 +373,14 @@ private fun EmergencyStep(
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+    if (WorkoutMode.activeUntilMs() != null) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "This also ends workout mode.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 
     Spacer(Modifier.height(20.dp))
     OutlinedTextField(

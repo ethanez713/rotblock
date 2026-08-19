@@ -35,6 +35,20 @@ object WorkoutMode {
         private set
 
     /**
+     * Whether [WorkoutListener] is currently bound. Diagnostic only -- nothing in [activeUntilMs]
+     * reads it, because a listener that is gone reports no workout anyway and the fold must stay a
+     * fold. It exists so Setup can tell "you never granted notification access" from "you granted it
+     * and One UI killed the listener", which are the same screen with completely different advice.
+     */
+    @Volatile var listenerConnected: Boolean = false
+        private set
+
+    /** Called by [WorkoutListener] only, on connect and disconnect. */
+    internal fun setListenerConnected(value: Boolean) {
+        listenerConnected = value
+    }
+
+    /**
      * The resolved start of a NOTIFICATION-sourced workout that [endManually] most recently
      * dismissed, or null. Strong re-posts its ongoing notification on every logged set, and
      * without this a dismissal would be undone by the very next re-post -- see [endManually].

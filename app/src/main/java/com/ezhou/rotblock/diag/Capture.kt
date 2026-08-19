@@ -40,6 +40,19 @@ data class PauseBudgetSnapshot(
     val maxMinutes: Int,
 )
 
+/**
+ * [com.ezhou.rotblock.workout.WorkoutMode], flattened for a capture. [source] is "notification",
+ * "manual", or "none" -- never the notification itself, which never reaches a capture.
+ */
+data class WorkoutSnapshot(
+    val enabled: Boolean,
+    val appPackage: String,
+    val source: String,
+    val startedAtMs: Long,
+    val activeUntilMs: Long?,
+    val capMs: Long,
+)
+
 /** One row of [com.ezhou.rotblock.setup.Requirement], reduced to what a capture needs. */
 data class RequirementSnapshot(val id: String, val status: String, val need: String)
 
@@ -140,6 +153,7 @@ data class CaptureInput(
     val currentSessions: List<SessionRow>,
     val pausedUntilMs: Long,
     val pauseBudget: PauseBudgetSnapshot?,
+    val workout: WorkoutSnapshot,
     val requirements: List<RequirementSnapshot>,
     val outage: OutageSnapshot,
     val phone: PhoneSnapshot,
@@ -174,6 +188,7 @@ fun buildCapture(input: CaptureInput): String {
         .put("currentSessions", JSONArray(input.currentSessions.map(::sessionJson)))
         .put("pausedUntilMs", input.pausedUntilMs)
         .put("pauseBudget", input.pauseBudget?.let(::pauseBudgetJson).orNull())
+        .put("workout", workoutJson(input.workout))
         .put("requirements", JSONArray(input.requirements.map(::requirementJson)))
         .put("outage", outageJson(input.outage))
         .put("phone", phoneJson(input.phone))
@@ -242,6 +257,14 @@ private fun pauseBudgetJson(b: PauseBudgetSnapshot): JSONObject = JSONObject()
     .put("minutesUsed", b.minutesUsed)
     .put("maxPauses", b.maxPauses)
     .put("maxMinutes", b.maxMinutes)
+
+private fun workoutJson(w: WorkoutSnapshot): JSONObject = JSONObject()
+    .put("enabled", w.enabled)
+    .put("appPackage", w.appPackage)
+    .put("source", w.source)
+    .put("startedAtMs", w.startedAtMs)
+    .put("activeUntilMs", w.activeUntilMs.orNull())
+    .put("capMs", w.capMs)
 
 private fun requirementJson(r: RequirementSnapshot): JSONObject = JSONObject()
     .put("id", r.id)

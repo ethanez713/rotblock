@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.TextUtils
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.block.FeedRegistry
@@ -20,6 +21,7 @@ import com.ezhou.rotblock.service.EnforcementStatus
 import com.ezhou.rotblock.service.KEY_LAST_ALIVE
 import com.ezhou.rotblock.service.OUTAGE_PREFS
 import com.ezhou.rotblock.service.RotblockAccessibilityService
+import com.ezhou.rotblock.workout.WorkoutMode
 
 /**
  * Asks the phone every question [requirementsFor] needs answering, in one pass.
@@ -54,6 +56,9 @@ fun gatherSetupFacts(
     rottedFeeds = rottedFeedsFrom(settings, policies, nowMs),
     blockTestAtMs = settings.blockTestAtMs,
     blockTestSeen = settings.blockTestSeen,
+    workoutModeWanted = settings.workoutModeEnabled,
+    notificationListenerGranted = hasNotificationListenerAccess(context),
+    notificationListenerConnected = WorkoutMode.listenerConnected,
 )
 
 /**
@@ -93,6 +98,11 @@ fun isAccessibilityEnabled(context: Context): Boolean {
     }
     return false
 }
+
+/** Notification-listener access, which is a separate grant from ordinary notification posting. */
+private fun hasNotificationListenerAccess(context: Context): Boolean = runCatching {
+    NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
+}.getOrDefault(false)
 
 fun hasNotificationPermission(context: Context): Boolean =
     Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
@@ -145,4 +155,7 @@ fun settingsIntentFor(context: Context, screen: SettingsScreen): Intent? = when 
     SettingsScreen.APP_NOTIFICATIONS ->
         Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
             .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+
+    SettingsScreen.NOTIFICATION_LISTENER ->
+        Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
 }?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

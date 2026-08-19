@@ -4,6 +4,7 @@ import com.ezhou.rotblock.audit.AuditLog
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.data.AuditDao
 import com.ezhou.rotblock.data.SettingsRepository
+import com.ezhou.rotblock.workout.WorkoutMode
 
 /**
  * Owns the one piece of state that decides whether blocking is currently relaxed:
@@ -116,9 +117,14 @@ class PauseController(
         pausedUntilMs = until
 
         if (emergency) {
+            // Captured before endManually() clears it -- otherwise a skip taken with no workout
+            // running would read the post-call state and wrongly claim to have ended one.
+            val endedWorkout = WorkoutMode.activeUntilMs(nowMs) != null
+            WorkoutMode.endManually()
             audit.record(
                 AuditType.EMERGENCY_SKIP,
-                detail = "Skipped the cooldown for a $effectiveMinutes min pause",
+                detail = "Skipped the cooldown for a $effectiveMinutes min pause" +
+                    if (endedWorkout) "; ended workout mode" else "",
                 userReason = reason,
                 overBudget = overBudget,
             )

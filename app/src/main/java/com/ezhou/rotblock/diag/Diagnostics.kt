@@ -109,6 +109,7 @@ object Diagnostics {
             currentSessions = sessions.map { SessionRow(it.startMs, it.endMs) },
             pausedUntilMs = pause.pausedUntilMs,
             pauseBudget = budget,
+            workout = gatherWorkoutSnapshot(now),
             requirements = requirements,
             outage = outage,
             phone = gatherPhoneSnapshot(context),
@@ -131,6 +132,16 @@ object Diagnostics {
         CaptureStore(CaptureStore.directoryFor(context)).write(now, buildCapture(input))
     }
 }
+
+/** Shared with the accessibility service, so the two capture paths agree on what "live" means. */
+fun gatherWorkoutSnapshot(now: Long): WorkoutSnapshot = WorkoutSnapshot(
+    enabled = WorkoutMode.enabled,
+    appPackage = WorkoutMode.appPackage,
+    source = WorkoutMode.source.name.lowercase(),
+    startedAtMs = WorkoutMode.startedAtMs,
+    activeUntilMs = WorkoutMode.activeUntilMs(now),
+    capMs = WorkoutMode.capMs,
+)
 
 /** Shared with the accessibility service, so the two capture paths ask the phone the same way. */
 fun gatherPhoneSnapshot(context: Context): PhoneSnapshot {

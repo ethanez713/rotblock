@@ -5,6 +5,7 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -13,15 +14,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -53,6 +59,7 @@ import com.ezhou.rotblock.setup.RequirementId
 import com.ezhou.rotblock.setup.blocking
 import com.ezhou.rotblock.setup.isInstalledFromStore
 import com.ezhou.rotblock.setup.hasNotificationPermission
+import com.ezhou.rotblock.workout.WorkoutMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -115,6 +122,9 @@ fun SetupScreen(viewModel: RotblockViewModel, settings: RotblockSettings) {
         }
         Section("The countdown readout", countdownSummary(settings)) {
             CountdownControls(settings)
+        }
+        Section("Workout mode", workoutSummary(settings)) {
+            WorkoutControls(settings, viewModel)
         }
         Section(
             "Finding a scrolled-away page",
@@ -210,6 +220,16 @@ private fun countdownSummary(settings: RotblockSettings): String = when {
     // Named rather than left as "Off", because an absent readout is supposed to mean "nothing is
     // being counted" -- and that reading is only honest if it is obvious you switched it off.
     else -> "Off — nothing will show while time is spent"
+}
+
+/**
+ * "Live" reads straight off [WorkoutMode], not off [settings] -- the toggle only says whether the
+ * feature may run, and a workout starting or ending fires no settings change at all.
+ */
+private fun workoutSummary(settings: RotblockSettings): String = when {
+    !settings.workoutModeEnabled -> "Off"
+    WorkoutMode.activeUntilMs() != null -> "Live now"
+    else -> "On, nothing running"
 }
 
 private fun blockTestSummary(settings: RotblockSettings): String = when {
@@ -392,6 +412,174 @@ private fun RevealControls(settings: RotblockSettings) {
         checked = settings.revealAddressBar,
         onChange = { scope.launch { Rotblock.settings(context).setRevealAddressBar(it) } },
     )
+}
+
+/**
+ * Every enabled rule blocks, the screen goes greyscale, and rotblock nudges you if you drift back
+ * onto your phone -- for as long as the workout app's own notification says a workout is running,
+ * or until [WorkoutMode.capMs] runs out, whichever comes first. See the requirements list above for
+ * whether the automatic half of this is actually working; the manual button below works either way.
+ */
+@Composable
+private fun WorkoutControls(settings: RotblockSettings, viewModel: RotblockViewModel) {
+    Text(
+        "While a workout is running, every enabled rule blocks, the screen goes greyscale, and " +
+            "rotblock nudges you if you drift onto your phone.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
+
+    ToggleRow(
+        label = "Workout mode",
+        checked = settings.workoutModeEnabled,
+        onChange = { viewModel.setWorkoutModeEnabled(it) },
+    )
+
+    if (!settings.workoutModeEnabled) return
+
+    Spacer(Modifier.height(4.dp))
+    WorkoutAppPicker(
+        currentPackage = settings.workoutAppPackage,
+        onPick = { viewModel.setWorkoutAppPackage(it) },
+    )
+
+    ChoiceRow(
+        label = "Remind me after",
+        selected = settings.workoutReminderSeconds,
+        options = listOf(30 to "30s", 60 to "1 min", 120 to "2 min", 300 to "5 min"),
+        onChange = { viewModel.setWorkoutReminderSeconds(it) },
+    )
+
+    ChoiceRow(
+        label = "Give up after",
+        selected = settings.workoutCapMinutes,
+        options = listOf(60 to "1 hour", 120 to "2 hours", 180 to "3 hours", 240 to "4 hours"),
+        onChange = { viewModel.setWorkoutCapMinutes(it) },
+    )
+    Text(
+        "A workout that never ends stops overriding your rules after this.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    Spacer(Modifier.height(12.dp))
+    val activeUntil = WorkoutMode.activeUntilMs()
+    if (activeUntil != null) {
+        Text(
+            "Live since ${clockTime(WorkoutMode.startedAtMs)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+    }
+    TextButton(
+        onClick = {
+            if (activeUntil != null) viewModel.endWorkoutNow() else viewModel.startWorkoutNow()
+        },
+        contentPadding = PaddingValues(0.dp),
+    ) { Text(if (activeUntil != null) "End workout mode" else "Start a workout now") }
+}
+
+/** A picker for the app whose notification [WorkoutListener] watches, reusing [loadLaunchableApps]. */
+@Composable
+private fun WorkoutAppPicker(currentPackage: String, onPick: (String) -> Unit) {
+    val context = LocalContext.current
+    var apps by remember { mutableStateOf<List<InstalledApp>>(emptyList()) }
+    var showDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        apps = withContext(Dispatchers.IO) {
+            loadLaunchableApps(context.packageManager, exclude = context.packageName)
+        }
+    }
+    val current = remember(apps, currentPackage) { apps.firstOrNull { it.packageName == currentPackage } }
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable { showDialog = true }
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        current?.icon?.let {
+            Image(bitmap = it, contentDescription = null, modifier = Modifier.size(32.dp))
+            Spacer(Modifier.width(12.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text("Workout app", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                current?.label ?: currentPackage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text("Workout app") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    items(apps, key = { it.packageName }) { app ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onPick(app.packageName)
+                                    showDialog = false
+                                }
+                                .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            app.icon?.let {
+                                Image(bitmap = it, contentDescription = null, modifier = Modifier.size(32.dp))
+                                Spacer(Modifier.width(12.dp))
+                            }
+                            Text(app.label, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDialog = false }) { Text("Close") }
+            },
+        )
+    }
+}
+
+/** A row of discrete choices, for settings whose values are not evenly spaced enough for a slider. */
+@Composable
+private fun ChoiceRow(
+    label: String,
+    selected: Int,
+    options: List<Pair<Int, String>>,
+    onChange: (Int) -> Unit,
+) {
+    Column(Modifier.padding(vertical = 6.dp)) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { (value, text) ->
+                val isSelected = value == selected
+                TextButton(
+                    onClick = { onChange(value) },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text,
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                }
+            }
+        }
+    }
 }
 
 private sealed interface BlockTestState {
@@ -725,6 +913,16 @@ private fun EnforcementCard() {
                     "$read (${age}s ago)"
                 } ?: "none yet",
             )
+            // Only while a workout is live. A row reading "not in a workout" would be there almost
+            // always, saying nothing, on the one panel whose value is that everything on it is
+            // worth reading -- and workout mode overrides every rule on the phone, so the minutes
+            // it was on are exactly the ones a puzzling block has to be explained against.
+            snapshot.workoutUntilMs?.let { until ->
+                StatusRow(
+                    "Workout mode",
+                    "on (${snapshot.workoutSource ?: "unknown"}), until ${clockTime(until)} at the latest",
+                )
+            }
 
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = { expanded = !expanded }) {

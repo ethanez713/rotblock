@@ -42,6 +42,9 @@ class ReadinessTest {
         rottedFeeds: List<FeedProbe> = emptyList(),
         blockTestAtMs: Long = 0L,
         blockTestSeen: Boolean = false,
+        workoutModeWanted: Boolean = false,
+        notificationListenerGranted: Boolean = false,
+        notificationListenerConnected: Boolean = false,
     ) = SetupFacts(
         accessibilityEnabled = accessibilityEnabled,
         serviceConnected = serviceConnected,
@@ -59,6 +62,9 @@ class ReadinessTest {
         rottedFeeds = rottedFeeds,
         blockTestAtMs = blockTestAtMs,
         blockTestSeen = blockTestSeen,
+        workoutModeWanted = workoutModeWanted,
+        notificationListenerGranted = notificationListenerGranted,
+        notificationListenerConnected = notificationListenerConnected,
     )
 
     private fun List<com.ezhou.rotblock.setup.Requirement>.byId(id: RequirementId) =
@@ -280,6 +286,65 @@ class ReadinessTest {
             facts(accessibilityEnabled = false, serviceConnected = false, installedFromStore = true),
         ).byId(RequirementId.ENFORCEMENT)!!
         assertFalse(fromStore.fix.contains("ADB"))
+    }
+
+    @Test
+    fun `workout detection is absent unless workout mode is wanted`() {
+        // Nobody granted this permission for any other reason, so it must not be a missing
+        // requirement on a phone that never switched workout mode on.
+        val requirements = requirementsFor(
+            facts(workoutModeWanted = false, notificationListenerGranted = false),
+        )
+        assertNull(requirements.byId(RequirementId.WORKOUT_DETECTION))
+    }
+
+    @Test
+    fun `workout detection is missing when wanted and not granted`() {
+        val requirements = requirementsFor(
+            facts(workoutModeWanted = true, notificationListenerGranted = false),
+        )
+        val workout = requirements.byId(RequirementId.WORKOUT_DETECTION)!!
+        assertEquals(Status.MISSING, workout.status)
+        assertEquals(Need.OPTIONAL, workout.need)
+        assertTrue(requirements.blocking.isEmpty())
+    }
+
+    @Test
+    fun `workout detection is ready when granted and connected`() {
+        val requirements = requirementsFor(
+            facts(
+                workoutModeWanted = true,
+                notificationListenerGranted = true,
+                notificationListenerConnected = true,
+            ),
+        )
+        assertEquals(Status.READY, requirements.byId(RequirementId.WORKOUT_DETECTION)?.status)
+    }
+
+    @Test
+    fun `workout detection is broken when granted, unbound, and past the bind grace`() {
+        val requirements = requirementsFor(
+            facts(
+                workoutModeWanted = true,
+                notificationListenerGranted = true,
+                notificationListenerConnected = false,
+                processUptimeMs = 30_000L,
+            ),
+        )
+        assertEquals(Status.BROKEN, requirements.byId(RequirementId.WORKOUT_DETECTION)?.status)
+    }
+
+    @Test
+    fun `workout detection gets the same bind grace as enforcement`() {
+        val requirements = requirementsFor(
+            facts(
+                workoutModeWanted = true,
+                notificationListenerGranted = true,
+                notificationListenerConnected = false,
+                processUptimeMs = 1_000L,
+            ),
+        )
+        assertEquals(Status.READY, requirements.byId(RequirementId.WORKOUT_DETECTION)?.status)
     }
 
     @Test
