@@ -430,13 +430,16 @@ private fun WorkoutControls(settings: RotblockSettings, viewModel: RotblockViewM
     )
     Spacer(Modifier.height(8.dp))
 
-    ToggleRow(
-        label = "Workout mode",
-        checked = settings.workoutModeEnabled,
-        onChange = { viewModel.setWorkoutModeEnabled(it) },
-    )
-
-    if (!settings.workoutModeEnabled) return
+    // The switch itself lives on the Blocks screen, next to the rules it overrides. Saying so is
+    // not optional: without it this section is a set of knobs for something with no visible way to
+    // turn on, which reads as broken rather than as configured elsewhere.
+    if (!settings.workoutModeEnabled) {
+        Text(
+            "Switched on from the Blocks screen, next to your rules.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        return
+    }
 
     Spacer(Modifier.height(4.dp))
     WorkoutAppPicker(

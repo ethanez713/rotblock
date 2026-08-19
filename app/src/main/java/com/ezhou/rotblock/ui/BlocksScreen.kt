@@ -29,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,6 +52,7 @@ import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicySort
 import com.ezhou.rotblock.policy.sortedFor
 import com.ezhou.rotblock.setup.blocking
+import com.ezhou.rotblock.workout.WorkoutMode
 import kotlinx.coroutines.delay
 
 @Composable
@@ -129,6 +131,18 @@ fun BlocksScreen(
                             android.content.Intent(context, PauseRequestActivity::class.java),
                         )
                     },
+                )
+            }
+
+            // Directly under the pause banner, because it is the same question answered the other
+            // way round: a pause is you deciding nothing is blocked, this is you handing over the
+            // decision entirely for as long as a workout runs. Both belong above the rules, since
+            // both override what every card below them says.
+            item(key = "workout") {
+                WorkoutBanner(
+                    enabled = settings.workoutModeEnabled,
+                    nowMs = now,
+                    onChange = viewModel::setWorkoutModeEnabled,
                 )
             }
 
@@ -278,6 +292,67 @@ private fun PauseBanner(
                 )
                 Spacer(Modifier.height(8.dp))
                 TextButton(onClick = onPause) { Text("Pause blocking") }
+            }
+        }
+    }
+}
+
+/**
+ * Workout mode's on/off, on the screen that lists the rules it overrides.
+ *
+ * Only the switch lives here. The app to watch and the two intervals stay in Setup: they are set
+ * once and never looked at again, whereas this is the half that belongs next to the rules, because
+ * turning it on changes what every card below it will do.
+ *
+ * [nowMs] is the screen's own one-second heartbeat, and taking it as a parameter is what makes the
+ * live state honest -- a workout starting or ending is not a settings change and emits nothing this
+ * screen collects, so without recomposing on the heartbeat the banner would sit on a stale answer.
+ */
+@Composable
+private fun WorkoutBanner(enabled: Boolean, nowMs: Long, onChange: (Boolean) -> Unit) {
+    val liveUntilMs = WorkoutMode.activeUntilMs(nowMs)
+    Card(
+        colors = CardDefaults.cardColors(
+            // Live gets a colour of its own, and deliberately not the pause banner's error colour:
+            // that one means "nothing is being blocked", and this is the exact opposite.
+            containerColor = if (liveUntilMs != null) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (liveUntilMs != null) "Workout in progress" else "Workout mode",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (liveUntilMs != null) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        when {
+                            liveUntilMs != null ->
+                                "Every rule below is blocking, whatever its own allowance says."
+                            enabled -> "Waiting for a workout to start."
+                            else -> "Block everything below while you are training."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (liveUntilMs != null) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = onChange)
             }
         }
     }
