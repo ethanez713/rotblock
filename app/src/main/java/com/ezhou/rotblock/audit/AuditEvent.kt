@@ -46,6 +46,14 @@ enum class AuditType {
 
     /** The service caught an exception it swallowed to stay alive. */
     INTERNAL_ERROR,
+
+    /**
+     * Brackets a period when every enabled rule was blocking regardless of quota, schedule or
+     * pause -- a live workout overrides them all. A gap in the log between these two should read
+     * as "a workout was running", not as a mystery.
+     */
+    WORKOUT_MODE_STARTED,
+    WORKOUT_MODE_ENDED,
 }
 
 /**

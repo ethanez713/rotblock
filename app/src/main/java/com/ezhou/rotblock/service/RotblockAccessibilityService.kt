@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
+import android.os.PowerManager
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -481,7 +482,15 @@ class RotblockAccessibilityService : AccessibilityService() {
                 pause.noteExpiryIfNeeded(now)
                 val target = currentTargetId
                 // evaluateAndEnforce arms the next tick for whatever deadline it found.
-                if (target == null) stopTicking() else evaluateAndEnforce(target, now)
+                if (target == null) {
+                    // The no-target path a lapsing workout cap arrives on: nothing else calls
+                    // evaluateAndEnforce to log the transition or repaint the display.
+                    noteWorkoutTransition(now)
+                    refreshGrayscale(now, ruleWantsGrayscale = false)
+                    armForWorkoutOnly(now)
+                } else {
+                    evaluateAndEnforce(target, now)
+                }
                 reschedulingHandled = true
             }
             // A swallowed error must not be able to stop the clock: an unnoticed quota deadline
@@ -577,6 +586,13 @@ class RotblockAccessibilityService : AccessibilityService() {
             // service's main thread by contract, and everything the capture reads below is.
             Diagnostics.onCaptureRequested = { requestedAtMs ->
                 handler.post { guard("diagnosticsCapture") { startDiagnosticsCapture(requestedAtMs) } }
+            }
+
+            // Fires on liveness or start-time changes -- not on every re-post of Strong's ongoing
+            // notification. Posting re-enters this service by way of re-evaluating what should be
+            // on screen, so it goes through the handler like every other listener above.
+            WorkoutMode.onChanged = {
+                handler.post { guard("workoutChanged") { onWorkoutModeChanged() } }
             }
 
             // Undo a greyscale left on by a crash before doing anything else.
@@ -841,10 +857,10 @@ class RotblockAccessibilityService : AccessibilityService() {
             confidence.clear()
             friction.endVisit()
             ledger.closeSession(nowMs)
-            stopTicking()
+            armForWorkoutOnly(nowMs)
             overlay.hide()
             hideCountdown()
-            grayscale.restore()
+            refreshGrayscale(nowMs, ruleWantsGrayscale = false)
             persistVisit()
             reportStatus()
             return
@@ -861,7 +877,6 @@ class RotblockAccessibilityService : AccessibilityService() {
             // different one (a link inside a browser, say), which never routes through
             // onForegroundChanged. See [hudDismissedThisSession]'s doc.
             hudDismissedThisSession = false
-            grayscale.restore()
         }
         confidence.apply(changed, confirmed)
         evaluateAndEnforce(targetId, nowMs)
@@ -1529,6 +1544,10 @@ class RotblockAccessibilityService : AccessibilityService() {
 
     private fun evaluateAndEnforce(targetId: String, nowMs: Long) {
         val policy = policiesByTarget[targetId] ?: return
+        // The cap lapsing fires no onChanged of its own, and a held target reaches this function
+        // far more often than the no-target tick path does -- so a workout ending mid-visit on a
+        // covered app is logged here rather than waiting for the target to be dropped.
+        noteWorkoutTransition(nowMs)
         // Not only from the tick. A busy page re-evaluates several times a second and the tick can
         // legitimately not fire for its whole interval, and if the flush rode solely on the tick a
         // process kill would record the entire visit as zero seconds.
@@ -1544,7 +1563,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 // A pause suspends greyscale and friction too; a pause means "get out of my way".
                 // So do a policy's off-hours: outside them the rule does not exist, which means no
                 // colour drained, no countdown, and nothing charged against the quota.
-                grayscale.restore()
+                refreshGrayscale(nowMs, ruleWantsGrayscale = false)
                 // Three quite different reasons nothing is happening, and "the app is open and
                 // nothing happens" is what every failure in this app looks like from the outside.
                 // Telling them apart in the trail is the entire point of the Right now panel.
@@ -1573,7 +1592,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                     showCountdown(policy.label, decision, nowMs)
                     EnforcementStatus.note("$targetId: charging")
                 }
-                if (policy.grayscale) grayscale.enable() else grayscale.restore()
+                refreshGrayscale(nowMs, ruleWantsGrayscale = policy.grayscale)
                 maybeShowFriction(policy, nowMs)
             }
 
@@ -1582,7 +1601,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 // keep charging for time spent staring at the block screen.
                 ledger.closeSession(nowMs)
                 hideCountdown()
-                grayscale.restore()
+                refreshGrayscale(nowMs, ruleWantsGrayscale = false)
                 EnforcementStatus.note(
                     "$targetId: blocked (${decision.reason.name.lowercase().replace('_', ' ')})",
                 )
@@ -1893,6 +1912,80 @@ class RotblockAccessibilityService : AccessibilityService() {
         handler.removeCallbacks(tick)
     }
 
+    /**
+     * Keeps the clock running for workout mode when there is no target to run it for.
+     *
+     * A workout greys the whole phone, so the cap lapsing changes what is on screen even when
+     * nothing is being enforced and no session is open -- and, like every other deadline in this
+     * app, it fires no event of its own. Armed for the cap and nothing sooner: with no target
+     * there is no ledger to flush and no interstitial to notice, which is the same reasoning
+     * [MAX_IDLE_TICK_MS] already carries on [Decision.Allow].
+     */
+    private fun armForWorkoutOnly(nowMs: Long) {
+        val until = WorkoutMode.activeUntilMs(nowMs)
+        if (until == null) stopTicking() else startTicking(until - nowMs, maxIntervalMs = MAX_IDLE_TICK_MS)
+    }
+
+    /**
+     * The single answer to "what should the display look like right now".
+     *
+     * @param ruleWantsGrayscale whether the target being enforced asks for it. Passed in rather
+     *   than remembered, so there is no flag that can be set and never cleared.
+     */
+    private fun refreshGrayscale(nowMs: Long, ruleWantsGrayscale: Boolean) {
+        // The workout app itself is exempt: greying Strong's own charts and plate colours while
+        // you are looking at them is punitive and buys nothing. The moment you leave it, the
+        // world goes grey.
+        val workoutWants = WorkoutMode.activeUntilMs(nowMs) != null && currentPackage != WorkoutMode.appPackage
+        if (ruleWantsGrayscale || workoutWants) grayscale.enable() else grayscale.restore()
+    }
+
+    private fun onWorkoutModeChanged() {
+        val nowMs = System.currentTimeMillis()
+        noteWorkoutTransition(nowMs)
+        // Screen-off is the one state this must not re-evaluate from. A workout ends when you rack
+        // the last set, which is routinely with the phone locked in a pocket -- and screen-off does
+        // not clear [currentTargetId], so re-evaluating would find the app you locked the phone
+        // inside, decide it is allowed again now the workout is over, and open a ledger session for
+        // it. That charges quota for a phone nobody is looking at, and over-charging is the one
+        // direction the ledger may not err in. It would arm the ticker too, which is exactly the
+        // pending-tick-with-the-screen-off that [MAX_IDLE_TICK_MS] argues cannot happen.
+        //
+        // Nothing is lost by waiting: ACTION_USER_PRESENT re-evaluates on the way back in, which is
+        // where the greyscale skipped here gets put right. The transition above is still recorded,
+        // because when the workout ended is a fact about the past and does not depend on the screen.
+        if (isScreenOn()) reEvaluateCurrent()
+    }
+
+    /**
+     * Asked rather than remembered. A tracked boolean would need a correct value at connect time,
+     * which is exactly when this service knows least, and it is read once per workout transition --
+     * far too rarely to be worth a field that could go stale. Assumes on when it cannot tell: that
+     * is the pre-existing behaviour, and the alternative risks leaving the display grey.
+     */
+    private fun isScreenOn(): Boolean =
+        runCatching { (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive }
+            .getOrDefault(true)
+
+    /**
+     * Whether the last look found workout mode live. Diagnostic only -- [PolicyEngine] re-derives
+     * liveness from the clock every time and never reads this. It exists so the audit log gets
+     * one entry per transition rather than one per evaluation.
+     */
+    private var workoutWasLive = false
+
+    private fun noteWorkoutTransition(nowMs: Long) {
+        val live = WorkoutMode.activeUntilMs(nowMs) != null
+        if (live == workoutWasLive) return
+        workoutWasLive = live
+        audit.record(
+            if (live) AuditType.WORKOUT_MODE_STARTED else AuditType.WORKOUT_MODE_ENDED,
+            detail = if (live) "Workout in progress; every enabled rule is blocking"
+                     else "Workout mode ended; normal rules resume",
+        )
+        EnforcementStatus.note(if (live) "workout mode: started" else "workout mode: ended")
+    }
+
     private fun buildIgnoredPackages(): Set<String> {
         val ignored = mutableSetOf(packageName, ASSUMED_SHADE_PACKAGE)
         runCatching {
@@ -1970,6 +2063,10 @@ class RotblockAccessibilityService : AccessibilityService() {
         BlockSelfTest.onRequested = null
         BlockSelfTest.ended()
         Diagnostics.onCaptureRequested = null
+        // A field on a process-wide singleton holding a reference to this service instance --
+        // this service is rebuilt on every rebind, so leaving it set would keep a dead instance
+        // reachable and let it act after teardown.
+        WorkoutMode.onChanged = null
         runCatching { unregisterReceiver(screenReceiver) }
         // onUnbind and onDestroy both land here; keep the first timestamp, which is when
         // enforcement actually stopped.
