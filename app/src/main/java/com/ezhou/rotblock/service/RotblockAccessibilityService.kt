@@ -29,6 +29,7 @@ import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.block.TimerHud
 import com.ezhou.rotblock.block.TrackingNotification
+import com.ezhou.rotblock.block.WorkoutReminder
 import com.ezhou.rotblock.browser.AddressBar
 import com.ezhou.rotblock.browser.BrowserRegistry
 import com.ezhou.rotblock.browser.BrowserSpec
@@ -248,6 +249,16 @@ private const val SEED_RETRY_MS = 500L
 private const val HEARTBEAT_MS = 60_000L
 
 /**
+ * How much extra time a snoozed workout reminder buys, on top of the ordinary interval.
+ *
+ * Longer than [WorkoutMode.reminderMs] on purpose: the ordinary interval is measuring "you
+ * drifted without noticing", and a snooze is you saying you did not -- you are doing something
+ * else deliberately, so re-nagging thirty seconds later would just be ignored and trains people
+ * to dismiss the reminder on reflex.
+ */
+private const val REMINDER_SNOOZE_MS = 5 * 60 * 1000L
+
+/**
  * Floor between foreground rechecks triggered by a content-change event that disagrees with
  * [RotblockAccessibilityService.currentPackage].
  *
@@ -307,6 +318,7 @@ class RotblockAccessibilityService : AccessibilityService() {
     private lateinit var grayscale: Grayscale
     private lateinit var hud: TimerHud
     private lateinit var notification: TrackingNotification
+    private lateinit var reminder: WorkoutReminder
 
     /**
      * The countdown-readout settings, copied out of the settings flow.
@@ -458,6 +470,13 @@ class RotblockAccessibilityService : AccessibilityService() {
                         friction.endVisit()
                         // Never leave the phone monochrome behind a locked screen.
                         grayscale.restore()
+                        // A locked phone is not you being distracted, so the away-timer starts
+                        // again from the unlock rather than counting the whole night. USER_PRESENT
+                        // already calls reEvaluateCurrent, which restarts the clock through the
+                        // normal path -- no reseeding needed here.
+                        reminder.hide()
+                        awaySinceMs = 0L
+                        nextReminderAtMs = 0L
                     }
                     // Coming back may land on the same app with no new window event, so the
                     // session has to be restarted explicitly.
@@ -487,6 +506,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                     // evaluateAndEnforce to log the transition or repaint the display.
                     noteWorkoutTransition(now)
                     refreshGrayscale(now, ruleWantsGrayscale = false)
+                    refreshWorkoutReminder(now)
                     armForWorkoutOnly(now)
                 } else {
                     evaluateAndEnforce(target, now)
@@ -507,6 +527,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             audit = Rotblock.audit(this)
             overlay = BlockOverlay(this)
             grayscale = Grayscale(this)
+            reminder = WorkoutReminder(this)
             hud = TimerHud(
                 this,
                 onMoved = { x, y ->
@@ -857,10 +878,11 @@ class RotblockAccessibilityService : AccessibilityService() {
             confidence.clear()
             friction.endVisit()
             ledger.closeSession(nowMs)
-            armForWorkoutOnly(nowMs)
             overlay.hide()
             hideCountdown()
             refreshGrayscale(nowMs, ruleWantsGrayscale = false)
+            refreshWorkoutReminder(nowMs)
+            armForWorkoutOnly(nowMs)
             persistVisit()
             reportStatus()
             return
@@ -1564,6 +1586,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 // So do a policy's off-hours: outside them the rule does not exist, which means no
                 // colour drained, no countdown, and nothing charged against the quota.
                 refreshGrayscale(nowMs, ruleWantsGrayscale = false)
+                refreshWorkoutReminder(nowMs)
                 // Three quite different reasons nothing is happening, and "the app is open and
                 // nothing happens" is what every failure in this app looks like from the outside.
                 // Telling them apart in the trail is the entire point of the Right now panel.
@@ -1593,6 +1616,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                     EnforcementStatus.note("$targetId: charging")
                 }
                 refreshGrayscale(nowMs, ruleWantsGrayscale = policy.grayscale)
+                refreshWorkoutReminder(nowMs)
                 maybeShowFriction(policy, nowMs)
             }
 
@@ -1606,14 +1630,21 @@ class RotblockAccessibilityService : AccessibilityService() {
                     "$targetId: blocked (${decision.reason.name.lowercase().replace('_', ' ')})",
                 )
                 showBlock(policy, decision)
+                // After the block goes up, not before: on the pass where a block first appears
+                // `overlay.isShowing` is still false beforehand, so a due reminder would slip onto
+                // the screen in the instant before the block covered it.
+                refreshWorkoutReminder(nowMs)
             }
         }
 
         // One place, every branch, because every one of them can go stale with nothing happening:
-        // a pause elapses, an allowance runs out, a scheduled window opens or closes -- and not one
-        // of those fires an event while the phone sits on the same screen. The engine works out
-        // which deadline is soonest; all that is left here is to be awake for it.
-        val recheckAtMs = decision.recheckAtMs
+        // a pause elapses, an allowance runs out, a scheduled window opens or closes, a workout
+        // reminder comes due -- and not one of those fires an event while the phone sits on the
+        // same screen. The engine works out which policy deadline is soonest; workoutDeadlineMs
+        // adds the reminder's, since it can fall due on a held target the same as with none. All
+        // that is left here is to be awake for whichever is soonest. Read after
+        // refreshWorkoutReminder has already run above, so nextReminderAtMs is current.
+        val recheckAtMs = soonestMs(decision.recheckAtMs, workoutDeadlineMs(nowMs))
         if (recheckAtMs != null) {
             startTicking(
                 recheckAtMs - nowMs,
@@ -1915,15 +1946,101 @@ class RotblockAccessibilityService : AccessibilityService() {
     /**
      * Keeps the clock running for workout mode when there is no target to run it for.
      *
-     * A workout greys the whole phone, so the cap lapsing changes what is on screen even when
-     * nothing is being enforced and no session is open -- and, like every other deadline in this
-     * app, it fires no event of its own. Armed for the cap and nothing sooner: with no target
-     * there is no ledger to flush and no interstitial to notice, which is the same reasoning
-     * [MAX_IDLE_TICK_MS] already carries on [Decision.Allow].
+     * A workout greys the whole phone and, now, may owe a reminder -- both change what is on
+     * screen even when nothing is being enforced and no session is open, and neither fires an
+     * event of its own. Armed for the soonest of the cap or a pending reminder, and nothing
+     * sooner: with no target there is no ledger to flush and no interstitial to notice, which is
+     * the same reasoning [MAX_IDLE_TICK_MS] already carries on [Decision.Allow].
      */
     private fun armForWorkoutOnly(nowMs: Long) {
-        val until = WorkoutMode.activeUntilMs(nowMs)
+        val until = workoutDeadlineMs(nowMs)
         if (until == null) stopTicking() else startTicking(until - nowMs, maxIntervalMs = MAX_IDLE_TICK_MS)
+    }
+
+    /** The soonest of two deadlines, either of which may be absent. */
+    private fun soonestMs(a: Long?, b: Long?): Long? = when {
+        a == null -> b
+        b == null -> a
+        else -> minOf(a, b)
+    }
+
+    /**
+     * The next moment workout mode changes what is on screen: the cap lapsing, or a reminder
+     * coming due. Callers must run this after [refreshWorkoutReminder] has already run for the
+     * same pass, so [nextReminderAtMs] reflects the current away-time rather than the last one.
+     */
+    private fun workoutDeadlineMs(nowMs: Long): Long? =
+        soonestMs(WorkoutMode.activeUntilMs(nowMs), nextReminderAtMs.takeIf { it > 0L })
+
+    /**
+     * The away-timer for the "get back to your workout" reminder.
+     *
+     * A deadline like every other relaxation in this file, not a countdown that ticks on its own
+     * -- [nextReminderAtMs] is compared to the clock, and the single ticker gets armed for it
+     * through [workoutDeadlineMs]. Called from every site that already calls [refreshGrayscale],
+     * because the two ask the same "is this the workout app, is a workout live" question, even
+     * though they answer differently once they have it -- greyscale degrades to a colour flip,
+     * a reminder can outright fail to show, so they stay separate functions.
+     */
+    private fun refreshWorkoutReminder(nowMs: Long) {
+        val away = WorkoutMode.activeUntilMs(nowMs) != null && currentPackage != WorkoutMode.appPackage
+        if (!away) {
+            awaySinceMs = 0L
+            nextReminderAtMs = 0L
+            reminder.hide()
+            return
+        }
+        if (awaySinceMs == 0L) {
+            awaySinceMs = nowMs
+            nextReminderAtMs = nowMs + WorkoutMode.reminderMs
+        }
+        // Checked before the deadline, not after, because this has to take a reminder *down* as
+        // well as decline to put one up: walking from an unblocked app into a blocked one leaves
+        // an already-showing nudge stranded on top of the block otherwise, and only the not-away
+        // branch above would ever have cleared it.
+        //
+        // Suppressed rather than rescheduled: a block screen already says a workout is in
+        // progress, and one of our own screens means you are looking at rotblock, not being
+        // distracted by something else. Leaving it due means it appears the moment the cover
+        // goes away, rather than being silently skipped for this interval.
+        if (overlay.isShowing || Interstitial.isShowing(nowMs)) {
+            reminder.hide()
+            return
+        }
+        if (nowMs < nextReminderAtMs) return
+        if (showWorkoutReminder()) nextReminderAtMs = nowMs + WorkoutMode.reminderMs
+    }
+
+    /**
+     * Puts the reminder up, wired to its two ways out -- both dismiss it, so it is never a dead
+     * end. The primary action gets you back to what you chose to do; the quiet one is the way
+     * out, same ranking as the block screen's and for the same reason.
+     */
+    private fun showWorkoutReminder(): Boolean = reminder.show(
+        onResume = { guard("workoutReminderResume") { reminder.hide(); launchWorkoutApp() } },
+        onSnooze = {
+            guard("workoutReminderSnooze") {
+                reminder.hide()
+                nextReminderAtMs = System.currentTimeMillis() + REMINDER_SNOOZE_MS
+                EnforcementStatus.note("workout reminder: snoozed")
+            }
+        },
+    )
+
+    /**
+     * A null launch intent means the configured package is not installed, or is not visible
+     * under scoped package visibility -- the manifest's `<queries>` LAUNCHER entry already makes
+     * every launchable app visible, so this is a bad setting rather than a permissions problem.
+     */
+    private fun launchWorkoutApp() {
+        val intent = packageManager.getLaunchIntentForPackage(WorkoutMode.appPackage)
+        if (intent == null) {
+            EnforcementStatus.note("workout reminder: cannot launch ${WorkoutMode.appPackage}")
+            return
+        }
+        runCatching {
+            startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure { EnforcementStatus.note("workout reminder: launch failed") }
     }
 
     /**
@@ -1973,6 +2090,17 @@ class RotblockAccessibilityService : AccessibilityService() {
      * one entry per transition rather than one per evaluation.
      */
     private var workoutWasLive = false
+
+    /**
+     * When the phone last left the workout app with a workout live, or 0 when it has not. Not a
+     * deadline that outlives the process on purpose -- an away-timer that survived a restart
+     * would fire a reminder for time spent before rotblock was even running. Written only by
+     * [refreshWorkoutReminder], plus the screen-off reset below, never anywhere else.
+     */
+    private var awaySinceMs = 0L
+
+    /** When the next reminder is due, or 0 when none is pending. See [awaySinceMs]. */
+    private var nextReminderAtMs = 0L
 
     private fun noteWorkoutTransition(nowMs: Long) {
         val live = WorkoutMode.activeUntilMs(nowMs) != null
@@ -2111,6 +2239,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         // Enforcement going away must not leave the display greyscale with nothing left running
         // to put it back.
         if (::grayscale.isInitialized) grayscale.restore()
+        if (::reminder.isInitialized) reminder.hide()
         inspectorJob?.cancel()
         watchJob?.cancel()
         reseedJob?.cancel()
