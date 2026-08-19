@@ -130,5 +130,26 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!--
+          BIND_NOTIFICATION_LISTENER_SERVICE is the broadest grant this app holds. There is no
+          framework way to scope it to one package, so every other notification on the phone is
+          visible to this component in principle. The narrowing happens entirely in code:
+          WorkoutListener's callbacks return immediately for any package other than the one
+          configured in Setup, and even for that package the only things ever extracted from a
+          notification are one flag bit and its `when` timestamp, never the title, text, or
+          channel. Nothing from a notification is persisted, logged, or included in a diagnostic
+          capture. The app has no INTERNET permission, so egress of any of it is structurally
+          impossible rather than merely avoided.
+        -->
+        <service
+            android:name=".workout.WorkoutListener"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

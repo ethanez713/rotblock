@@ -5,7 +5,7 @@ import com.ezhou.rotblock.quota.UsageSession
 import java.util.TimeZone
 
 /** Why a target was blocked. Surfaced verbatim on the block screen and in the audit log. */
-enum class BlockReason { HARD_BLOCK, QUOTA_EXHAUSTED }
+enum class BlockReason { HARD_BLOCK, QUOTA_EXHAUSTED, WORKOUT_MODE }
 
 sealed interface Decision {
 
@@ -64,10 +64,29 @@ object PolicyEngine {
         policy: Policy?,
         sessions: List<UsageSession>,
         pausedUntilMs: Long,
+        workoutUntilMs: Long?,
         nowMs: Long,
         tz: TimeZone = TimeZone.getDefault(),
     ): Decision {
         if (policy == null || !policy.enabled) return Decision.Allow()
+
+        // The one *strengthening* in this whole fold -- everything else here relaxes enforcement,
+        // this overrides it. So its dangerous direction has to run opposite to every other branch:
+        // stuck-on rather than fail-open. Expressed as a deadline that lapses on its own, like
+        // every relaxation in this file, rather than a boolean some caller has to remember to
+        // clear -- an "is a workout in progress" flag left set is exactly the kind of state this
+        // whole engine exists to avoid. It runs ahead of the pause check and the schedule check on
+        // purpose: a workout in progress overrides a pause already in effect and a rule's own
+        // scheduled hours alike. It only ever respects [Policy.enabled] -- a disabled rule stays
+        // disabled, and a target with no rule at all is untouched.
+        if (workoutUntilMs != null && nowMs < workoutUntilMs) {
+            // The cap arms the ticker but is deliberately not offered as a lift time. It is a
+            // backstop against a workout that never ends, not a promise about this one: the block
+            // really lifts when you finish, which is an event and not a deadline. Handing the cap
+            // to the block screen would put a three-hour countdown on it, telling you the phone is
+            // locked until then -- the one kind of lie a readout in this app may not tell.
+            return Decision.Blocked(BlockReason.WORKOUT_MODE, liftsAtMs = null, recheckAtMs = workoutUntilMs)
+        }
 
         val schedule = policy.schedule
         // Held for every branch below: whatever the answer is, it stops being the answer at the

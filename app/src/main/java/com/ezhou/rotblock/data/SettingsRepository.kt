@@ -103,6 +103,14 @@ data class RotblockSettings(
      */
     val blockTestAtMs: Long = 0L,
     val blockTestSeen: Boolean = false,
+    /** Whether a live Strong workout should block every enabled rule. See [com.ezhou.rotblock.workout.WorkoutMode]. */
+    val workoutModeEnabled: Boolean = false,
+    /** The package [com.ezhou.rotblock.workout.WorkoutListener] watches for an ongoing notification. */
+    val workoutAppPackage: String = "io.strongapp.strong",
+    /** How long a workout may override enforcement before it lapses on its own, in minutes. */
+    val workoutCapMinutes: Int = 180,
+    /** How long you may be away from the workout app before it reminds you to go back. */
+    val workoutReminderSeconds: Int = 60,
 ) {
     fun isPaused(nowMs: Long): Boolean = nowMs < pausedUntilMs
 }
@@ -131,6 +139,10 @@ class SettingsRepository(context: Context) {
         val revealAddressBar = booleanPreferencesKey("reveal_address_bar")
         val blockTestAt = longPreferencesKey("block_test_at_ms")
         val blockTestSeen = booleanPreferencesKey("block_test_seen")
+        val workoutModeEnabled = booleanPreferencesKey("workout_mode_enabled")
+        val workoutAppPackage = stringPreferencesKey("workout_app_package")
+        val workoutCapMinutes = intPreferencesKey("workout_cap_minutes")
+        val workoutReminderSeconds = intPreferencesKey("workout_reminder_seconds")
     }
 
     val settings: Flow<RotblockSettings> = store.data.map { p ->
@@ -154,6 +166,10 @@ class SettingsRepository(context: Context) {
             revealAddressBar = p[Keys.revealAddressBar] ?: d.revealAddressBar,
             blockTestAtMs = p[Keys.blockTestAt] ?: d.blockTestAtMs,
             blockTestSeen = p[Keys.blockTestSeen] ?: d.blockTestSeen,
+            workoutModeEnabled = p[Keys.workoutModeEnabled] ?: d.workoutModeEnabled,
+            workoutAppPackage = p[Keys.workoutAppPackage] ?: d.workoutAppPackage,
+            workoutCapMinutes = p[Keys.workoutCapMinutes] ?: d.workoutCapMinutes,
+            workoutReminderSeconds = p[Keys.workoutReminderSeconds] ?: d.workoutReminderSeconds,
         )
     }
 
@@ -231,5 +247,21 @@ class SettingsRepository(context: Context) {
             it[Keys.blockTestAt] = atMs
             it[Keys.blockTestSeen] = seen
         }
+    }
+
+    suspend fun setWorkoutModeEnabled(enabled: Boolean) {
+        store.edit { it[Keys.workoutModeEnabled] = enabled }
+    }
+
+    suspend fun setWorkoutAppPackage(pkg: String) {
+        store.edit { it[Keys.workoutAppPackage] = pkg }
+    }
+
+    suspend fun setWorkoutCapMinutes(minutes: Int) {
+        store.edit { it[Keys.workoutCapMinutes] = minutes.coerceIn(30, 24 * 60) }
+    }
+
+    suspend fun setWorkoutReminderSeconds(seconds: Int) {
+        store.edit { it[Keys.workoutReminderSeconds] = seconds.coerceIn(30, 3600) }
     }
 }

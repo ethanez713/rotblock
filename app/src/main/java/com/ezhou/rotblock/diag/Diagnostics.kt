@@ -20,6 +20,7 @@ import com.ezhou.rotblock.setup.gatherSetupFacts
 import com.ezhou.rotblock.setup.hasNotificationPermission
 import com.ezhou.rotblock.setup.isAccessibilityEnabled
 import com.ezhou.rotblock.setup.requirementsFor
+import com.ezhou.rotblock.workout.WorkoutMode
 import kotlinx.coroutines.launch
 
 /**
@@ -75,7 +76,9 @@ object Diagnostics {
         val sessions = targetId?.let { ledger.sessionsFor(it, now) }.orEmpty()
         val decision = targetId?.let { id ->
             val policy = policies.firstOrNull { it.id == id }
-            toDecisionSnapshot(PolicyEngine.evaluate(policy, sessions, pause.pausedUntilMs, now))
+            toDecisionSnapshot(
+                PolicyEngine.evaluate(policy, sessions, pause.pausedUntilMs, WorkoutMode.activeUntilMs(now), now),
+            )
         }
         val budget = runCatching { pause.budgetStatus(now) }.getOrNull()?.let {
             PauseBudgetSnapshot(it.pausesUsed, it.minutesUsed, it.maxPauses, it.maxMinutes)

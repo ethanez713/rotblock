@@ -11,6 +11,7 @@ import com.ezhou.rotblock.pause.PauseController
 import com.ezhou.rotblock.quota.UsageLedger
 import com.ezhou.rotblock.setup.AccessibilityEnrolment
 import com.ezhou.rotblock.setup.EnforcementRevival
+import com.ezhou.rotblock.workout.WorkoutMode
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +113,21 @@ class RotblockApp : Application() {
         // the thing that pays for it.
         Rotblock.scope.launch {
             runCatching { Rotblock.database(this@RotblockApp).policyDao().getAll() }
+        }
+
+        // The one writer of WorkoutMode's config. Both the accessibility service and the
+        // notification listener run in this process, either one can be the only one currently
+        // alive, and letting each push its own copy of these fields would be two places that have
+        // to be kept in step -- so neither does, and both just read WorkoutMode directly.
+        Rotblock.scope.launch {
+            runCatching {
+                Rotblock.settings(this@RotblockApp).settings.collect {
+                    WorkoutMode.enabled = it.workoutModeEnabled
+                    WorkoutMode.appPackage = it.workoutAppPackage
+                    WorkoutMode.capMs = it.workoutCapMinutes * 60_000L
+                    WorkoutMode.reminderMs = it.workoutReminderSeconds * 1000L
+                }
+            }
         }
     }
 }

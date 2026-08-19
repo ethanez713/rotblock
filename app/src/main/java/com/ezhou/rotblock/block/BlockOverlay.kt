@@ -302,6 +302,7 @@ class BlockOverlay(private val context: Context) {
     private fun reasonText(reason: BlockReason): String = when (reason) {
         BlockReason.HARD_BLOCK -> "Blocked by one of your policies."
         BlockReason.QUOTA_EXHAUSTED -> "You have used up your time for now."
+        BlockReason.WORKOUT_MODE -> "Workout in progress."
     }
 
     @SuppressLint("SetTextI18n")
@@ -316,9 +317,15 @@ class BlockOverlay(private val context: Context) {
         val remaining = lifts - System.currentTimeMillis()
         view.visibility = View.VISIBLE
         // A hard block has no time to run out of, so the only thing that can make it lift on its
-        // own is its scheduled window ending. Saying "more time" there would promise an allowance
-        // that does not exist.
-        val quota = liftReason != BlockReason.HARD_BLOCK
+        // own is its scheduled window ending -- and workout mode is the same: its deadline is a
+        // cap, not an allowance. Saying "more time" for either would promise an allowance that
+        // does not exist. Written as a positive `when` naming every reason rather than a `!=`, so
+        // the next reason added has to answer this question rather than falling through it.
+        val quota = when (liftReason) {
+            BlockReason.HARD_BLOCK, BlockReason.WORKOUT_MODE -> false
+            BlockReason.QUOTA_EXHAUSTED -> true
+            null -> false
+        }
         view.text = when {
             remaining <= 0 && quota -> "Time is available again — reopen the app."
             remaining <= 0 -> "Allowed again — reopen the app."

@@ -67,6 +67,7 @@ import com.ezhou.rotblock.setup.gatherSetupFacts
 import com.ezhou.rotblock.setup.requirementsFor
 import com.ezhou.rotblock.ui.FrictionActivity
 import com.ezhou.rotblock.ui.PauseRequestActivity
+import com.ezhou.rotblock.workout.WorkoutMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1533,7 +1534,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         // process kill would record the entire visit as zero seconds.
         ledger.touch(nowMs)
         val sessions = ledger.sessionsFor(targetId, nowMs)
-        val decision = PolicyEngine.evaluate(policy, sessions, pause.pausedUntilMs, nowMs)
+        val decision = PolicyEngine.evaluate(policy, sessions, pause.pausedUntilMs, WorkoutMode.activeUntilMs(nowMs), nowMs)
         trace("decision for ${policy.label}: $decision")
         when (decision) {
             is Decision.Allow -> {
@@ -2047,7 +2048,9 @@ class RotblockAccessibilityService : AccessibilityService() {
         val targetId = currentTargetId
         val sessions = targetId?.let { ledger.sessionsFor(it, now) }.orEmpty()
         val decision = targetId?.let { id ->
-            toDecisionSnapshot(PolicyEngine.evaluate(policiesByTarget[id], sessions, pause.pausedUntilMs, now))
+            toDecisionSnapshot(
+                PolicyEngine.evaluate(policiesByTarget[id], sessions, pause.pausedUntilMs, WorkoutMode.activeUntilMs(now), now),
+            )
         }
         return CaptureInput(
             capturedAtMs = now,
