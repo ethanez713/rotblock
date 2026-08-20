@@ -56,6 +56,11 @@ sealed interface Inspected {
  *   corroborated verdict about which *host* the page is on, while [PageSignature] reads these raw
  *   to ask whether the page's own links carry a *path* -- the half a host vote deliberately throws
  *   away. Empty means the walk did not run.
+ * @param signatureScanned whether the walk behind [descriptions] and [linkUrls] actually ran on
+ *   this read, as against being throttled out or not wanted. The same distinction
+ *   [Inspected.Unreadable] draws against [Inspected.AppOnly], and it is needed for the same
+ *   reason: a signature that was never consulted must not read as a signature that failed to
+ *   match.
  */
 fun classifyInspection(
     pkg: String,
@@ -66,6 +71,7 @@ fun classifyInspection(
     descriptions: List<String> = emptyList(),
     title: String? = null,
     linkUrls: List<String> = emptyList(),
+    signatureScanned: Boolean = true,
 ): Inspected {
     if (feedKey != null) return Inspected.Target(Policy.targetId(TargetKind.FEED, feedKey))
 
@@ -122,6 +128,19 @@ fun classifyInspection(
             websiteMatchers.firstOrNull { WebMatcher.matches(fromSignature, it) }
                 ?.let { return Inspected.Target(Policy.targetId(TargetKind.WEBSITE, it)) }
         }
+
+        // The bar named a host a signature could sharpen into a path, and this read did not look.
+        // Not looking is not the same as finding nothing: the bar cannot see a path at all on
+        // Samsung Internet, so on its own it is no evidence whatsoever about whether you are still
+        // on youtube.com/shorts, and AppOnly here means "you left". Reads land about once a second
+        // and the walk behind a signature runs once every three, so answering AppOnly on the two
+        // in between dropped the target and the next scan put it straight back -- the block
+        // flapping on and off at the scan interval, measured on device at three seconds.
+        //
+        // A signature that *was* consulted and missed is a different thing and still answers
+        // AppOnly below: that is a real read of a real page, and it is what lifts the block when
+        // you tap out of a Short onto an ordinary watch page.
+        if (!signatureScanned && PageSignature.couldRefine(parsed.host)) return Inspected.Unreadable
     }
     return Inspected.AppOnly
 }

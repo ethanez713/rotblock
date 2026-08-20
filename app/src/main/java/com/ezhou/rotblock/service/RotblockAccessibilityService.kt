@@ -1204,11 +1204,27 @@ class RotblockAccessibilityService : AccessibilityService() {
             // something a registered signature could plausibly extend (m.youtube.com ->
             // youtube.com/shorts). A readable bar on any other page runs nothing extra at all --
             // the whole reason this stays free everywhere it does not apply.
+            //
+            // Whether a target is already held decides it only in the first of those two cases,
+            // and the split is the point. With nothing readable in the bar, classifyInspection
+            // already holds whatever is held, so a scan buys nothing and the common case --
+            // scrolling a page we recognised long ago -- must not pay for one. With a readable bar
+            // it is the opposite: the bar names youtube.com, matches no path rule, and would
+            // otherwise say "you left youtube.com/shorts" on every read after the one that
+            // acquired it. The signature is the only signal here that can carry a path, so it has
+            // to be allowed to say so again and again for as long as the Short is on screen; gated
+            // to acquisition it could name a target but never hold one, and the block flapped on
+            // and off every three seconds. Nothing is lost by running it: its safety has never come
+            // from the target being absent, it comes from `compatibleWith` refusing a bar that
+            // disagrees on host.
             val wantSignature = !chooser &&
-                currentTargetId == null &&
                 isBrowser &&
                 websiteMatchers.isNotEmpty() &&
-                (url == null || (parsedBar != null && PageSignature.couldRefine(parsedBar.host)))
+                if (url == null) {
+                    currentTargetId == null
+                } else {
+                    parsedBar != null && PageSignature.couldRefine(parsedBar.host)
+                }
 
             val signals = if (wantLinks || wantSignature) {
                 harvestPageSignals(root, collectSignature = wantSignature)
@@ -1268,6 +1284,7 @@ class RotblockAccessibilityService : AccessibilityService() {
 
             val result = classifyInspection(
                 pkg, feedKey, url, websiteMatchers, linkHost, descriptions, title, signatureLinkUrls,
+                signatureScanned = wantSignature && scanned,
             )
             val signature = if (wantSignature) {
                 PageSignature.keyOf(descriptions, title, signatureLinkUrls, parsedBar?.host)
