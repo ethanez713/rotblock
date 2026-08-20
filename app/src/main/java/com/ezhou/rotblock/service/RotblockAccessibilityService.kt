@@ -1588,7 +1588,20 @@ class RotblockAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Reports at the end of every path through this, not only the one [applyTarget] takes. A
+     * decision reached by the ticker changes what is being charged with no target change and no
+     * event of any kind -- an allowance running out is the ordinary case -- and leaving the
+     * snapshot behind made the Right now panel say "Counting time against: NecroMerger" with the
+     * block screen already up. That panel exists to answer whether time is being charged, so it is
+     * the one readout that may not be stale about it.
+     */
     private fun evaluateAndEnforce(targetId: String, nowMs: Long) {
+        evaluateAndEnforceInner(targetId, nowMs)
+        reportStatus()
+    }
+
+    private fun evaluateAndEnforceInner(targetId: String, nowMs: Long) {
         val policy = policiesByTarget[targetId] ?: return
         // The cap lapsing fires no onChanged of its own, and a held target reaches this function
         // far more often than the no-target tick path does -- so a workout ending mid-visit on a
