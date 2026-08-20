@@ -469,6 +469,14 @@ class RotblockAccessibilityService : AccessibilityService() {
                         overlay.hide()
                         hideCountdown()
                         friction.endVisit()
+                        // The visit really has ended, so the record of it has to say so. Without
+                        // this the persisted visit went on claiming the wait had been served: lock
+                        // the phone inside a friction-gated app, let One UI kill us while the
+                        // screen is off, and `restoreServed` reads that stale mark back on the
+                        // rebind. Unlocking into the same app fires no foreground change to re-arm
+                        // the gate, so the countdown was simply skipped -- a wait lost rather than
+                        // one served twice, which is the direction [FrictionGate] does not fail in.
+                        persistVisit()
                         // Never leave the phone monochrome behind a locked screen.
                         grayscale.restore()
                         // A locked phone is not you being distracted, so the away-timer starts
