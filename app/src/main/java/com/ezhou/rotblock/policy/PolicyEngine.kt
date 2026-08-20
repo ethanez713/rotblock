@@ -121,10 +121,17 @@ object PolicyEngine {
             )
         } else {
             val releaseMs = RollingQuota.nextRelease(sessions, nowMs, policy.windowMs, quotaMs)
+            val liftsAtMs = soonest(releaseMs, windowEndsMs)
             Decision.Blocked(
                 reason = BlockReason.QUOTA_EXHAUSTED,
-                liftsAtMs = soonest(releaseMs, windowEndsMs),
-                recheckAtMs = boundaryMs,
+                liftsAtMs = liftsAtMs,
+                // The block lifting is itself a deadline, and it is the one branch here where
+                // that is not also a schedule edge: a rolling window refills at an hour past
+                // some old session, on a rule that may have no schedule at all. Left out, an
+                // always-on quota rule stopped the ticker the moment it blocked, and the block
+                // screen counted down to a lift time nothing was awake for. An app target has
+                // no inspection loop to rescue it either, so it simply stayed blocked.
+                recheckAtMs = soonest(liftsAtMs, boundaryMs),
             )
         }
     }

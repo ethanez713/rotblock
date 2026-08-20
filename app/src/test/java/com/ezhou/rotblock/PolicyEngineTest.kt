@@ -129,10 +129,37 @@ class PolicyEngineTest {
     fun `an unscheduled decision has nothing to wake up for`() {
         // The counterpart of every recheckAtMs assertion below: when no deadline is approaching,
         // the ticker must be allowed to stop entirely. This is most of the battery budget.
-        val sessions = listOf(UsageSession(NOW - 10 * MIN, NOW - 7 * MIN))
+        //
+        // An always-on hard block qualifies and an exhausted rolling quota does not, which is the
+        // distinction this test used to get wrong -- see the test below it.
         assertNull(PolicyEngine.evaluate(policy(null), emptyList(), 0L, null, NOW).recheckAtMs)
-        assertNull(PolicyEngine.evaluate(policy(180), sessions, 0L, null, NOW).recheckAtMs)
         assertNull(PolicyEngine.evaluate(null, emptyList(), 0L, null, NOW).recheckAtMs)
+    }
+
+    @Test
+    fun `an exhausted quota arms the ticker for the moment it refills`() {
+        // Every rule on the device this was found on is always-on, so the schedule boundary the
+        // block used to arm for was null on all of them: the ticker stopped the moment the block
+        // appeared, and the lift time on screen counted down to nothing happening. Sitting on the
+        // block screen is exactly when nothing else will re-evaluate.
+        val sessions = listOf(UsageSession(NOW - 10 * MIN, NOW - 7 * MIN)) // 3 min of a 3 min quota
+        val d = PolicyEngine.evaluate(policy(180), sessions, 0L, null, NOW)
+        assertTrue(d is Decision.Blocked)
+        // One millisecond of the session has to age out of the hour-long window before usage drops
+        // strictly below the quota.
+        assertEquals(NOW - 10 * MIN + 1 + HOUR, (d as Decision.Blocked).liftsAtMs)
+        assertEquals("the ticker arms for the lift it just promised", d.liftsAtMs, d.recheckAtMs)
+    }
+
+    @Test
+    fun `an exhausted quota arms for whichever comes first, the refill or the window closing`() {
+        // 10-6 on a Wednesday, at 5:30pm, with the quota spent at 10:05am: the window shuts before
+        // that usage could ever age out of a 24-hour rolling window.
+        val p = policy(180, schedule = WEEKDAYS_10_TO_6).copy(windowSeconds = 24 * 60 * 60)
+        val sessions = listOf(UsageSession(onWednesday(10, 5), onWednesday(10, 8)))
+        val d = PolicyEngine.evaluate(p, sessions, 0L, null, onWednesday(17, 30), UTC)
+        assertTrue(d is Decision.Blocked)
+        assertEquals(onWednesday(18), (d as Decision.Blocked).recheckAtMs)
     }
 
     @Test
