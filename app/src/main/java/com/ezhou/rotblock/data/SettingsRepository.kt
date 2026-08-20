@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.ezhou.rotblock.policy.PolicySort
 import kotlinx.coroutines.flow.Flow
@@ -111,6 +112,12 @@ data class RotblockSettings(
     val workoutCapMinutes: Int = 180,
     /** How long you may be away from the workout app before it reminds you to go back. */
     val workoutReminderSeconds: Int = 60,
+    /**
+     * Packages a workout does not override -- music, podcasts, anything that helps rather than
+     * distracts. See [com.ezhou.rotblock.workout.WorkoutMode.overrideUntilMs] for what being on
+     * this list does and does not buy an app.
+     */
+    val workoutAllowedPackages: Set<String> = emptySet(),
 ) {
     fun isPaused(nowMs: Long): Boolean = nowMs < pausedUntilMs
 }
@@ -143,6 +150,7 @@ class SettingsRepository(context: Context) {
         val workoutAppPackage = stringPreferencesKey("workout_app_package")
         val workoutCapMinutes = intPreferencesKey("workout_cap_minutes")
         val workoutReminderSeconds = intPreferencesKey("workout_reminder_seconds")
+        val workoutAllowedPackages = stringSetPreferencesKey("workout_allowed_packages")
     }
 
     val settings: Flow<RotblockSettings> = store.data.map { p ->
@@ -170,6 +178,7 @@ class SettingsRepository(context: Context) {
             workoutAppPackage = p[Keys.workoutAppPackage] ?: d.workoutAppPackage,
             workoutCapMinutes = p[Keys.workoutCapMinutes] ?: d.workoutCapMinutes,
             workoutReminderSeconds = p[Keys.workoutReminderSeconds] ?: d.workoutReminderSeconds,
+            workoutAllowedPackages = p[Keys.workoutAllowedPackages] ?: d.workoutAllowedPackages,
         )
     }
 
@@ -263,5 +272,9 @@ class SettingsRepository(context: Context) {
 
     suspend fun setWorkoutReminderSeconds(seconds: Int) {
         store.edit { it[Keys.workoutReminderSeconds] = seconds.coerceIn(30, 3600) }
+    }
+
+    suspend fun setWorkoutAllowedPackages(packages: Set<String>) {
+        store.edit { it[Keys.workoutAllowedPackages] = packages }
     }
 }

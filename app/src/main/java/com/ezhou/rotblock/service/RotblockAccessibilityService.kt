@@ -1582,7 +1582,16 @@ class RotblockAccessibilityService : AccessibilityService() {
         // process kill would record the entire visit as zero seconds.
         ledger.touch(nowMs)
         val sessions = ledger.sessionsFor(targetId, nowMs)
-        val decision = PolicyEngine.evaluate(policy, sessions, pause.pausedUntilMs, WorkoutMode.activeUntilMs(nowMs), nowMs)
+        val decision = PolicyEngine.evaluate(
+            policy,
+            sessions,
+            pause.pausedUntilMs,
+            // Asked about the app in front rather than about the workout, so an allowed app falls
+            // through to its own rules with no override in the fold. For a website target that is
+            // the browser, which is the app you would have to have allowed.
+            WorkoutMode.overrideUntilMs(currentPackage, nowMs),
+            nowMs,
+        )
         trace("decision for ${policy.label}: $decision")
         when (decision) {
             is Decision.Allow -> {
@@ -1990,7 +1999,10 @@ class RotblockAccessibilityService : AccessibilityService() {
      * a reminder can outright fail to show, so they stay separate functions.
      */
     private fun refreshWorkoutReminder(nowMs: Long) {
-        val away = WorkoutMode.activeUntilMs(nowMs) != null && currentPackage != WorkoutMode.appPackage
+        // Being in an allowed app is not being away: choosing the next podcast is not drifting, and
+        // nagging you out of the app you deliberately allowed is the fastest way to lose the whole
+        // feature.
+        val away = WorkoutMode.overrideUntilMs(currentPackage, nowMs) != null
         if (!away) {
             awaySinceMs = 0L
             nextReminderAtMs = 0L
@@ -2057,10 +2069,10 @@ class RotblockAccessibilityService : AccessibilityService() {
      *   than remembered, so there is no flag that can be set and never cleared.
      */
     private fun refreshGrayscale(nowMs: Long, ruleWantsGrayscale: Boolean) {
-        // The workout app itself is exempt: greying Strong's own charts and plate colours while
-        // you are looking at them is punitive and buys nothing. The moment you leave it, the
-        // world goes grey.
-        val workoutWants = WorkoutMode.activeUntilMs(nowMs) != null && currentPackage != WorkoutMode.appPackage
+        // The workout app and anything allowed alongside it are exempt: greying Strong's own charts
+        // and plate colours, or the album art you put on to train to, is punitive and buys nothing.
+        // The moment you leave for something else, the world goes grey.
+        val workoutWants = WorkoutMode.overrideUntilMs(currentPackage, nowMs) != null
         if (ruleWantsGrayscale || workoutWants) grayscale.enable() else grayscale.restore()
     }
 
@@ -2282,7 +2294,15 @@ class RotblockAccessibilityService : AccessibilityService() {
         val sessions = targetId?.let { ledger.sessionsFor(it, now) }.orEmpty()
         val decision = targetId?.let { id ->
             toDecisionSnapshot(
-                PolicyEngine.evaluate(policiesByTarget[id], sessions, pause.pausedUntilMs, WorkoutMode.activeUntilMs(now), now),
+                PolicyEngine.evaluate(
+                    policiesByTarget[id],
+                    sessions,
+                    pause.pausedUntilMs,
+                    // The same question evaluateAndEnforce asked. A capture showing a workout block
+                    // where the live decision allowed would be a capture of a different phone.
+                    WorkoutMode.overrideUntilMs(currentPackage, now),
+                    now,
+                ),
             )
         }
         return CaptureInput(

@@ -27,6 +27,9 @@ object WorkoutMode {
     @Volatile var capMs: Long = 3 * 60 * 60 * 1000L
     @Volatile var reminderMs: Long = 60_000L
 
+    /** Packages a workout does not override. See [overrideUntilMs]. */
+    @Volatile var allowedPackages: Set<String> = emptySet()
+
     /** Diagnostics only -- nothing here feeds a decision except through [activeUntilMs]. */
     @Volatile var startedAtMs: Long = 0L
         private set
@@ -81,6 +84,27 @@ object WorkoutMode {
         val until = startedAtMs + capMs
         return if (nowMs < until) until else null
     }
+
+    /**
+     * The same deadline, asked about the app actually on screen: null when a workout is live but
+     * does not reach into [pkg].
+     *
+     * Everything a workout does -- blocking every rule, draining the colour, nudging you back --
+     * is one question answered per package, so it is one function rather than the copy of
+     * `activeUntilMs() != null && currentPackage != appPackage` that greyscale and the reminder
+     * each used to carry. The workout app was already exempt for the obvious reason; a music or
+     * podcast app is exempt for the same one, and adding it to that list is all the whitelist is.
+     *
+     * Being exempt subtracts the *override* and nothing else -- the caller goes on to evaluate the
+     * package's own rules with no workout in the fold, so a rule on Spotify still blocks Spotify.
+     * The whitelist can therefore never leave the phone weaker than it would be with workout mode
+     * switched off entirely, which is the only direction a relaxation of a strengthening may go.
+     *
+     * A null [pkg] is never exempt. Not knowing what is in front is exactly when a workout should
+     * still be overriding, and this app resolves what it does not know toward more blocking.
+     */
+    fun overrideUntilMs(pkg: String?, nowMs: Long = System.currentTimeMillis()): Long? =
+        if (pkg != null && (pkg == appPackage || pkg in allowedPackages)) null else activeUntilMs(nowMs)
 
     /**
      * Which timestamp the cap is measured from.

@@ -416,7 +416,7 @@ private fun RevealControls(settings: RotblockSettings) {
 
 /**
  * Every enabled rule blocks, the screen goes greyscale, and rotblock nudges you if you drift back
- * onto your phone -- for as long as the workout app's own notification says a workout is running,
+ * onto your phone -- outside the allowlist, and for as long as the workout app's own notification says a workout is running,
  * or until [WorkoutMode.capMs] runs out, whichever comes first. See the requirements list above for
  * whether the automatic half of this is actually working; the manual button below works either way.
  */
@@ -424,7 +424,8 @@ private fun RevealControls(settings: RotblockSettings) {
 private fun WorkoutControls(settings: RotblockSettings, viewModel: RotblockViewModel) {
     Text(
         "While a workout is running, every enabled rule blocks, the screen goes greyscale, and " +
-            "rotblock nudges you if you drift onto your phone.",
+            "rotblock nudges you if you drift onto your phone — apart from the apps you allow " +
+            "through, which are chosen on the Blocks screen.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -921,9 +922,15 @@ private fun EnforcementCard() {
             // worth reading -- and workout mode overrides every rule on the phone, so the minutes
             // it was on are exactly the ones a puzzling block has to be explained against.
             snapshot.workoutUntilMs?.let { until ->
+                // Whether it reaches the app in front is a separate fact from whether it is on, and
+                // it is the one this panel is for: with an allowed app up, every rule behaves
+                // normally while a workout is running, which reads as workout mode being broken
+                // unless the row says so.
+                val reaching = WorkoutMode.overrideUntilMs(snapshot.currentPackage) != null
                 StatusRow(
                     "Workout mode",
-                    "on (${snapshot.workoutSource ?: "unknown"}), until ${clockTime(until)} at the latest",
+                    "on (${snapshot.workoutSource ?: "unknown"}), until ${clockTime(until)} at the latest" +
+                        if (reaching) "" else " — allowing ${snapshot.currentPackage}",
                 )
             }
 

@@ -67,6 +67,7 @@ fun BlocksScreen(
     val pending by viewModel.pendingChanges.collectAsStateWithLifecycle()
     val ruleEffects by viewModel.ruleEffects.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
+    var showWorkoutAllowlist by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Policy?>(null) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -141,8 +142,10 @@ fun BlocksScreen(
             item(key = "workout") {
                 WorkoutBanner(
                     enabled = settings.workoutModeEnabled,
+                    allowedCount = settings.workoutAllowedPackages.size,
                     nowMs = now,
                     onChange = viewModel::setWorkoutModeEnabled,
+                    onOpenAllowlist = { showWorkoutAllowlist = true },
                 )
             }
 
@@ -181,6 +184,15 @@ fun BlocksScreen(
                 )
             }
         }
+    }
+
+    if (showWorkoutAllowlist) {
+        WorkoutAllowlistSheet(
+            allowed = settings.workoutAllowedPackages,
+            workoutPackage = settings.workoutAppPackage,
+            onChange = viewModel::setWorkoutAllowedPackages,
+            onDismiss = { showWorkoutAllowlist = false },
+        )
     }
 
     if (showAdd || editing != null) {
@@ -300,16 +312,22 @@ private fun PauseBanner(
 /**
  * Workout mode's on/off, on the screen that lists the rules it overrides.
  *
- * Only the switch lives here. The app to watch and the two intervals stay in Setup: they are set
- * once and never looked at again, whereas this is the half that belongs next to the rules, because
- * turning it on changes what every card below it will do.
+ * The switch lives here, and so does the allowlist, because both are about what the rules below
+ * will do. The app to watch and the two intervals stay in Setup: they are set once and never
+ * looked at again, whereas these two change what you are looking at on this screen.
  *
  * [nowMs] is the screen's own one-second heartbeat, and taking it as a parameter is what makes the
  * live state honest -- a workout starting or ending is not a settings change and emits nothing this
  * screen collects, so without recomposing on the heartbeat the banner would sit on a stale answer.
  */
 @Composable
-private fun WorkoutBanner(enabled: Boolean, nowMs: Long, onChange: (Boolean) -> Unit) {
+private fun WorkoutBanner(
+    enabled: Boolean,
+    allowedCount: Int,
+    nowMs: Long,
+    onChange: (Boolean) -> Unit,
+    onOpenAllowlist: () -> Unit,
+) {
     val liveUntilMs = WorkoutMode.activeUntilMs(nowMs)
     Card(
         colors = CardDefaults.cardColors(
@@ -339,6 +357,9 @@ private fun WorkoutBanner(enabled: Boolean, nowMs: Long, onChange: (Boolean) -> 
                     Spacer(Modifier.height(4.dp))
                     Text(
                         when {
+                            liveUntilMs != null && allowedCount > 0 ->
+                                "Every rule below is blocking, whatever its own allowance says — " +
+                                    "outside the apps you allow."
                             liveUntilMs != null ->
                                 "Every rule below is blocking, whatever its own allowance says."
                             enabled -> "Waiting for a workout to start."
@@ -353,6 +374,19 @@ private fun WorkoutBanner(enabled: Boolean, nowMs: Long, onChange: (Boolean) -> 
                     )
                 }
                 Switch(checked = enabled, onCheckedChange = onChange)
+            }
+            // Only once the mode is on: an allowlist for something switched off is a setting for
+            // nothing, and the empty card has one job, which is the switch.
+            if (enabled) {
+                TextButton(onClick = onOpenAllowlist, contentPadding = PaddingValues(0.dp)) {
+                    Text(
+                        if (allowedCount == 0) {
+                            "Allow some apps through"
+                        } else {
+                            "$allowedCount ${if (allowedCount == 1) "app" else "apps"} allowed through"
+                        },
+                    )
+                }
             }
         }
     }

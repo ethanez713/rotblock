@@ -29,6 +29,7 @@ class WorkoutModeTest {
         WorkoutMode.appPackage = "io.strongapp.strong"
         WorkoutMode.capMs = 3 * HOUR
         WorkoutMode.reminderMs = MIN
+        WorkoutMode.allowedPackages = emptySet()
     }
 
     @After
@@ -90,6 +91,51 @@ class WorkoutModeTest {
         WorkoutMode.onWorkoutSeen(NOW, NOW)
         WorkoutMode.enabled = false
         assertNull(WorkoutMode.activeUntilMs(NOW))
+    }
+
+    // --- overrideUntilMs, the per-package answer ---
+
+    @Test
+    fun `overrideUntilMs blocks an ordinary package during a workout`() {
+        WorkoutMode.onWorkoutSeen(NOW, NOW)
+        assertEquals(NOW + WorkoutMode.capMs, WorkoutMode.overrideUntilMs("com.instagram.android", NOW))
+    }
+
+    @Test
+    fun `overrideUntilMs exempts an allowed package`() {
+        WorkoutMode.allowedPackages = setOf("com.spotify.music")
+        WorkoutMode.onWorkoutSeen(NOW, NOW)
+        assertNull(WorkoutMode.overrideUntilMs("com.spotify.music", NOW))
+    }
+
+    @Test
+    fun `overrideUntilMs exempts the workout app itself`() {
+        WorkoutMode.onWorkoutSeen(NOW, NOW)
+        assertNull(WorkoutMode.overrideUntilMs(WorkoutMode.appPackage, NOW))
+    }
+
+    /** Not knowing what is in front is when the override matters most. */
+    @Test
+    fun `overrideUntilMs applies to an unknown package`() {
+        WorkoutMode.allowedPackages = setOf("com.spotify.music")
+        WorkoutMode.onWorkoutSeen(NOW, NOW)
+        assertEquals(NOW + WorkoutMode.capMs, WorkoutMode.overrideUntilMs(null, NOW))
+    }
+
+    /** The allowlist subtracts the override; it never adds one. */
+    @Test
+    fun `overrideUntilMs is null for every package with no workout live`() {
+        WorkoutMode.allowedPackages = setOf("com.spotify.music")
+        assertNull(WorkoutMode.overrideUntilMs("com.instagram.android", NOW))
+        assertNull(WorkoutMode.overrideUntilMs("com.spotify.music", NOW))
+    }
+
+    @Test
+    fun `overrideUntilMs lapses with the cap for an ordinary package`() {
+        val cap = 45 * MIN
+        WorkoutMode.capMs = cap
+        WorkoutMode.onWorkoutSeen(NOW, NOW)
+        assertNull(WorkoutMode.overrideUntilMs("com.instagram.android", NOW + cap))
     }
 
     // --- onWorkoutSeen idempotence ---

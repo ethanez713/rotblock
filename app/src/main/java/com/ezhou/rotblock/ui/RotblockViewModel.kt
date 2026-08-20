@@ -308,6 +308,10 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsRepo.setWorkoutCapMinutes(minutes) }
     }
 
+    fun setWorkoutAllowedPackages(packages: Set<String>) {
+        viewModelScope.launch { settingsRepo.setWorkoutAllowedPackages(packages) }
+    }
+
     /** For when notification access was never granted, or the listener is not running right now. */
     fun startWorkoutNow() {
         WorkoutMode.startManually()

@@ -126,6 +126,7 @@ class RotblockApp : Application() {
                     WorkoutMode.appPackage = it.workoutAppPackage
                     WorkoutMode.capMs = it.workoutCapMinutes * 60_000L
                     WorkoutMode.reminderMs = it.workoutReminderSeconds * 1000L
+                    WorkoutMode.allowedPackages = it.workoutAllowedPackages
                 }
             }
         }
