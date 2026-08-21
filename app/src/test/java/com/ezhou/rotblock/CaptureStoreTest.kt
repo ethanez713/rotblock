@@ -51,6 +51,42 @@ class CaptureStoreTest {
     }
 
     @Test
+    fun `a capture past 30 days goes, however few there are`() {
+        val store = CaptureStore(tmp.root)
+        store.write(t0, "{}")
+        store.write(t0 + 1_000, "{}")
+
+        // Well inside MAX_CAPTURES, so only age can be what removes these.
+        store.write(t0 + 31L * 24 * 60 * 60 * 1000, "{}")
+
+        val remaining = store.list().map { it.name }
+        assertEquals(1, remaining.size)
+        assertEquals(CaptureStore.fileName(t0 + 31L * 24 * 60 * 60 * 1000), remaining.first())
+    }
+
+    @Test
+    fun `a capture inside 30 days stays`() {
+        val store = CaptureStore(tmp.root)
+        store.write(t0, "{}")
+
+        store.write(t0 + 29L * 24 * 60 * 60 * 1000, "{}")
+
+        assertEquals(2, store.list().size)
+    }
+
+    @Test
+    fun `a name that will not parse is kept rather than deleted`() {
+        val store = CaptureStore(tmp.root)
+        // Matches the capture- prefix so list() returns it, but carries no readable timestamp.
+        val unparseable = tmp.newFile("capture-not-a-timestamp.json")
+
+        store.write(t0 + 400L * 24 * 60 * 60 * 1000, "{}")
+
+        assertTrue(unparseable.exists())
+        assertEquals(null, CaptureStore.timeOf(unparseable))
+    }
+
+    @Test
     fun `deleteAll empties the directory`() {
         val store = CaptureStore(tmp.root)
         store.write(t0, "{}")
