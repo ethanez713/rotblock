@@ -2283,7 +2283,13 @@ class RotblockAccessibilityService : AccessibilityService() {
         audit.record(
             AuditType.SERVICE_DISABLED,
             detail = reason ?: "Enforcement stopped",
-            tsMs = downSince,
+            // stoppedAt, not downSince. The fallback three lines up exists precisely because a
+            // force-stop leaves downSince at zero, and stamping the row with it wrote the outage
+            // at the epoch: 20 such rows found on device, all of them the force-stop case this
+            // record must not fail in. They were in the log and unreadable -- sorted to the far
+            // end of it, rendered as 1969 -- which is the same failure as not recording them,
+            // wearing a costume.
+            tsMs = stoppedAt,
         )
         audit.record(
             AuditType.SERVICE_ENABLED,
