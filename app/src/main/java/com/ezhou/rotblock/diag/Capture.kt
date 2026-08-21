@@ -206,6 +206,10 @@ private fun enforcementJson(s: EnforcementStatus.Snapshot): JSONObject = JSONObj
     .put("interstitialShowing", s.interstitialShowing)
     .put("lastReadAtMs", s.lastReadAtMs)
     .put("lastRead", s.lastRead.orNull())
+    // What the node reads have cost the app in front. See [EnforcementStatus.Snapshot.readCount].
+    .put("readCount", s.readCount)
+    .put("readTotalMs", s.readTotalMs)
+    .put("readMaxMs", s.readMaxMs)
     .put(
         "trail",
         JSONArray(

@@ -48,6 +48,19 @@ enum class AuditType {
     INTERNAL_ERROR,
 
     /**
+     * The enforcement loop re-evaluated faster than any user action can explain, and again when it
+     * stopped. See [com.ezhou.rotblock.service.EvaluationRate].
+     *
+     * Diagnostic rather than accountability, like [INTERNAL_ERROR], and here for the same reason
+     * that one is: this log is the only store in the app that outlives the process, and the state
+     * a storm has to be diagnosed from is gone by the time anyone can go looking for it. The
+     * [com.ezhou.rotblock.service.EnforcementStatus] trail cannot hold it -- a storm writes two
+     * entries per cycle and they alternate, so they never collapse, and 300 entries are spent in
+     * six seconds.
+     */
+    EVALUATION_STORM,
+
+    /**
      * Brackets a period when every enabled rule was blocking regardless of quota, schedule or
      * pause -- a live workout overrides them all. A gap in the log between these two should read
      * as "a workout was running", not as a mystery.

@@ -289,6 +289,16 @@ private const val REMINDER_SNOOZE_MS = 5 * 60 * 1000L
 private const val FOREGROUND_RECHECK_MIN_INTERVAL_MS = 2_000L
 
 /**
+ * How much of the trail an [EvaluationRate] storm carries into the audit log with it.
+ *
+ * Enough to say what was happening before the rate went up, and bounded because this lands in a
+ * single `detail` column that a person reads. The rest of the trail is still in the snapshot a
+ * diagnostic capture takes -- if one is taken before the storm overwrites it, which is the whole
+ * reason these lines are copied somewhere that outlives the process.
+ */
+private const val STORM_TRAIL_LINES = 12
+
+/**
  * How long a diagnostic capture keeps polling for a window it can read before giving up.
  *
  * The tap that triggers a capture happens from the Quick Settings shade, so `rootInActiveWindow`
@@ -379,6 +389,9 @@ class RotblockAccessibilityService : AccessibilityService() {
      * See [TargetConfidence] -- gates the friction countdown, never enforcement itself.
      */
     private val confidence = TargetConfidence()
+
+    /** Main thread only, like [friction]. See [EvaluationRate]. */
+    private val evaluationRate = EvaluationRate()
 
     /** See [noteDetectionLook]. Diagnostic only; never read by anything that decides a block. */
     @Volatile private var detection = DetectionCounters()
@@ -485,6 +498,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 when (intent?.action) {
                     Intent.ACTION_SCREEN_OFF -> {
                         ledger.closeSession(System.currentTimeMillis())
+                        settleEvaluationRate(System.currentTimeMillis())
                         stopTicking()
                         overlay.hide()
                         hideCountdown()
@@ -906,6 +920,8 @@ class RotblockAccessibilityService : AccessibilityService() {
             if (currentTargetId != null) {
                 EnforcementStatus.note("target $currentTargetId -> none (nothing here is covered)")
             }
+            // While currentTargetId still names the target the storm was about.
+            settleEvaluationRate(nowMs)
             currentTargetId = null
             confidence.clear()
             friction.endVisit()
@@ -1180,6 +1196,11 @@ class RotblockAccessibilityService : AccessibilityService() {
      * means. Everything node-shaped lives here; every fail-open judgement lives there.
      */
     private fun resolveInspectedTarget(pkg: String): Inspected {
+        // Started before rootInActiveWindow, which is itself an IPC and part of what this costs.
+        // Elapsed wall time rather than CPU on purpose: the traversal runs in the *other* app's
+        // process, so the number that matters is how long that app was held up, not how much of
+        // this process's own budget went on it. Nothing outside rotblock can measure that.
+        val readStartNs = System.nanoTime()
         val root = rootInActiveWindow
         if (root == null) {
             trace("read($pkg): rootInActiveWindow null")
@@ -1324,7 +1345,10 @@ class RotblockAccessibilityService : AccessibilityService() {
             } else {
                 null
             }
-            EnforcementStatus.noteRead(pkg, url, feedKey, result, linkUrls.size, signature)
+            EnforcementStatus.noteRead(
+                pkg, url, feedKey, result, linkUrls.size, signature,
+                durationMs = (System.nanoTime() - readStartNs) / 1_000_000,
+            )
 
             // Last resort, after everything above -- including link consensus and the page
             // signature -- has already had its turn and come up with nothing. The reveal never
@@ -1630,8 +1654,75 @@ class RotblockAccessibilityService : AccessibilityService() {
      * the one readout that may not be stale about it.
      */
     private fun evaluateAndEnforce(targetId: String, nowMs: Long) {
+        // Before the work, not after: the onset event's whole value is the trail as it stood
+        // *before* the storm started overwriting it, and evaluateAndEnforceInner writes to that
+        // trail itself.
+        noteEvaluationRate(targetId, nowMs)
         evaluateAndEnforceInner(targetId, nowMs)
         reportStatus()
+    }
+
+    /**
+     * One audit event when the evaluation rate goes pathological and one when it recovers.
+     *
+     * In the healthy case this is two field updates and a comparison on a path that runs a few
+     * times a second -- the cost only appears once the fault has, which is the same bargain
+     * [shouldRecheckForeground]'s throttle makes.
+     */
+    private fun noteEvaluationRate(targetId: String, nowMs: Long) {
+        when (val verdict = evaluationRate.evaluated(nowMs)) {
+            EvaluationRate.Verdict.Quiet -> Unit
+            is EvaluationRate.Verdict.Began -> recordStormBegan(targetId, verdict.perSecond)
+            is EvaluationRate.Verdict.Ended -> recordStormEnded(targetId, verdict)
+        }
+    }
+
+    /**
+     * The wide event: everything that could name the cause, in one row.
+     *
+     * Every field here is one that was wanted and missing while reading back the storms this was
+     * written for -- the gate depth and the friction gate's state because the alternation was
+     * between "one of our screens is up" and "charging", the last read because a target flapping
+     * would show there, and the trail because whatever *started* it happened before the first line
+     * the storm itself wrote.
+     */
+    private fun recordStormBegan(targetId: String, perSecond: Int) {
+        val snapshot = EnforcementStatus.snapshot()
+        val preceding = snapshot.trail
+            .take(STORM_TRAIL_LINES)
+            .joinToString(" | ") { if (it.repeats > 1) "${it.text} x${it.repeats}" else it.text }
+        EnforcementStatus.note("evaluation storm: ${perSecond}/s")
+        audit.record(
+            AuditType.EVALUATION_STORM,
+            targetId = targetId,
+            detail = "storm began at $perSecond/s" +
+                " pkg=${snapshot.currentPackage}" +
+                " gate=${Interstitial.currentDepth}" +
+                " friction=${friction.servedFor}" +
+                " lastRead=${snapshot.lastRead}" +
+                " before: $preceding",
+        )
+    }
+
+    private fun recordStormEnded(targetId: String, ended: EvaluationRate.Verdict.Ended) {
+        EnforcementStatus.note("evaluation storm ended after ${ended.durationMs}ms")
+        audit.record(
+            AuditType.EVALUATION_STORM,
+            targetId = targetId,
+            detail = "storm ended after ${ended.durationMs}ms, ${ended.evaluations} evaluations",
+            durationSeconds = (ended.durationMs / 1000).toInt(),
+        )
+    }
+
+    /**
+     * Brackets a storm that stopped because evaluation stopped -- the target was dropped, the
+     * screen went off, the service went away -- rather than because the rate came down.
+     */
+    private fun settleEvaluationRate(nowMs: Long) {
+        val ended = evaluationRate.settle(nowMs)
+        if (ended is EvaluationRate.Verdict.Ended) {
+            recordStormEnded(currentTargetId ?: "none", ended)
+        }
     }
 
     private fun evaluateAndEnforceInner(targetId: String, nowMs: Long) {
@@ -2303,6 +2394,9 @@ class RotblockAccessibilityService : AccessibilityService() {
     private fun teardown(reason: String) {
         val now = System.currentTimeMillis()
         trace("teardown: $reason")
+        // Before the trail records the disconnect, and before the process likely goes away: a
+        // storm still running at teardown is exactly the one worth having bracketed.
+        settleEvaluationRate(now)
         EnforcementStatus.setConnected(false)
         stopTicking()
         Interstitial.onCleared = null

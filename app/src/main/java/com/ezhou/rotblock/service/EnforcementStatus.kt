@@ -34,6 +34,17 @@ object EnforcementStatus {
         val interstitialShowing: Boolean,
         val lastReadAtMs: Long,
         val lastRead: String?,
+        /**
+         * What the node reads have cost, since this instance connected.
+         *
+         * The one number no `dumpsys` can produce. A tree read is an IPC plus a traversal *in the
+         * foreground app's process*, so the CPU it burns is charged to that app's battery budget,
+         * not to rotblock's -- which means "is this making my phone slow" is invisible from the
+         * outside no matter how carefully rotblock's own usage is measured. This is the inside view.
+         */
+        val readCount: Int = 0,
+        val readTotalMs: Long = 0L,
+        val readMaxMs: Long = 0L,
         val trail: List<Entry>,
         /** Null when workout mode is not live. The deadline it lapses at otherwise. */
         val workoutUntilMs: Long?,
@@ -48,6 +59,9 @@ object EnforcementStatus {
     @Volatile private var interstitialShowing: Boolean = false
     @Volatile private var lastReadAtMs: Long = 0L
     @Volatile private var lastRead: String? = null
+    @Volatile private var readCount: Int = 0
+    @Volatile private var readTotalMs: Long = 0L
+    @Volatile private var readMaxMs: Long = 0L
     @Volatile private var workoutUntilMs: Long? = null
     @Volatile private var workoutSource: String? = null
 
@@ -82,8 +96,12 @@ object EnforcementStatus {
         result: Inspected,
         linkUrls: Int = 0,
         signature: String? = null,
+        durationMs: Long = 0L,
     ) {
         lastReadAtMs = System.currentTimeMillis()
+        readCount++
+        readTotalMs += durationMs
+        if (durationMs > readMaxMs) readMaxMs = durationMs
         lastRead = buildString {
             append(pkg.substringAfterLast('.'))
             if (url != null) append(" bar=\"$url\"")
@@ -104,6 +122,10 @@ object EnforcementStatus {
                     Inspected.Unreadable -> "unreadable (target held)"
                 },
             )
+            // Only when it is worth reading. A read that took no measurable time is the common
+            // case and saying so on every line would push the part that identifies the page off
+            // the end of the Right now panel.
+            if (durationMs > 0) append(" took=${durationMs}ms")
         }
     }
 
@@ -133,6 +155,9 @@ object EnforcementStatus {
         interstitialShowing = interstitialShowing,
         lastReadAtMs = lastReadAtMs,
         lastRead = lastRead,
+        readCount = readCount,
+        readTotalMs = readTotalMs,
+        readMaxMs = readMaxMs,
         trail = synchronized(trail) { trail.toList().asReversed() },
         workoutUntilMs = workoutUntilMs,
         workoutSource = workoutSource,
