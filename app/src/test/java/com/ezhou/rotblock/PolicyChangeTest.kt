@@ -6,6 +6,7 @@ import com.ezhou.rotblock.policy.PolicyChange
 import com.ezhou.rotblock.policy.Schedule
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.policy.TimeBlock
+import com.ezhou.rotblock.policy.formatWindowSeconds
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -185,5 +186,21 @@ class PolicyChangeTest {
             ChangeDirection.WEAKENING,
             classify(p(schedule = WEEKDAYS_10_TO_6), p(enabled = false, schedule = WEEKDAYS_10_TO_6)),
         )
+    }
+}
+
+class WindowFormatTest {
+    @Test
+    fun `round windows read as the unit they are, not as minutes`() {
+        assertEquals("hour", formatWindowSeconds(3_600))
+        assertEquals("day", formatWindowSeconds(86_400))
+        assertEquals("2 hr", formatWindowSeconds(7_200))
+        assertEquals("2 days", formatWindowSeconds(172_800))
+    }
+
+    @Test
+    fun `a typed window that is no round unit stays in minutes`() {
+        assertEquals("30 min", formatWindowSeconds(1_800))
+        assertEquals("90 min", formatWindowSeconds(5_400))
     }
 }

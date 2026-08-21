@@ -62,3 +62,20 @@ data class Policy(
         }
     }
 }
+
+/**
+ * A rolling window as it reads in a sentence: "3 min per **hour**", "3 min in any **90 min**".
+ *
+ * Windows are arbitrary now that the editor takes a typed number, and the units they are written
+ * in are not the units they read best in -- a day spelled out in minutes is 1440 of them.
+ */
+fun formatWindowSeconds(seconds: Int): String {
+    val minutes = seconds / 60
+    return when {
+        minutes == 60 -> "hour"
+        minutes == 24 * 60 -> "day"
+        minutes % (24 * 60) == 0 -> "${minutes / (24 * 60)} days"
+        minutes % 60 == 0 -> "${minutes / 60} hr"
+        else -> "$minutes min"
+    }
+}

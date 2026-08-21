@@ -51,6 +51,13 @@ class FrictionActivity : ComponentActivity() {
         const val EXTRA_LABEL = "label"
         const val EXTRA_SECONDS = "seconds"
 
+        /**
+         * The longest countdown this screen will serve. The rule editor offers the same ceiling,
+         * because a rule allowed to ask for more would be silently clamped here and the block
+         * screen would then promise a wait it never makes you serve.
+         */
+        const val MAX_SECONDS = 120
+
         /** The target this countdown covers, reported back to the service. See [FrictionGate]. */
         const val EXTRA_TARGET = "target"
 
@@ -79,7 +86,7 @@ class FrictionActivity : ComponentActivity() {
     private fun covering(intent: Intent) = Covering(
         targetId = intent.getStringExtra(EXTRA_TARGET),
         label = intent.getStringExtra(EXTRA_LABEL) ?: "this",
-        seconds = intent.getIntExtra(EXTRA_SECONDS, 5).coerceIn(1, 120),
+        seconds = intent.getIntExtra(EXTRA_SECONDS, 5).coerceIn(1, MAX_SECONDS),
         browser = intent.getStringExtra(EXTRA_BROWSER),
     )
 

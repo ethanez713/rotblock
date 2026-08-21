@@ -77,7 +77,7 @@ object PolicyChange {
 
     private fun describeAllowance(policy: Policy): String {
         val allowance = policy.quotaSeconds
-            ?.let { "${it / 60} min per ${policy.windowSeconds / 60} min" }
+            ?.let { "${it / 60} min per ${formatWindowSeconds(policy.windowSeconds)}" }
             ?: "a full block"
         val hours = policy.schedule.describe() ?: return allowance
         return "$allowance, $hours"

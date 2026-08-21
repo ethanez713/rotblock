@@ -50,6 +50,7 @@ import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.insights.RuleEffect
 import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicySort
+import com.ezhou.rotblock.policy.formatWindowSeconds
 import com.ezhou.rotblock.policy.sortedFor
 import com.ezhou.rotblock.setup.blocking
 import com.ezhou.rotblock.workout.WorkoutMode
@@ -662,11 +663,10 @@ private fun PolicyUsage.statusLine(nowMs: Long, inactive: Boolean): String {
 
 private fun Policy.describeRule(): String {
     val allowance = quotaSeconds?.let { quota ->
-        val window = windowSeconds / 60
         val minutes = quota / 60
         val seconds = quota % 60
         val amount = if (seconds == 0) "$minutes min" else "$minutes min ${seconds}s"
-        "$amount in any $window min"
+        "$amount in any ${formatWindowSeconds(windowSeconds)}"
     } ?: "Blocked completely"
     val base = schedule.describe()?.let { "$allowance · $it" } ?: allowance
     return if (enabled) base else "$base (off)"

@@ -9,6 +9,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -312,13 +314,26 @@ private val QUOTA_PRESETS = listOf<Pair<String, Int?>>(
     "20 min" to 1_200,
 )
 
-private val WINDOW_PRESETS = listOf(
+private val WINDOW_PRESETS = listOf<Pair<String, Int?>>(
     "per hour" to 3_600,
     "per 30 min" to 1_800,
     "per day" to 86_400,
 )
 
-private val FRICTION_PRESETS = listOf("None" to 0, "5s" to 5, "10s" to 10, "20s" to 20)
+private val FRICTION_PRESETS =
+    listOf<Pair<String, Int?>>("None" to 0, "5s" to 5, "10s" to 10, "20s" to 20)
+
+private const val SECONDS_PER_MINUTE = 60
+
+private const val MAX_QUOTA_MINUTES = 24 * 60
+
+/**
+ * A rolling window can only be as long as the usage still on disk. Past
+ * [com.ezhou.rotblock.quota.USAGE_RETENTION_MS] the old sessions are pruned, so a window reaching
+ * further back would find nothing there and hand the time back rather than count it — a quota that
+ * quietly stops running out. A week is well inside it.
+ */
+private const val MAX_WINDOW_MINUTES = 7 * 24 * 60
 
 @Composable
 private fun RuleEditor(
@@ -337,7 +352,18 @@ private fun RuleEditor(
     var frictionSeconds by remember { mutableStateOf(existing?.frictionSeconds ?: 0) }
     var grayscale by remember { mutableStateOf(existing?.grayscale ?: false) }
     var schedule by remember { mutableStateOf(existing?.schedule ?: Schedule.ALWAYS) }
-    var customMinutes by remember { mutableStateOf("") }
+    // Seeded rather than started empty: a rule already carrying a typed value has to come back into
+    // the field it was typed in, or the editor opens with no chip lit at all and reads as if the
+    // value were unset while the rule still holds it.
+    var quotaCustom by remember {
+        mutableStateOf(customTextFor(quotaSeconds, QUOTA_PRESETS, SECONDS_PER_MINUTE))
+    }
+    var windowCustom by remember {
+        mutableStateOf(customTextFor(windowSeconds, WINDOW_PRESETS, SECONDS_PER_MINUTE))
+    }
+    var frictionCustom by remember {
+        mutableStateOf(customTextFor(frictionSeconds, FRICTION_PRESETS, 1))
+    }
 
     // Scrollable since the schedule rows landed: with two of them this is taller than a phone, and
     // the confirm button is the part that goes off the bottom.
@@ -360,54 +386,29 @@ private fun RuleEditor(
 
         Text("How much?", style = MaterialTheme.typography.titleSmall)
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            QUOTA_PRESETS.take(3).forEach { (label, seconds) ->
-                FilterChip(
-                    selected = quotaSeconds == seconds,
-                    onClick = { quotaSeconds = seconds; customMinutes = "" },
-                    label = { Text(label) },
-                )
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            QUOTA_PRESETS.drop(3).forEach { (label, seconds) ->
-                FilterChip(
-                    selected = quotaSeconds == seconds,
-                    onClick = { quotaSeconds = seconds; customMinutes = "" },
-                    label = { Text(label) },
-                )
-            }
-            // A chip-shaped field, so the custom option reads as one more choice in the row rather
-            // than a form control that wandered in. An OutlinedTextField cannot be made this short
-            // without clipping its own label, so it carries a suffix instead.
-            CustomMinutesChip(
-                value = customMinutes,
-                selected = customMinutes.isNotEmpty() && quotaSeconds == customMinutes.toIntOrNull()?.times(60),
-                onValueChange = { text ->
-                    customMinutes = text.filter { it.isDigit() }.take(4)
-                    quotaSeconds = customMinutes.toIntOrNull()?.times(60)
-                },
-            )
-        }
+        DurationChoices(
+            presets = QUOTA_PRESETS,
+            value = quotaSeconds,
+            custom = quotaCustom,
+            unit = "min",
+            unitSeconds = SECONDS_PER_MINUTE,
+            maxUnits = MAX_QUOTA_MINUTES,
+            onChange = { seconds, text -> quotaSeconds = seconds; quotaCustom = text },
+        )
 
         if (quotaSeconds != null) {
             Spacer(Modifier.height(20.dp))
             Text("Out of every", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                WINDOW_PRESETS.forEach { (label, seconds) ->
-                    FilterChip(
-                        selected = windowSeconds == seconds,
-                        onClick = { windowSeconds = seconds },
-                        label = { Text(label) },
-                    )
-                }
-            }
+            DurationChoices(
+                presets = WINDOW_PRESETS,
+                value = windowSeconds,
+                custom = windowCustom,
+                unit = "min",
+                unitSeconds = SECONDS_PER_MINUTE,
+                maxUnits = MAX_WINDOW_MINUTES,
+                onChange = { seconds, text -> windowSeconds = seconds ?: 0; windowCustom = text },
+            )
             Spacer(Modifier.height(8.dp))
             Hint("Rolling window — time comes back gradually, with no top-of-the-hour refill.")
         }
@@ -418,15 +419,15 @@ private fun RuleEditor(
         Spacer(Modifier.height(20.dp))
         Text("Before it opens", style = MaterialTheme.typography.titleSmall)
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FRICTION_PRESETS.forEach { (label, seconds) ->
-                FilterChip(
-                    selected = frictionSeconds == seconds,
-                    onClick = { frictionSeconds = seconds },
-                    label = { Text(label) },
-                )
-            }
-        }
+        DurationChoices(
+            presets = FRICTION_PRESETS,
+            value = frictionSeconds,
+            custom = frictionCustom,
+            unit = "s",
+            unitSeconds = 1,
+            maxUnits = FrictionActivity.MAX_SECONDS,
+            onChange = { seconds, text -> frictionSeconds = seconds ?: 0; frictionCustom = text },
+        )
         Spacer(Modifier.height(6.dp))
         Hint("A blank countdown first. Always lets you through.")
 
@@ -454,6 +455,18 @@ private fun RuleEditor(
             Hint("Loosening waits out the delay. Tightening applies now.")
         }
 
+        // Said out loud rather than left to a greyed-out button, because two of the three ways to
+        // reach it look like perfectly ordinary numbers.
+        val refusal = refuseToSave(quotaSeconds, windowSeconds)
+        refusal?.let {
+            Spacer(Modifier.height(16.dp))
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
         Spacer(Modifier.height(24.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -470,21 +483,118 @@ private fun RuleEditor(
                         RuleDraft(quotaSeconds, windowSeconds, frictionSeconds, grayscale, schedule),
                     )
                 },
-                enabled = quotaSeconds == null || (quotaSeconds ?: 0) > 0,
+                enabled = refusal == null,
             ) { Text(if (existing != null) "Save changes" else "Add block") }
         }
     }
 }
 
 /**
- * The "any number of minutes" option, dressed as the chip it sits beside.
+ * Why this draft cannot be saved, or null.
  *
- * Its own selected state is derived from the quota rather than stored: typing here sets the quota,
- * and picking a preset clears the text, so there is nothing to keep in sync.
+ * The last case is the one worth refusing rather than warning about: an allowance at least as long
+ * as the window it is measured over can never run out, so the rule would sit in the list looking
+ * like protection while blocking nothing. Typed numbers make it reachable in a way three chips
+ * never did.
+ */
+private fun refuseToSave(quotaSeconds: Int?, windowSeconds: Int): String? = when {
+    quotaSeconds == null -> null
+    quotaSeconds <= 0 -> "Choose how long, or block completely."
+    windowSeconds <= 0 -> "Give the window a length."
+    quotaSeconds >= windowSeconds -> "That is the whole window, so this would never block."
+    else -> null
+}
+
+/**
+ * A row of preset durations plus a field for anything else.
+ *
+ * [custom] rather than the value is what decides which chip looks selected, so typing a number that
+ * happens to equal a preset does not light two chips at once — and clearing the field leaves the
+ * value at zero, which [refuseToSave] catches, rather than silently falling back to whichever chip
+ * the number used to match.
+ *
+ * That pairing is why [onChange] reports both halves rather than one callback per control: the two
+ * are only ever right together, and a preset that set the value without clearing the text left the
+ * typed chip lit over a number the rule no longer carried.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DurationChoices(
+    presets: List<Pair<String, Int?>>,
+    value: Int?,
+    custom: String,
+    unit: String,
+    unitSeconds: Int,
+    maxUnits: Int,
+    onChange: (seconds: Int?, custom: String) -> Unit,
+) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        presets.forEach { (label, seconds) ->
+            FilterChip(
+                selected = custom.isEmpty() && value == seconds,
+                onClick = { onChange(seconds, "") },
+                label = { Text(label) },
+            )
+        }
+        CustomDurationChip(
+            value = custom,
+            unit = unit,
+            selected = custom.isNotEmpty(),
+            onValueChange = { typed ->
+                acceptDigits(typed, maxUnits)?.let { digits ->
+                    onChange((digits.toIntOrNull() ?: 0) * unitSeconds, digits)
+                }
+            },
+        )
+    }
+}
+
+/**
+ * The digits of an edit to a custom duration field, or null to refuse the edit outright.
+ *
+ * Refusing is what keeps the number in the field and the number the rule carries the same thing: a
+ * clamped entry would sit there reading 300 while the rule meant 120, and every readout in this app
+ * is only worth having if it cannot lie about time.
+ */
+private fun acceptDigits(typed: String, maxUnits: Int): String? {
+    val digits = typed.filter { it.isDigit() }
+    if (digits.isEmpty()) return ""
+    val units = digits.toIntOrNull() ?: return null
+    return if (units <= maxUnits) digits else null
+}
+
+/**
+ * What the custom field should start out holding for a value a rule already carries: nothing when a
+ * preset covers it, so the preset is what lights up, and nothing for a value this field could not
+ * express exactly, which the rule keeps until something is typed over it.
+ */
+private fun customTextFor(
+    seconds: Int?,
+    presets: List<Pair<String, Int?>>,
+    unitSeconds: Int,
+): String =
+    when {
+        seconds == null || seconds <= 0 -> ""
+        presets.any { it.second == seconds } -> ""
+        seconds % unitSeconds != 0 -> ""
+        else -> (seconds / unitSeconds).toString()
+    }
+
+/**
+ * The "any other number" option, dressed as the chip it sits beside.
+ *
+ * A chip-shaped field, so it reads as one more choice in the row rather than a form control that
+ * wandered in. An OutlinedTextField cannot be made this short without clipping its own label, so
+ * this carries [unit] as a suffix instead.
  */
 @Composable
-private fun CustomMinutesChip(
+private fun CustomDurationChip(
     value: String,
+    unit: String,
     selected: Boolean,
     onValueChange: (String) -> Unit,
 ) {
@@ -525,7 +635,7 @@ private fun CustomMinutesChip(
                 modifier = Modifier.widthIn(min = 30.dp),
             )
         }
-        Text(" min", style = style, color = content)
+        Text(" $unit", style = style, color = content)
     }
 }
 
