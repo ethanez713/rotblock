@@ -220,3 +220,53 @@ fun shouldRecheckForeground(
     if (!relevant) return false
     return nowMs - lastRecheckAtMs >= minIntervalMs
 }
+
+/** What [verifyEscapeOutcome] concluded about an escape attempt. */
+enum class EscapeVerdict { ESCAPED, REFUSED, UNCONFIRMED }
+
+/**
+ * Whether an escape actually took, without collapsing "nobody has looked yet" into "the browser
+ * refused" -- the same [Inspected.Unreadable]-vs-[Inspected.AppOnly] distinction this file draws
+ * everywhere else, applied to the one place it was still missing.
+ *
+ * The original check re-blocked whenever [currentTargetId] was still [escapedTargetId] a fixed
+ * delay after the escape, whatever caused that: a browser that genuinely refused to navigate, or a
+ * run of reads that never got past `window belongs to com.android.systemui` and so never looked at
+ * the browser at all. A device capture showed the second case: four escapes in 24 seconds, every
+ * verify window landing on a transient system window, five re-blocks, and the browser sitting on
+ * the loopback URL the whole time -- the escape had worked every single time.
+ *
+ * [lastWindowReadAtMs] is the timestamp of the last read that got far enough to inspect the
+ * package's own window -- see [RotblockAccessibilityService.resolveInspectedTarget] -- as opposed
+ * to one that bounced off a null or foreign `rootInActiveWindow`. Only that counts as evidence:
+ *
+ * - The target having moved is conclusive on its own, however stale the read clock is: `ESCAPED`.
+ * - A read that landed *after* the escape and still names [escapedTargetId] is positive evidence
+ *   the page did not move: `REFUSED`.
+ * - Nothing readable yet is not evidence of anything. Re-blocking on it would punish an escape that
+ *   worked for the crime of nobody having looked, which is the exact bug this replaces -- so it
+ *   answers `UNCONFIRMED` and waits for another window, up to [maxAttempts] of them.
+ *
+ * `UNCONFIRMED` is not a fail-open: it is bounded by [maxAttempts], the screen is on and the user
+ * is standing in front of it, and once the bound is hit this answers `REFUSED` and the block comes
+ * back regardless of what has or has not been readable. The alternative -- waiting forever for a
+ * read that a broken registry or a permanently obstructed window might never produce -- is the
+ * shape of failure this app may not have; the direction this trades away instead is a few extra
+ * seconds of unmetered time on a page the user has, in every observed case, already left.
+ *
+ * A read landing at exactly [escapedAtMs] is not evidence about anything that happened *after* the
+ * escape, so the comparison is strictly greater-than.
+ */
+fun verifyEscapeOutcome(
+    escapedTargetId: String,
+    currentTargetId: String?,
+    escapedAtMs: Long,
+    lastWindowReadAtMs: Long,
+    attempt: Int,
+    maxAttempts: Int,
+): EscapeVerdict = when {
+    currentTargetId != escapedTargetId -> EscapeVerdict.ESCAPED
+    lastWindowReadAtMs > escapedAtMs -> EscapeVerdict.REFUSED
+    attempt >= maxAttempts -> EscapeVerdict.REFUSED
+    else -> EscapeVerdict.UNCONFIRMED
+}

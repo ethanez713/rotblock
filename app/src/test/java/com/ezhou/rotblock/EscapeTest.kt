@@ -2,6 +2,9 @@ package com.ezhou.rotblock
 
 import com.ezhou.rotblock.block.escapeLabelFor
 import com.ezhou.rotblock.policy.TargetKind
+import com.ezhou.rotblock.service.EscapeVerdict
+import com.ezhou.rotblock.service.verifyEscapeOutcome
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -38,5 +41,120 @@ class EscapeTest {
         // escapeLabelFor is an exhaustive `when`, so this fails to compile rather than fails at
         // runtime if a kind is added -- but the assertion keeps the intent visible here too.
         TargetKind.entries.forEach { escapeLabelFor(it) }
+    }
+
+    /**
+     * verifyEscapeOutcome must not collapse "nobody has looked yet" into "the browser refused" --
+     * the bug a real device capture caught: four escapes in 24 seconds, every verify window
+     * bouncing off a transient systemui window, five re-blocks on a browser that had escaped every
+     * single time.
+     */
+
+    @Test
+    fun `the target moving is escaped, whatever the read timestamps say`() {
+        assertEquals(
+            EscapeVerdict.ESCAPED,
+            verifyEscapeOutcome(
+                escapedTargetId = "reddit",
+                currentTargetId = "other",
+                escapedAtMs = 10_000L,
+                lastWindowReadAtMs = 0L,
+                attempt = 1,
+                maxAttempts = 3,
+            ),
+        )
+        assertEquals(
+            EscapeVerdict.ESCAPED,
+            verifyEscapeOutcome(
+                escapedTargetId = "reddit",
+                currentTargetId = null,
+                escapedAtMs = 10_000L,
+                lastWindowReadAtMs = 20_000L,
+                attempt = 3,
+                maxAttempts = 3,
+            ),
+        )
+    }
+
+    @Test
+    fun `a read landing after the escape with the target unchanged is refused on the first attempt`() {
+        assertEquals(
+            EscapeVerdict.REFUSED,
+            verifyEscapeOutcome(
+                escapedTargetId = "reddit",
+                currentTargetId = "reddit",
+                escapedAtMs = 10_000L,
+                lastWindowReadAtMs = 10_500L,
+                attempt = 1,
+                maxAttempts = 3,
+            ),
+        )
+    }
+
+    @Test
+    fun `a read that predates the escape is not evidence`() {
+        assertEquals(
+            EscapeVerdict.UNCONFIRMED,
+            verifyEscapeOutcome(
+                escapedTargetId = "reddit",
+                currentTargetId = "reddit",
+                escapedAtMs = 10_000L,
+                lastWindowReadAtMs = 9_000L,
+                attempt = 1,
+                maxAttempts = 3,
+            ),
+        )
+    }
+
+    @Test
+    fun `no read at all is unconfirmed until the bound is hit, then refused`() {
+        assertEquals(
+            EscapeVerdict.UNCONFIRMED,
+            verifyEscapeOutcome(
+                escapedTargetId = "reddit",
+                currentTargetId = "reddit",
+                escapedAtMs = 10_000L,
+                lastWindowReadAtMs = 0L,
+                attempt = 1,
+                maxAttempts = 3,
+            ),
+        )
+        assertEquals(
+            EscapeVerdict.UNCONFIRMED,
+            verifyEscapeOutcome(
+                escapedTargetId = "reddit",
+                currentTargetId = "reddit",
+                escapedAtMs = 10_000L,
+                lastWindowReadAtMs = 0L,
+                attempt = 2,
+                maxAttempts = 3,
+            ),
+        )
+        assertEquals(
+            EscapeVerdict.REFUSED,
+            verifyEscapeOutcome(
+                escapedTargetId = "reddit",
+                currentTargetId = "reddit",
+                escapedAtMs = 10_000L,
+                lastWindowReadAtMs = 0L,
+                attempt = 3,
+                maxAttempts = 3,
+            ),
+        )
+    }
+
+    @Test
+    fun `a read landing exactly at the escape timestamp is not evidence about what happened after`() {
+        assertEquals(
+            EscapeVerdict.UNCONFIRMED,
+            verifyEscapeOutcome(
+                escapedTargetId = "reddit",
+                currentTargetId = "reddit",
+                escapedAtMs = 10_000L,
+                lastWindowReadAtMs = 10_000L,
+                attempt = 1,
+                maxAttempts = 3,
+            ),
+        )
     }
 }

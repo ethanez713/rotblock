@@ -189,6 +189,18 @@ private const val MIN_PAGE_SCAN_INTERVAL_MS = 3_000L
 private const val ESCAPE_VERIFY_MS = 3_000L
 
 /**
+ * How many [ESCAPE_VERIFY_MS] windows [verifyEscaped] will wait for a read that actually inspected
+ * the browser's own window before it gives up and re-blocks with nothing readable at all.
+ *
+ * Three windows is nine seconds of worst-case unmetered time on a page that, in every observed
+ * case, had already been left -- weighed against a false re-block the user cannot get past by
+ * doing anything right. [ESCAPE_VERIFY_MS] already makes this trade in the other direction (early
+ * costs a block the next read lifts again; late costs unmetered time); this is the same trade,
+ * bounded, for the case that check never anticipated: nobody looking at all.
+ */
+private const val ESCAPE_VERIFY_ATTEMPTS = 3
+
+/**
  * How long a reveal tap is given before the next read is requested. Long enough for the toolbar
  * animation to finish and settle; short enough that the visit is not left unread for a full tick.
  */
@@ -400,6 +412,14 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     @Volatile private var currentTargetId: String? = null
 
+    /**
+     * Written on the inspector coroutine the moment a read gets far enough to inspect the target
+     * package's own window -- past the null-root and wrong-package guards in
+     * [resolveInspectedTarget], whatever it goes on to conclude. Read on the main thread by
+     * [verifyEscaped], hence volatile.
+     */
+    @Volatile private var lastWindowReadAtMs = 0L
+
     /** Inspector coroutine only. A duplicated scan would be harmless, so no synchronisation. */
     private var lastPageScanMs = 0L
 
@@ -598,7 +618,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 handler.post { guard("frictionDeclined") {
                     trace("friction declined for $targetId")
                     noteEscaped(targetId)
-                    verifyEscaped(targetId)
+                    verifyEscaped(targetId, System.currentTimeMillis())
                 } }
             }
 
@@ -1173,6 +1193,8 @@ class RotblockAccessibilityService : AccessibilityService() {
                 EnforcementStatus.note("read $pkg: window belongs to ${root.packageName} (target held)")
                 return Inspected.Unreadable
             }
+
+            lastWindowReadAtMs = System.currentTimeMillis()
 
             val feedSpecs = FeedRegistry.specsFor(pkg)
             val feedKey = feedSpecs
@@ -1856,7 +1878,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         return Escape(label) {
             leave()
             noteEscaped(policy.id)
-            verifyEscaped(policy.id)
+            verifyEscaped(policy.id, System.currentTimeMillis())
         }
     }
 
@@ -1880,7 +1902,8 @@ class RotblockAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Checks that the escape actually escaped, and re-blocks if it did not.
+     * Checks that the escape actually escaped, and re-blocks if a read that actually inspected the
+     * browser's own window says it did not.
      *
      * The escape hides the block screen and then *asks* an app to go somewhere else. Nothing
      * guarantees the app agrees: Samsung Internet answered an `about:blank` intent with an
@@ -1889,23 +1912,56 @@ class RotblockAccessibilityService : AccessibilityService() {
      * next successful address-bar read, and a page you scroll does not produce one -- so a tap on
      * "Leave this site" bought unlimited browsing on the site that had just run out of time.
      *
-     * A request that hides a block must therefore carry its own proof of success. This is the
-     * proof, and it fails closed: if the target is still the one we tried to leave when the check
-     * lands, enforcement comes straight back. A successful escape clears the target by then --
-     * either from the browser's own content-change events or from [requestInspect] below -- and
-     * this finds nothing to do.
+     * A request that hides a block must therefore carry its own proof of success -- but "no read
+     * landed" is not proof of anything. A device capture caught the old version of this re-blocking
+     * a browser that had already escaped, four times in 24 seconds, because every read in the
+     * verify window bounced off a transient `com.android.systemui` window and never got as far as
+     * inspecting the browser at all. [verifyEscapeOutcome] tells that apart from an actual refusal
+     * using [lastWindowReadAtMs], and [attempt]/[ESCAPE_VERIFY_ATTEMPTS] bound how long "nobody has
+     * looked yet" gets to keep meaning that before it is treated as a refusal regardless.
+     *
+     * [escapedAtMs] is captured once, at the escape, and threaded through every re-armed attempt
+     * unchanged -- the question is always "has anything been readable since the escape happened",
+     * not "since the last time this fired".
+     *
+     * Two [requestInspect] calls rather than one: reads are already debounced and rate-limited by
+     * the inspector loop, so the second costs at most one more `rootInActiveWindow` read, and it
+     * stops a single transient non-browser window from consuming the whole verify budget.
      *
      * Deliberately a delayed post and not a scheduled job: the screen is on and the user is
      * standing right there, so nothing needs to survive the process. If it is lost, the target
      * simply stays blocked.
      */
-    private fun verifyEscaped(targetId: String) {
+    private fun verifyEscaped(targetId: String, escapedAtMs: Long, attempt: Int = 1) {
         currentPackage?.let { requestInspect(it) }
         handler.postDelayed({
+            guard("verifyEscapeInspect") {
+                currentPackage?.let { requestInspect(it) }
+            }
+        }, ESCAPE_VERIFY_MS / 2)
+        handler.postDelayed({
             guard("verifyEscaped") {
-                if (currentTargetId != targetId) return@guard
-                trace("escape from $targetId did not take, re-blocking")
-                evaluateAndEnforce(targetId, System.currentTimeMillis())
+                when (
+                    verifyEscapeOutcome(
+                        escapedTargetId = targetId,
+                        currentTargetId = currentTargetId,
+                        escapedAtMs = escapedAtMs,
+                        lastWindowReadAtMs = lastWindowReadAtMs,
+                        attempt = attempt,
+                        maxAttempts = ESCAPE_VERIFY_ATTEMPTS,
+                    )
+                ) {
+                    EscapeVerdict.ESCAPED -> return@guard
+                    EscapeVerdict.UNCONFIRMED -> {
+                        EnforcementStatus.note("escape from $targetId: nothing readable yet, still waiting")
+                        verifyEscaped(targetId, escapedAtMs, attempt + 1)
+                    }
+                    EscapeVerdict.REFUSED -> {
+                        trace("escape from $targetId did not take, re-blocking")
+                        EnforcementStatus.note("escape from $targetId did not take, re-blocking")
+                        evaluateAndEnforce(targetId, System.currentTimeMillis())
+                    }
+                }
             }
         }, ESCAPE_VERIFY_MS)
     }
