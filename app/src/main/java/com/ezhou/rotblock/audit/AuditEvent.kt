@@ -57,8 +57,14 @@ enum class AuditType {
 }
 
 /**
- * Append-only. There is deliberately no update or delete path anywhere above the DAO -- a log you
- * can quietly tidy up is not an accountability record.
+ * Append-only, with one exception that is deliberately shaped so it cannot become a tidy-up.
+ *
+ * There is no update path anywhere, and the only delete is
+ * [com.ezhou.rotblock.audit.AUDIT_RETENTION_MS]: a blanket cutoff on age, applied to every event
+ * equally. That distinction is the whole of it. A log you can quietly tidy up is not an
+ * accountability record -- but "tidying up" means reaching in and removing *the inconvenient
+ * event*, and a rule that takes only a timestamp cannot be aimed at one. Nothing in the app
+ * deletes by id, by type, or by target, and nothing should be added that does.
  */
 @Entity(tableName = "audit_events")
 data class AuditEvent(

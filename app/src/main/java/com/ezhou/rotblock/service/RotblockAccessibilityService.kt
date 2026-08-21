@@ -669,6 +669,9 @@ class RotblockAccessibilityService : AccessibilityService() {
             watchJob = scope.launch {
                 ledger.load(System.currentTimeMillis())
                 ledger.prune(System.currentTimeMillis())
+                // Same opportunistic slot, for the same reason: this is the one path that runs on
+                // every connect, and nothing here may arm a job to do it on a schedule.
+                audit.prune(System.currentTimeMillis())
                 pause.refresh()
 
                 // Read once rather than from the settings flow below: the flow re-emits on every

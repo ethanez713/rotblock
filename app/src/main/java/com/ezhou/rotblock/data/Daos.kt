@@ -47,7 +47,7 @@ interface UsageDao {
     suspend fun prune(beforeMs: Long)
 }
 
-/** Insert-and-read only, on purpose. See [AuditEvent]. */
+/** Insert, read, and a blanket retention delete. Nothing else, on purpose. See [AuditEvent]. */
 @Dao
 interface AuditDao {
     @Insert
@@ -66,4 +66,11 @@ interface AuditDao {
     /** Dedupe anchor for events that are detected late; see `PauseController.noteExpiryIfNeeded`. */
     @Query("SELECT MAX(tsMs) FROM audit_events WHERE type = :type")
     suspend fun lastTimestampOf(type: String): Long?
+
+    /**
+     * Retention only. The one delete on this table, and it takes a cutoff rather than an id or a
+     * type on purpose -- see [com.ezhou.rotblock.audit.AUDIT_RETENTION_MS].
+     */
+    @Query("DELETE FROM audit_events WHERE tsMs < :beforeMs")
+    suspend fun prune(beforeMs: Long)
 }
