@@ -60,6 +60,7 @@ class ExportTest {
             override suspend fun recent(limit: Int) = error("unused in export")
             override suspend fun since(sinceMs: Long) = events
             override suspend fun lastTimestampOf(type: String): Long? = error("unused in export")
+            override suspend fun prune(beforeMs: Long) = error("unused in export")
         }
 
         override fun pendingChangeDao() = object : PendingChangeDao {
