@@ -2127,7 +2127,11 @@ class RotblockAccessibilityService : AccessibilityService() {
             overlay.hide()
             startActivity(
                 Intent(this, PauseRequestActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                    // No CLEAR_TASK: the activity is singleTask, so a second request while a
+                    // cooldown is already running reaches the live instance through onNewIntent
+                    // instead of destroying and recreating it -- which is what lets the cooldown
+                    // keep counting rather than restarting from the top on a repeat tap.
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     .putExtra(PauseRequestActivity.EXTRA_TARGET_LABEL, policy.label),
             )
         }

@@ -1,5 +1,6 @@
 package com.ezhou.rotblock.ui
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -87,17 +88,31 @@ class PauseRequestActivity : ComponentActivity() {
         Interstitial.exited()
     }
 
+    /**
+     * The activity is `singleTask` and no longer launched with `CLEAR_TASK`, so asking for a
+     * pause again while one is already in flight reaches this live instance instead of a fresh
+     * one -- see the comment on the launch site. `getIntent()` would otherwise go on returning
+     * the first request's extras, naming whatever was blocked ten minutes ago.
+     */
+    private var targetLabel by mutableStateOf<String?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        targetLabel = intent.getStringExtra(EXTRA_TARGET_LABEL)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        val label = intent.getStringExtra(EXTRA_TARGET_LABEL)
+        targetLabel = intent.getStringExtra(EXTRA_TARGET_LABEL)
         viewModel.refresh()
         setContent {
             RotblockTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
                     PauseRequestScreen(
                         viewModel = viewModel,
-                        targetLabel = label,
+                        targetLabel = targetLabel,
                         onDone = { finish() },
                     )
                 }
