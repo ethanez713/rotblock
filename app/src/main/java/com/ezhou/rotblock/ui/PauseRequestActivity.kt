@@ -43,7 +43,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditType
@@ -287,14 +290,25 @@ private fun CoolingStep(
     onEmergency: () -> Unit,
     onAbandon: () -> Unit,
 ) {
-    LaunchedEffect(Unit) {
-        var left = secondsLeft
-        while (left > 0) {
-            delay(1_000)
-            left -= 1
+    // A LaunchedEffect coroutine runs on composition, not on the activity's lifecycle, so a plain
+    // `LaunchedEffect(Unit)` here kept counting -- and committed a real pause -- while the screen
+    // was stopped and the user was elsewhere. repeatOnLifecycle cancels on STOP and restarts on
+    // START, and it restarts from totalSeconds rather than resuming secondsLeft on purpose: the
+    // cooldown exists to outlast the impulse that asked for the pause, and time spent away from
+    // this screen is not time spent waiting it out, the same reasoning FrictionActivity's own
+    // countdown documents for itself.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner, totalSeconds) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            var left = totalSeconds
             onTick(left)
+            while (left > 0) {
+                delay(1_000)
+                left -= 1
+                onTick(left)
+            }
+            onFinished()
         }
-        onFinished()
     }
 
     val progress by animateFloatAsState(
