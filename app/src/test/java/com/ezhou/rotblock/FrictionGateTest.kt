@@ -44,7 +44,9 @@ class FrictionGateTest {
         val gate = FrictionGate()
         gate.launched(target, 0)
         gate.appeared(target)
-        // Back pressed: the screen is gone and the wait was never served.
+        // Back pressed: the screen actually left (onStop reports it), and the wait was never
+        // served. Well past the relaunch throttle, so this is a genuine re-show.
+        gate.hidden(target)
         assertTrue(gate.shouldLaunch(target, interstitialShowing = false, nowMs = 2_000))
     }
 
@@ -56,6 +58,7 @@ class FrictionGateTest {
             assertTrue(gate.shouldLaunch(target, interstitialShowing = false, nowMs = now))
             gate.launched(target, now)
             gate.appeared(target)
+            gate.hidden(target)
             now += 2_000
         }
         assertTrue(gate.shouldLaunch(target, interstitialShowing = false, nowMs = now))
@@ -137,5 +140,44 @@ class FrictionGateTest {
     fun `the pause flow does not get a countdown stacked on it`() {
         val gate = FrictionGate()
         assertFalse(gate.shouldLaunch(target, interstitialShowing = true, nowMs = 0))
+    }
+
+    @Test
+    fun `a screen still on screen is not relaunched even on a transient gate reading`() {
+        // The device-observed failure: Interstitial's depth flips to 0 for an instant with the
+        // countdown still genuinely up. shouldLaunch must not trust that momentary reading over
+        // the screen's own report of itself.
+        val gate = FrictionGate()
+        gate.launched(target, 0)
+        gate.appeared(target)
+        assertFalse(gate.shouldLaunch(target, interstitialShowing = false, nowMs = 50))
+    }
+
+    @Test
+    fun `a relaunch is throttled for a beat after the screen goes away`() {
+        val gate = FrictionGate()
+        gate.launched(target, 0)
+        gate.appeared(target)
+        gate.hidden(target)
+        assertFalse(gate.shouldLaunch(target, interstitialShowing = false, nowMs = 999))
+        assertTrue(gate.shouldLaunch(target, interstitialShowing = false, nowMs = 1_000))
+    }
+
+    @Test
+    fun `hiding a different target leaves the current one marked on screen`() {
+        val gate = FrictionGate()
+        gate.launched(target, 0)
+        gate.appeared(target)
+        gate.hidden("app:com.instagram.android")
+        assertFalse(gate.shouldLaunch(target, interstitialShowing = false, nowMs = 50))
+    }
+
+    @Test
+    fun `endVisit clears the on-screen mark`() {
+        val gate = FrictionGate()
+        gate.launched(target, 0)
+        gate.appeared(target)
+        gate.endVisit()
+        assertTrue(gate.shouldLaunch(target, interstitialShowing = false, nowMs = 10))
     }
 }

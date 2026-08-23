@@ -121,6 +121,7 @@ class FrictionActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         Interstitial.exited()
+        covering.targetId?.let { FrictionGate.onHidden?.invoke(it) }
     }
 
     /** A relaunch onto a live instance. Re-entry restarts the wait; [onStart] follows. */

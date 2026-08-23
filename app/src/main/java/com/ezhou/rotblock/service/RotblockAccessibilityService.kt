@@ -621,6 +621,9 @@ class RotblockAccessibilityService : AccessibilityService() {
             FrictionGate.onShown = { targetId ->
                 handler.post { guard("frictionShown") { friction.appeared(targetId) } }
             }
+            FrictionGate.onHidden = { targetId ->
+                handler.post { guard("frictionHidden") { friction.hidden(targetId) } }
+            }
             FrictionGate.onServed = { targetId ->
                 handler.post { guard("frictionServed") {
                     trace("friction served for $targetId")
@@ -2100,6 +2103,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             return
         }
         trace("friction SHOWING for ${policy.id}")
+        EnforcementStatus.note("${policy.id}: showing the countdown, wait still owed")
         friction.launched(policy.id, nowMs)
         guard("friction") {
             startActivity(
@@ -2420,6 +2424,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         Interstitial.onCleared = null
         Interstitial.onShown = null
         FrictionGate.onShown = null
+        FrictionGate.onHidden = null
         FrictionGate.onServed = null
         FrictionGate.onDeclined = null
         BlockSelfTest.onRequested = null
