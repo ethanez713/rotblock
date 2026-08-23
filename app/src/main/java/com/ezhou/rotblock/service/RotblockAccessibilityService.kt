@@ -1796,10 +1796,24 @@ class RotblockAccessibilityService : AccessibilityService() {
                 ledger.closeSession(nowMs)
                 hideCountdown()
                 refreshGrayscale(nowMs, ruleWantsGrayscale = false)
-                EnforcementStatus.note(
-                    "$targetId: blocked (${decision.reason.name.lowercase().replace('_', ' ')})",
-                )
-                showBlock(policy, decision)
+                if (Interstitial.isShowing()) {
+                    // The pause flow and the friction countdown already cover the app underneath,
+                    // so there is nothing to eject the user from -- painting the block screen on
+                    // top of our own would just be one rotblock screen behind another. This does
+                    // not fail open: `Interstitial.onCleared` re-enters `reEvaluateCurrent()` the
+                    // instant the last of our screens goes away, which puts the block straight
+                    // back up, and `isShowing` is itself deadline-bounded so a lost `exited()`
+                    // cannot hold this off forever.
+                    overlay.hide()
+                    EnforcementStatus.note(
+                        "$targetId: blocked, block screen held back while one of our screens is up",
+                    )
+                } else {
+                    EnforcementStatus.note(
+                        "$targetId: blocked (${decision.reason.name.lowercase().replace('_', ' ')})",
+                    )
+                    showBlock(policy, decision)
+                }
                 // After the block goes up, not before: on the pass where a block first appears
                 // `overlay.isShowing` is still false beforehand, so a due reminder would slip onto
                 // the screen in the instant before the block covered it.
