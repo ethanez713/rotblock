@@ -20,6 +20,7 @@ import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.pause.BudgetStatus
 import com.ezhou.rotblock.pause.PauseResult
 import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.policy.PolicyEngine
 import com.ezhou.rotblock.policy.PolicySort
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.RollingQuota
@@ -122,7 +123,9 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
             val events = db.auditDao().since(since)
             val all = db.policyDao().getAll()
             _ruleEffects.value = all.associate { p ->
-                val sessions = db.usageDao().forTargetSince(p.id, since).map { it.toSession() }
+                val sessions = p.chargedTargets
+                    .flatMap { db.usageDao().forTargetSince(it, since) }
+                    .map { it.toSession() }
                 p.id to effectOf(p, sessions, events, now)
             }
         }
@@ -143,8 +146,11 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
             val result = buildMap {
                 for (p in all) {
                     val windowMs = p.windowMs
-                    val rows = db.usageDao().forTargetSince(p.id, now - windowMs)
-                    val sessions = rows.map { it.toSession() }
+                    // A group's bar has to add up its members, and every rule's bar has to leave
+                    // out hours the rule was not live for -- both through the same two calls the
+                    // engine makes, so the bar cannot say something the block screen disagrees with.
+                    val rows = p.chargedTargets.flatMap { db.usageDao().forTargetSince(it, now - windowMs) }
+                    val sessions = PolicyEngine.chargeable(p, rows.map { it.toSession() }, now)
                     val used = RollingQuota.usedInWindow(sessions, now, windowMs)
                     put(
                         p.id,
@@ -181,6 +187,18 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
             }
             val id = Policy.targetId(kind, canonical)
             val existing = db.policyDao().get(id)
+            // A member typed as a bare host has to end up as the same target id a read produces,
+            // or the group covers a site that never matches anything.
+            val members = draft.members.map { member ->
+                if (Policy.kindOf(member) == TargetKind.WEBSITE) {
+                    Policy.targetId(
+                        TargetKind.WEBSITE,
+                        WebMatcher.canonicalRule(member.removePrefix("web:")),
+                    )
+                } else {
+                    member
+                }
+            }.distinct()
             submit(
                 existing,
                 Policy(
@@ -195,6 +213,7 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
                     frictionSeconds = draft.frictionSeconds,
                     grayscale = draft.grayscale,
                     schedule = draft.schedule,
+                    members = members,
                     createdAtMs = existing?.createdAtMs ?: now,
                     updatedAtMs = now,
                 ),

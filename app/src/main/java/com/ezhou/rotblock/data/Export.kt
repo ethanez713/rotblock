@@ -31,6 +31,7 @@ suspend fun buildExport(db: RotblockDatabase, settings: RotblockSettings, nowMs:
             .put("frictionSeconds", p.frictionSeconds)
             .put("grayscale", p.grayscale)
             .put("schedule", p.schedule.encode())
+            .put("members", com.ezhou.rotblock.policy.Policy.encodeMembers(p.members))
             .put("createdAtMs", p.createdAtMs)
             .put("updatedAtMs", p.updatedAtMs)
     })

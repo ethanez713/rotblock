@@ -76,6 +76,16 @@ data class Policy(
     val quotaMs: Long? get() = quotaSeconds?.let { it * 1000L }
     val windowMs: Long get() = windowSeconds * 1000L
 
+    /**
+     * The target ids whose usage this rule is charged for: its own, or a group's members.
+     *
+     * The one place the difference lives. Everything that adds up time -- the engine, the quota bar
+     * on the Blocks screen, the per-rule effect line -- asks this rather than assuming a rule's id
+     * is the only thing it counts, which is what stopped being true when groups arrived.
+     */
+    val chargedTargets: List<String>
+        get() = if (kind == TargetKind.GROUP) members else listOf(id)
+
     companion object {
         fun targetId(kind: TargetKind, matcher: String): String = when (kind) {
             TargetKind.APP -> "app:$matcher"

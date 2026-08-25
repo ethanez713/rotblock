@@ -49,6 +49,7 @@ import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.insights.RuleEffect
 import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.policy.PolicySort
 import com.ezhou.rotblock.policy.formatWindowSeconds
 import com.ezhou.rotblock.policy.sortedFor
@@ -199,6 +200,7 @@ fun BlocksScreen(
     if (showAdd || editing != null) {
         AddBlockSheet(
             existing = policies.map { it.matcher }.toSet(),
+            allPolicies = policies,
             editing = editing,
             grayscaleAvailable = grayscaleAvailable,
             onDismiss = { showAdd = false; editing = null },
@@ -552,6 +554,11 @@ private fun PolicyCard(
                 }
             }
 
+            if (policy.kind == TargetKind.GROUP) {
+                Spacer(Modifier.height(10.dp))
+                GroupMembers(policy)
+            }
+
             if (usage?.quotaMs != null) {
                 Spacer(Modifier.height(12.dp))
                 QuotaBar(usage = usage, enabled = policy.enabled && !paused && !offHours)
@@ -658,6 +665,43 @@ private fun PolicyUsage.statusLine(nowMs: Long, inactive: Boolean): String {
         } else {
             "Out of time"
         }
+    }
+}
+
+/**
+ * What is inside a group, as the members' own icons.
+ *
+ * A group's card is otherwise the only one that cannot say what it is about: every other rule has
+ * a target with a name and a logo, and a group has a name someone typed. The icons are the answer
+ * to "shared between what", which is the only question this card raises and none of the others do.
+ */
+@Composable
+private fun GroupMembers(policy: Policy) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        policy.members.take(MAX_MEMBER_AVATARS).forEach { member ->
+            val kind = Policy.kindOf(member) ?: TargetKind.WEBSITE
+            val matcher = member.substringAfter(':')
+            TargetAvatar(kind, matcher, matcher, size = 24.dp)
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(
+            memberSummary(policy.members),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** Room for a handful of icons on a phone-width card; the rest are counted instead. */
+private const val MAX_MEMBER_AVATARS = 5
+
+private fun memberSummary(members: List<String>): String {
+    val names = members.map { it.substringAfter(':') }
+    val overflow = names.size - MAX_MEMBER_AVATARS
+    return when {
+        names.isEmpty() -> "Nothing in it yet"
+        overflow > 0 -> "${names.take(MAX_MEMBER_AVATARS).joinToString(", ")} +$overflow more"
+        else -> names.joinToString(", ")
     }
 }
 

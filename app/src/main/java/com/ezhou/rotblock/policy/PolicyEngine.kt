@@ -60,6 +60,8 @@ data class Verdict(
     val governing: Policy?,
     val grayscale: Boolean = false,
     val frictionSeconds: Int = 0,
+    /** The rule that asked for the wait, which is not always [governing] -- see [PolicyEngine]. */
+    val frictionFrom: Policy? = null,
 )
 
 /**
@@ -161,11 +163,11 @@ object PolicyEngine {
      * hours. For one that does, see [Schedule.activeIntervalsWithin] for why the service closing
      * the session at the boundary is no longer enough on its own.
      */
-    private fun chargeable(
+    fun chargeable(
         policy: Policy,
         sessions: List<UsageSession>,
         nowMs: Long,
-        tz: TimeZone,
+        tz: TimeZone = TimeZone.getDefault(),
     ): List<UsageSession> {
         if (policy.schedule.isAlwaysOn) return sessions
         val windowStartMs = nowMs - policy.windowMs
@@ -215,7 +217,12 @@ object PolicyEngine {
         // reverse of what a schedule means.
         val live = judged.filter { it.second is Decision.Allowed }
         val grayscale = live.any { it.first.grayscale }
-        val frictionSeconds = live.maxOfOrNull { it.first.frictionSeconds } ?: 0
+        // The longest wait any live rule asks for, and which one asked -- the countdown is named
+        // after the rule demanding it, which need not be the one with least time left.
+        val frictionFrom = live.map { it.first }
+            .filter { it.frictionSeconds > 0 }
+            .maxByOrNull { it.frictionSeconds }
+        val frictionSeconds = frictionFrom?.frictionSeconds ?: 0
 
         val blocked = judged.filter { it.second is Decision.Blocked }
         if (blocked.isNotEmpty()) {
@@ -234,6 +241,7 @@ object PolicyEngine {
                 governing = governing.first,
                 grayscale = false,
                 frictionSeconds = frictionSeconds,
+                frictionFrom = frictionFrom,
             )
         }
 
@@ -245,6 +253,7 @@ object PolicyEngine {
                 governing = binding.first,
                 grayscale = grayscale,
                 frictionSeconds = frictionSeconds,
+                frictionFrom = frictionFrom,
             )
         }
 

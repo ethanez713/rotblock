@@ -1831,7 +1831,7 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     private fun sessionsFor(policy: Policy, targetId: String, nowMs: Long): List<UsageSession> =
         if (policy.kind == TargetKind.GROUP) {
-            policy.members.flatMap { ledger.sessionsFor(it, nowMs) }
+            policy.chargedTargets.flatMap { ledger.sessionsFor(it, nowMs) }
         } else {
             ledger.sessionsFor(targetId, nowMs)
         }
@@ -1900,7 +1900,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 }
                 refreshGrayscale(nowMs, ruleWantsGrayscale = verdict.grayscale)
                 refreshWorkoutReminder(nowMs)
-                maybeShowFriction(targetId, policy.label, verdict.frictionSeconds, nowMs)
+                maybeShowFriction(targetId, verdict.frictionFrom?.label ?: policy.label, verdict.frictionSeconds, nowMs)
             }
 
             is Decision.Blocked -> {

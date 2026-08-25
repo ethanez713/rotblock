@@ -224,6 +224,8 @@ class PolicyGroupTest {
         assertEquals("reddit.com", v.governing?.label)
         assertTrue(v.grayscale)
         assertEquals(8, v.frictionSeconds)
+        // And the countdown is named after the rule that asked for it, not the one governing.
+        assertEquals("Brainrot", v.frictionFrom?.label)
     }
 
     @Test
@@ -238,6 +240,7 @@ class PolicyGroupTest {
         assertTrue(v.decision is Decision.Allowed)
         assertTrue("noon is outside the evening group's hours", !v.grayscale)
         assertEquals(0, v.frictionSeconds)
+        assertNull(v.frictionFrom)
     }
 
     @Test

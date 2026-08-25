@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -71,7 +72,9 @@ data class InstalledApp(
     val icon: ImageBitmap?,
 )
 
-private enum class BlockKind(val label: String) { App("App"), Website("Website"), Feed("Feed") }
+private enum class BlockKind(val label: String) {
+    App("App"), Website("Website"), Feed("Feed"), Group("Group")
+}
 
 /**
  * Everything the rule editor decides about a target, as one value.
@@ -85,6 +88,8 @@ data class RuleDraft(
     val frictionSeconds: Int,
     val grayscale: Boolean,
     val schedule: Schedule,
+    /** Target ids a group rule covers; empty for every other kind. See [Policy.members]. */
+    val members: List<String> = emptyList(),
 )
 
 /** What is being configured once a target has been chosen. */
@@ -92,12 +97,15 @@ private data class Chosen(
     val kind: TargetKind,
     val matcher: String,
     val label: String,
+    val members: List<String> = emptyList(),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddBlockSheet(
     existing: Set<String>,
+    /** Every rule that exists, so a group can be built out of the targets already written down. */
+    allPolicies: List<Policy>,
     onDismiss: () -> Unit,
     onSave: (kind: TargetKind, matcher: String, label: String, draft: RuleDraft) -> Unit,
     /** Non-null to skip the picker and edit an existing rule in place. */
@@ -107,7 +115,12 @@ fun AddBlockSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var kind by remember { mutableStateOf(BlockKind.App) }
     var chosen by remember {
-        mutableStateOf(editing?.let { Chosen(it.kind, it.matcher, it.label) })
+        // A group opens on its own picker even when editing, because its members are part of what
+        // is being edited and the allowance editor has no room to hold them.
+        mutableStateOf(
+            editing?.takeIf { it.kind != TargetKind.GROUP }
+                ?.let { Chosen(it.kind, it.matcher, it.label) },
+        )
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
@@ -117,9 +130,25 @@ fun AddBlockSheet(
                 chosen = target,
                 existing = editing,
                 grayscaleAvailable = grayscaleAvailable,
-                onBack = if (editing != null) null else ({ chosen = null }),
-                onConfirm = { draft -> onSave(target.kind, target.matcher, target.label, draft) },
+                onBack = if (editing != null && target.kind != TargetKind.GROUP) {
+                    null
+                } else {
+                    ({ chosen = null })
+                },
+                onConfirm = { draft ->
+                    onSave(
+                        target.kind,
+                        target.matcher,
+                        target.label,
+                        draft.copy(members = target.members),
+                    )
+                },
             )
+            return@ModalBottomSheet
+        }
+
+        if (editing?.kind == TargetKind.GROUP) {
+            GroupPicker(allPolicies, editing) { chosen = it }
             return@ModalBottomSheet
         }
 
@@ -141,6 +170,7 @@ fun AddBlockSheet(
             BlockKind.App -> AppPicker(existing) { chosen = it }
             BlockKind.Website -> WebsitePicker { chosen = it }
             BlockKind.Feed -> FeedPicker(existing) { chosen = it }
+            BlockKind.Group -> GroupPicker(allPolicies, null) { chosen = it }
         }
     }
 }
@@ -197,6 +227,175 @@ private fun AppPicker(existing: Set<String>, onPick: (Chosen) -> Unit) {
             }
         }
     }
+}
+
+/**
+ * Names a group and chooses what is in it.
+ *
+ * Runs before the allowance editor rather than inside it, and runs again when a group is edited,
+ * because membership is part of what a group *is* -- unlike a quota, which is something a rule
+ * merely has. Members are picked out of the rules that already exist, since a group is written to
+ * answer a complaint about rules that already exist: each one is satisfied on its own while the
+ * hour they add up to is not. A website that has no rule of its own can be typed in, so a group
+ * does not require a per-site rule it was invented to make unnecessary.
+ */
+@Composable
+private fun GroupPicker(
+    allPolicies: List<Policy>,
+    editing: Policy?,
+    onPick: (Chosen) -> Unit,
+) {
+    val candidates = remember(allPolicies) {
+        allPolicies.filter { it.kind != TargetKind.GROUP }.sortedBy { it.label.lowercase() }
+    }
+    var name by remember { mutableStateOf(editing?.label ?: "") }
+    var selected by remember { mutableStateOf(editing?.members.orEmpty().toSet()) }
+    var extraSite by remember { mutableStateOf("") }
+    // Members that came from a typed site or from a rule since deleted: without this they vanish
+    // out of a group the moment their own rule goes, which is a silent weakening nobody asked for.
+    var extras by remember {
+        mutableStateOf(
+            editing?.members.orEmpty().filterNot { m -> candidates.any { it.id == m } },
+        )
+    }
+
+    Column(
+        Modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 28.dp),
+    ) {
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("Name") },
+            placeholder = { Text("Brainrot") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        Hint("One allowance shared across everything in here. Time on any of them spends all of it.")
+
+        Spacer(Modifier.height(20.dp))
+        Text("What's in it", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(4.dp))
+        Hint("Each of these keeps its own rule as well — both are charged for the same minute.")
+        Spacer(Modifier.height(8.dp))
+
+        if (candidates.isEmpty()) {
+            Text(
+                "No blocks yet. Add one first, or type a site below.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        candidates.forEach { policy ->
+            MemberRow(
+                kind = policy.kind,
+                matcher = policy.matcher,
+                label = policy.label,
+                checked = policy.id in selected,
+                onToggle = {
+                    selected = if (policy.id in selected) selected - policy.id else selected + policy.id
+                },
+            )
+        }
+        extras.forEach { targetId ->
+            val matcher = targetId.substringAfter(':')
+            MemberRow(
+                kind = Policy.kindOf(targetId) ?: TargetKind.WEBSITE,
+                matcher = matcher,
+                label = matcher,
+                checked = targetId in selected,
+                onToggle = {
+                    selected = if (targetId in selected) selected - targetId else selected + targetId
+                },
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = extraSite,
+                onValueChange = { extraSite = it },
+                label = { Text("Add a site with no rule") },
+                placeholder = { Text("tiktok.com") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(12.dp))
+            TextButton(
+                enabled = extraSite.isNotBlank(),
+                onClick = {
+                    val id = Policy.targetId(TargetKind.WEBSITE, extraSite.trim())
+                    if (id !in extras && candidates.none { it.id == id }) extras = extras + id
+                    selected = selected + id
+                    extraSite = ""
+                },
+            ) { Text("Add") }
+        }
+
+        Spacer(Modifier.height(20.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Button(
+                enabled = name.isNotBlank() && selected.isNotEmpty(),
+                onClick = {
+                    onPick(
+                        Chosen(
+                            kind = TargetKind.GROUP,
+                            // Kept as it was when editing, so renaming a group does not become
+                            // deleting one and adding another -- the id is what the audit log,
+                            // the pending queue and every recorded block already point at.
+                            matcher = editing?.matcher
+                                ?: groupSlug(name, allPolicies.map { it.matcher }.toSet()),
+                            label = name.trim(),
+                            // Ordered, so a reordering of the checkboxes is not an edit.
+                            members = selected.sorted(),
+                        ),
+                    )
+                },
+            ) { Text("Continue") }
+        }
+    }
+}
+
+@Composable
+private fun MemberRow(
+    kind: TargetKind,
+    matcher: String,
+    label: String,
+    checked: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onToggle() }.padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = { onToggle() })
+        Spacer(Modifier.width(4.dp))
+        TargetAvatar(kind, matcher, label, size = 32.dp)
+        Spacer(Modifier.width(12.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+/**
+ * A readable, stable id for a new group.
+ *
+ * Derived from the name so an audit entry reads `group:brainrot` rather than a random string, but
+ * only ever at creation: a rename keeps the id it was given, because every block already recorded
+ * against this group points at it.
+ */
+private fun groupSlug(name: String, taken: Set<String>): String {
+    val base = name.trim().lowercase()
+        .map { if (it.isLetterOrDigit()) it else '-' }
+        .joinToString("")
+        .trim('-')
+        .ifBlank { "group" }
+    if (base !in taken) return base
+    var n = 2
+    while ("$base-$n" in taken) n++
+    return "$base-$n"
 }
 
 private val WEBSITE_SUGGESTIONS = listOf(
