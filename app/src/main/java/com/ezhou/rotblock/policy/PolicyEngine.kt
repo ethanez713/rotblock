@@ -128,7 +128,8 @@ object PolicyEngine {
         val quotaMs = policy.quotaMs
             ?: return Decision.Blocked(BlockReason.HARD_BLOCK, windowEndsMs, boundaryMs)
 
-        val usedMs = RollingQuota.usedInWindow(chargeable(policy, sessions, nowMs, tz), nowMs, policy.windowMs)
+        val charged = chargeable(policy, sessions, nowMs, tz)
+        val usedMs = RollingQuota.usedInWindow(charged, nowMs, policy.windowMs)
         val remainingMs = quotaMs - usedMs
         return if (remainingMs > 0) {
             Decision.Allowed(
@@ -138,9 +139,7 @@ object PolicyEngine {
                 recheckAtMs = soonest(nowMs + remainingMs, boundaryMs),
             )
         } else {
-            val releaseMs = RollingQuota.nextRelease(
-                chargeable(policy, sessions, nowMs, tz), nowMs, policy.windowMs, quotaMs,
-            )
+            val releaseMs = RollingQuota.nextRelease(charged, nowMs, policy.windowMs, quotaMs)
             val liftsAtMs = soonest(releaseMs, windowEndsMs)
             Decision.Blocked(
                 reason = BlockReason.QUOTA_EXHAUSTED,

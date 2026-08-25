@@ -1876,7 +1876,11 @@ class RotblockAccessibilityService : AccessibilityService() {
                 EnforcementStatus.note(
                     when {
                         decision.pausedUntilMs != null -> "$targetId: paused, not charging"
-                        policy.enabled && !policy.schedule.isAlwaysOn ->
+                        // Asked of every rule covering the page, not just the one named: with
+                        // nothing paused and nothing blocking, a rule that allows is a rule
+                        // outside its hours, and the panel has to say which of the three
+                        // reasons-nothing-is-happening this is.
+                        covering.any { !it.schedule.isAlwaysOn } ->
                             "$targetId: outside its hours, not charging"
                         else -> "$targetId: no active policy"
                     },
