@@ -262,6 +262,56 @@ fun shouldAdoptUnlockedForeground(
     return readPackage != believedNow
 }
 
+/**
+ * Whether a held target with a dead ticker should be re-evaluated off an accessibility event.
+ *
+ * The ticker is the *only* thing that re-evaluates a plain app target. A browser or feed app has
+ * the inspection loop, which ends in `applyTarget` on every read — but `requestInspect` returns
+ * immediately for anything else, so once a game is established as the foreground, every event it
+ * emits reaches `pkg == currentPackage` and stops there. Nothing else in the event path calls
+ * `evaluateAndEnforce` at all.
+ *
+ * That is survivable while the ticker is armed, and the ticker is armed for every decision that has
+ * a deadline. `ACTION_SCREEN_OFF` stops it, which is correct — a dark screen must charge nothing —
+ * and `ACTION_USER_PRESENT` starts it again. The hole is a screen that comes back on with **no
+ * keyguard to pass**: inside Samsung's lock-delay grace period no `USER_PRESENT` is broadcast, and
+ * an app that was already in front fires no window-state change either. Measured on device: the
+ * service alive with a 45-second-old heartbeat, `currentPackage` and `currentTargetId` both
+ * correctly naming a blocked game, the node dump showing that game on screen, the ticker stopped
+ * and the trail frozen — twenty-three minutes of a quota'd game enforcing nothing, with events
+ * arriving the whole time and every one of them discarded.
+ *
+ * So this is the same bargain [shouldRecheckForeground] makes, one layer over: in the healthy case
+ * a held target has an armed ticker and this never fires, and the cost only appears once the fault
+ * has. The gates are what keep it honest:
+ *
+ * - **A held target only.** With nothing held there is nothing to re-evaluate, and adopting the
+ *   event's package is a different question with a different answer.
+ * - **An armed ticker means the deadline path is working**, so there is nothing to rescue.
+ * - **Screen off charges nothing, ever.** Events can still arrive with the display dark, and
+ *   resuming accrual on one would charge for time nobody spent — the direction this app may not
+ *   fail in, and the reason `ACTION_SCREEN_ON` is not enough on its own.
+ * - **Throttled**, because content-change events arrive continuously while an app renders.
+ *
+ * The case that pays without being broken is a hard block on an always-on rule: it has no deadline,
+ * so the ticker is legitimately stopped and this fires every [minIntervalMs] for as long as you sit
+ * on the block screen. That is a cheap fold and no node read, and it buys the block screen coming
+ * back within one interval if it is ever lost — which is the right side of this trade.
+ */
+fun shouldRearmFromEvent(
+    hasTarget: Boolean,
+    tickerArmed: Boolean,
+    screenOn: Boolean,
+    nowMs: Long,
+    lastRearmAtMs: Long,
+    minIntervalMs: Long,
+): Boolean {
+    if (!hasTarget) return false
+    if (tickerArmed) return false
+    if (!screenOn) return false
+    return nowMs - lastRearmAtMs >= minIntervalMs
+}
+
 /** What [verifyEscapeOutcome] concluded about an escape attempt. */
 enum class EscapeVerdict { ESCAPED, REFUSED, UNCONFIRMED }
 

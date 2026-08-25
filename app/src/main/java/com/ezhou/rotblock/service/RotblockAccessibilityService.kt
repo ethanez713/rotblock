@@ -290,6 +290,16 @@ private const val REMINDER_SNOOZE_MS = 5 * 60 * 1000L
 private const val FOREGROUND_RECHECK_MIN_INTERVAL_MS = 2_000L
 
 /**
+ * How often a held target with a stopped ticker may be re-evaluated off an event.
+ *
+ * Five seconds rather than two: unlike [FOREGROUND_RECHECK_MIN_INTERVAL_MS] this buys no node read
+ * and settles no ambiguity, it simply restarts a clock that should not have been stopped. The one
+ * healthy state it fires in is a hard block with no deadline, and once every five seconds is a
+ * cheap price for the block screen being restored that fast if it is ever lost.
+ */
+private const val EVENT_REARM_MIN_INTERVAL_MS = 5_000L
+
+/**
  * How much of the trail an [EvaluationRate] storm carries into the audit log with it.
  *
  * Enough to say what was happening before the rate went up, and bounded because this lands in a
@@ -489,6 +499,9 @@ class RotblockAccessibilityService : AccessibilityService() {
     /** Callback thread. Last time [requestForegroundRecheck] fired, for its own throttle. */
     private var lastForegroundRecheckAtMs = 0L
 
+    /** Callback thread. Last time [shouldRearmFromEvent] let an event restart the ticker. */
+    private var lastEventRearmAtMs = 0L
+
     /**
      * The capture that has been requested but not yet written, so [teardown] can flush it rather
      * than let [handler]'s cancelled poll drop it. Set as soon as the request is gathered, before
@@ -542,6 +555,19 @@ class RotblockAccessibilityService : AccessibilityService() {
                     // it -- resuming on SCREEN_ON charges the target for every glance at the clock
                     // and for however long the phone sits unlocked-but-not-entered. Over-charging
                     // is the one direction the ledger may not err in.
+                    // A screen coming back on with no keyguard in the way will never produce a
+                    // USER_PRESENT, and that is the case this exists for: inside Samsung's
+                    // lock-delay grace period the phone locks the display without engaging the
+                    // lock screen, so screen-off stopped the ticker and nothing was ever going to
+                    // start it again. Measured on device at twenty-three minutes of a quota'd game
+                    // enforcing nothing.
+                    //
+                    // Gated on the keyguard rather than on the screen, which is what keeps the
+                    // "never resume on SCREEN_ON" rule above intact: with a lock screen up this
+                    // does nothing at all and USER_PRESENT still does the work, so a glance at the
+                    // clock cannot charge the target underneath.
+                    Intent.ACTION_SCREEN_ON -> if (!isKeyguardLocked()) onUnlocked()
+
                     Intent.ACTION_USER_PRESENT -> onUnlocked()
                 }
             }
@@ -689,6 +715,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                     screenReceiver,
                     IntentFilter().apply {
                         addAction(Intent.ACTION_SCREEN_OFF)
+                        addAction(Intent.ACTION_SCREEN_ON)
                         addAction(Intent.ACTION_USER_PRESENT)
                     },
                     ContextCompat.RECEIVER_NOT_EXPORTED,
@@ -774,6 +801,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                         }
                     } else {
                         requestInspect(pkg)
+                        rearmIfStalled()
                     }
                 }
 
@@ -782,6 +810,11 @@ class RotblockAccessibilityService : AccessibilityService() {
                     // state change, so this is the only signal that the target changed.
                     if (pkg == currentPackage) {
                         requestInspect(pkg)
+                        // The only route back for a plain app target whose ticker has stopped:
+                        // requestInspect above declines a package that is not a browser or feed
+                        // app, so without this the event ends here and nothing is ever enforced
+                        // again. See [shouldRearmFromEvent].
+                        rearmIfStalled()
                     } else if (currentPackage == null && isForegroundChange(pkg, null)) {
                         // Nothing has been established at all: the seed failed with the screen
                         // off, and no window-state change has arrived since because the app was
@@ -993,6 +1026,40 @@ class RotblockAccessibilityService : AccessibilityService() {
             workoutUntil = workoutUntil,
             workoutSource = workoutUntil?.let { WorkoutMode.source.name.lowercase() },
         )
+    }
+
+    /**
+     * Restarts enforcement when a held target's ticker has stopped and nothing will restart it.
+     *
+     * Callback thread, so the work is posted: [evaluateAndEnforce] touches service state that lives
+     * on the main thread, and the throttle is stamped here rather than inside the post so a burst
+     * of events cannot queue a hundred of them behind one another.
+     */
+    private fun rearmIfStalled() {
+        val now = System.currentTimeMillis()
+        if (!shouldRearmFromEvent(
+                hasTarget = currentTargetId != null,
+                tickerArmed = ticking,
+                screenOn = isScreenOn(),
+                nowMs = now,
+                lastRearmAtMs = lastEventRearmAtMs,
+                minIntervalMs = EVENT_REARM_MIN_INTERVAL_MS,
+            )
+        ) {
+            return
+        }
+        lastEventRearmAtMs = now
+        handler.post {
+            guard("rearmIfStalled") {
+                val target = currentTargetId ?: return@guard
+                // Re-checked on the main thread: an evaluation that landed in the meantime may
+                // already have armed it, and re-arming a live ticker is how a deadline gets pushed.
+                if (ticking) return@guard
+                trace("re-arming from an event: $target held with the ticker stopped")
+                EnforcementStatus.note("$target: ticker had stopped, re-armed from an event")
+                evaluateAndEnforce(target, System.currentTimeMillis())
+            }
+        }
     }
 
     /**
@@ -2437,6 +2504,19 @@ class RotblockAccessibilityService : AccessibilityService() {
      * far too rarely to be worth a field that could go stale. Assumes on when it cannot tell: that
      * is the pre-existing behaviour, and the alternative risks leaving the display grey.
      */
+    /**
+     * Whether a lock screen still has to be got past.
+     *
+     * Assumes locked when it cannot tell, which is the safe direction here: the cost of a wrong
+     * "locked" is that recovery waits for USER_PRESENT, while a wrong "unlocked" would resume
+     * accrual behind a lock screen.
+     */
+    private fun isKeyguardLocked(): Boolean =
+        runCatching {
+            (getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager)
+                .isKeyguardLocked
+        }.getOrDefault(true)
+
     private fun isScreenOn(): Boolean =
         runCatching { (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive }
             .getOrDefault(true)
