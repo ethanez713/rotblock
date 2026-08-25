@@ -221,6 +221,47 @@ fun shouldRecheckForeground(
     return nowMs - lastRecheckAtMs >= minIntervalMs
 }
 
+/**
+ * Whether a package read off the active window after an unlock should replace [believedNow].
+ *
+ * Unlocking is the one foreground change in this app that arrives with no accessibility event
+ * attached to it. `ACTION_SCREEN_OFF` leaves [RotblockAccessibilityService.currentPackage]
+ * standing, and the phone can come back on a different app entirely -- Android restores the top
+ * task, a notification was taken from the lock screen, the launcher is what appears. Nothing in
+ * the event stream says so, and for an app that emits no content changes of its own -- a game
+ * rendering into a surface, which is most of them -- nothing ever will: [shouldRecheckForeground]
+ * is driven by content-change events, and `requestInspect` declines a package that is not a
+ * browser or feed app. So a foreground that was stale at the moment of unlock stays stale until
+ * the user happens to switch apps by hand, with enforcement running against whatever was on
+ * screen last night.
+ *
+ * It fails in both directions at once, which is why it gets its own path rather than being left to
+ * the ordinary event routes: unlocking *into* a blocked app enforces nothing, and unlocking *out*
+ * of one goes on charging its quota from the launcher.
+ *
+ * Unlike [shouldRecheckForeground] there is no candidate package to weigh here and no throttle to
+ * pay for. `rootInActiveWindow` read moments after the keyguard is dismissed is the same
+ * structural evidence [RotblockAccessibilityService.seedForegroundFromScreen] already trusts to
+ * establish a foreground from nothing; the only difference is that this one is allowed to
+ * *correct* one. So the guards are about staleness of the answer rather than strength of it:
+ *
+ * - Nothing readable ([readPackage] null) concludes nothing. An unreadable window is not evidence
+ *   that the app went away, exactly as [Inspected.Unreadable] is not [Inspected.AppOnly].
+ * - A real accessibility event that landed while the read was in flight ([believedNow] having
+ *   moved off [believedAtRequest]) knows better than a poll does, the same precedence
+ *   `seedForeground` gives an event over its own seed.
+ * - Agreeing with what is already believed is not a correction and must not be reported as one.
+ */
+fun shouldAdoptUnlockedForeground(
+    readPackage: String?,
+    believedAtRequest: String?,
+    believedNow: String?,
+): Boolean {
+    if (readPackage == null) return false
+    if (believedNow != believedAtRequest) return false
+    return readPackage != believedNow
+}
+
 /** What [verifyEscapeOutcome] concluded about an escape attempt. */
 enum class EscapeVerdict { ESCAPED, REFUSED, UNCONFIRMED }
 

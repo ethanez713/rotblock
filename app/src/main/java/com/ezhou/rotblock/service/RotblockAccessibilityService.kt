@@ -474,6 +474,7 @@ class RotblockAccessibilityService : AccessibilityService() {
     private var inspectorJob: Job? = null
     private var reseedJob: Job? = null
     private var foregroundRecheckJob: Job? = null
+    private var foregroundConfirmJob: Job? = null
 
     /** Callback thread. Last time [requestForegroundRecheck] fired, for its own throttle. */
     private var lastForegroundRecheckAtMs = 0L
@@ -522,14 +523,16 @@ class RotblockAccessibilityService : AccessibilityService() {
                         nextReminderAtMs = 0L
                     }
                     // Coming back may land on the same app with no new window event, so the
-                    // session has to be restarted explicitly.
+                    // session has to be restarted explicitly -- and may equally land on a
+                    // *different* app with no event either, which is why this verifies rather
+                    // than only resumes. See [onUnlocked].
                     //
                     // USER_PRESENT only, deliberately not SCREEN_ON. The lock screen is system UI,
                     // which is ignored, so `currentPackage` is still whatever was open underneath
                     // it -- resuming on SCREEN_ON charges the target for every glance at the clock
                     // and for however long the phone sits unlocked-but-not-entered. Over-charging
                     // is the one direction the ledger may not err in.
-                    Intent.ACTION_USER_PRESENT -> reEvaluateCurrent()
+                    Intent.ACTION_USER_PRESENT -> onUnlocked()
                 }
             }
         }
@@ -974,6 +977,24 @@ class RotblockAccessibilityService : AccessibilityService() {
         )
     }
 
+    /**
+     * Unlocking, which is a foreground change that arrives with no event to announce it.
+     *
+     * Two halves, and they answer different questions. The first re-enforces what was believed
+     * before the lock straight away, so a block lands with the screen rather than after a poll --
+     * and it is also the branch that seeds from nothing when the service was killed while the
+     * screen was off. The second questions that belief, which nothing else does: see
+     * [shouldAdoptUnlockedForeground].
+     *
+     * The null case is left to [reEvaluateCurrent] alone rather than run through both, because its
+     * [reseed] reads the same window this would and two polls racing for it is one read too many
+     * for an answer neither can improve on.
+     */
+    private fun onUnlocked() {
+        reEvaluateCurrent()
+        if (currentPackage != null) confirmForegroundFromScreen()
+    }
+
     private fun reEvaluateCurrent() {
         val now = System.currentTimeMillis()
         // Cheap, and this runs on unlock and on every settings change, which is the widest net we
@@ -1058,16 +1079,53 @@ class RotblockAccessibilityService : AccessibilityService() {
      * one it was recorded against. A rebind that happens while you are somewhere else starts clean.
      */
     private suspend fun seedForegroundFromScreen() {
+        val pkg = readActiveWindowPackage()
+        if (pkg == null) {
+            trace("seed: gave up, no readable active window")
+            return
+        }
+        withContext(Dispatchers.Main) { guard("seed") { seedForeground(pkg) } }
+    }
+
+    /**
+     * Polls `rootInActiveWindow` for a package that is really somebody's foreground, or null.
+     *
+     * Never on the callback thread -- see rule 2. Packages in [ignoredPackages] are skipped rather
+     * than returned: the keyguard, the shade and our own screens all own the active window at the
+     * exact moments this runs, and none of them is what is underneath.
+     *
+     * It polls because both callers arrive *before* the window they want exists -- a rebind races
+     * the tree coming up, and an unlock races the keyguard going away. It stops at the first
+     * readable answer, so the ordinary cost is one read or two rather than [SEED_ATTEMPTS] of them.
+     */
+    private suspend fun readActiveWindowPackage(): String? {
         repeat(SEED_ATTEMPTS) {
             val pkg = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
-            if (pkg != null && pkg !in ignoredPackages) {
-                withContext(Dispatchers.Main) { guard("seed") { seedForeground(pkg) } }
-                return
-            }
-            // The tree is not always up yet in the first moments after binding.
+            if (pkg != null && pkg !in ignoredPackages) return pkg
             delay(SEED_RETRY_MS)
         }
-        trace("seed: gave up, no readable active window")
+        return null
+    }
+
+    /**
+     * The unlock half of [requestForegroundRecheck]: confirms [currentPackage] against the screen
+     * when no event is going to. See [shouldAdoptUnlockedForeground] for why unlock needs its own
+     * path and why a game leaves no other one.
+     */
+    private fun confirmForegroundFromScreen() {
+        if (foregroundConfirmJob?.isActive == true) return
+        val believedAtRequest = currentPackage
+        foregroundConfirmJob = scope.launch {
+            val pkg = readActiveWindowPackage()
+            withContext(Dispatchers.Main) {
+                guard("confirmForeground") {
+                    if (!shouldAdoptUnlockedForeground(pkg, believedAtRequest, currentPackage)) return@guard
+                    trace("unlock: $currentPackage was stale, active window is $pkg")
+                    EnforcementStatus.note("unlock: $currentPackage was stale, corrected to $pkg")
+                    onForegroundChanged(pkg!!, System.currentTimeMillis())
+                }
+            }
+        }
     }
 
     /** Main thread. [pkg] is the package that genuinely owns the active window. */
@@ -2483,6 +2541,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         watchJob?.cancel()
         reseedJob?.cancel()
         foregroundRecheckJob?.cancel()
+        foregroundConfirmJob?.cancel()
     }
 
     /**
