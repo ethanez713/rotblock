@@ -24,9 +24,23 @@ private val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
+/**
+ * Adds the members a group rule covers.
+ *
+ * Empty on every existing row, which [com.ezhou.rotblock.policy.Policy.decodeMembers] reads as no
+ * members -- and no rule written before groups existed is a group, so every one of them keeps
+ * behaving exactly as it did.
+ */
+private val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE policies ADD COLUMN members TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE pending_changes ADD COLUMN members TEXT NOT NULL DEFAULT ''")
+    }
+}
+
 @Database(
     entities = [Policy::class, UsageSessionEntity::class, AuditEvent::class, PendingChange::class],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -48,7 +62,7 @@ abstract class RotblockDatabase : RoomDatabase() {
                 // No destructive migration: the audit log is the one thing in this app that is
                 // genuinely irreplaceable, so a schema mistake should fail loudly at build time
                 // rather than silently wipe months of history on the phone.
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
                 .also { instance = it }
         }

@@ -17,6 +17,15 @@ data class ServiceInternals(
     val hudDismissedThisSession: Boolean,
     val enabledTargets: List<String>,
     val websiteMatchers: List<String>,
+    /**
+     * Which rules covered the target in front, and which one the verdict came from.
+     *
+     * A target can be covered by several policies since groups, and a capture showing one decision
+     * with no way to see how many rules produced it cannot be read: "blocked" against a rule with
+     * quota left is a bug or a group doing its job, and only the list tells them apart.
+     */
+    val coveringPolicyIds: List<String>,
+    val governingPolicyId: String?,
 )
 
 /** [com.ezhou.rotblock.policy.Decision], flattened -- the fields present depend on the subtype. */
@@ -241,6 +250,8 @@ private fun serviceInternalsJson(s: ServiceInternals): JSONObject = JSONObject()
     .put("hudDismissedThisSession", s.hudDismissedThisSession)
     .put("enabledTargets", JSONArray(s.enabledTargets))
     .put("websiteMatchers", JSONArray(s.websiteMatchers))
+    .put("coveringPolicyIds", JSONArray(s.coveringPolicyIds))
+    .put("governingPolicyId", s.governingPolicyId ?: JSONObject.NULL)
 
 private fun decisionJson(d: DecisionSnapshot): JSONObject = JSONObject()
     .put("subtype", d.subtype)

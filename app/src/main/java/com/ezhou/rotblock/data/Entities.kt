@@ -5,6 +5,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import com.ezhou.rotblock.audit.AuditType
+import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.Schedule
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.UsageSession
@@ -27,6 +28,11 @@ class Converters {
     @TypeConverter fun auditTypeToString(v: AuditType): String = v.name
 
     @TypeConverter fun scheduleToString(v: Schedule): String = v.encode()
+
+    @TypeConverter fun membersToString(v: List<String>): String = Policy.encodeMembers(v)
+
+    /** Drops only the entries it cannot read, never the row. See [Policy.decodeMembers]. */
+    @TypeConverter fun stringToMembers(v: String?): List<String> = Policy.decodeMembers(v)
 
     /**
      * A row this cannot parse decodes to "always on" rather than throwing, for the same reason

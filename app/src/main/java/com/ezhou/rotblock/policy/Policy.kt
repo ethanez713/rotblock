@@ -11,8 +11,18 @@ import androidx.room.PrimaryKey
  * and [FEED] matches a short-form surface inside an otherwise-allowed app (YouTube Shorts,
  * Instagram Reels). All three share one policy shape so the quota engine, the audit log and
  * the UI never have to branch on kind.
+ *
+ * [GROUP] is the odd one and is deliberately not a fourth thing to be in front of. Nothing on
+ * screen ever *is* a group: the target is still an app, a website or a feed, and a group is a
+ * second policy that also covers it. See [Policy.members].
  */
-enum class TargetKind { APP, WEBSITE, FEED }
+enum class TargetKind { APP, WEBSITE, FEED, GROUP }
+
+/**
+ * Separator for [Policy.members]. Not a character any target id can contain -- package names,
+ * hosts and paths all exclude it -- so a member can never be split in half by its own name.
+ */
+private const val MEMBER_SEPARATOR = "|"
 
 /**
  * A single rule.
@@ -48,6 +58,18 @@ data class Policy(
      */
     @ColumnInfo(defaultValue = "")
     val schedule: Schedule = Schedule.ALWAYS,
+    /**
+     * For a [TargetKind.GROUP], the target ids this rule also covers. Empty for every other kind.
+     *
+     * A group is a shared allowance across several targets, written this way because usage is
+     * already keyed by target: the ledger records time against `web:reddit.com` whoever is asking,
+     * so a group's quota is simply the union of its members' sessions and nothing about accrual
+     * has to change. It also falls out of that choice that a target can be in several groups and
+     * have a rule of its own, and every one of them is charged for the same minute -- which is the
+     * point. Three two-minute allowances that were never meant to add up to six.
+     */
+    @ColumnInfo(defaultValue = "")
+    val members: List<String> = emptyList(),
     val createdAtMs: Long = 0L,
     val updatedAtMs: Long = 0L,
 ) {
@@ -59,7 +81,39 @@ data class Policy(
             TargetKind.APP -> "app:$matcher"
             TargetKind.WEBSITE -> "web:$matcher"
             TargetKind.FEED -> "feed:$matcher"
+            TargetKind.GROUP -> "group:$matcher"
         }
+
+        /**
+         * The kind a target id names, or null if it names nothing recognisable.
+         *
+         * Exists so the parts of the app that answer "what is on screen" can stop borrowing the
+         * kind off whichever policy happens to be blocking. Since groups, those are not the same
+         * question: a group covers a website but is not one, and a block screen that took its
+         * escape from the blocking rule's kind would offer "close this app" over a browser --
+         * which is the dead end [com.ezhou.rotblock.block.escapeLabelFor] exists to refuse.
+         */
+        fun kindOf(targetId: String): TargetKind? = when {
+            targetId.startsWith("app:") -> TargetKind.APP
+            targetId.startsWith("web:") -> TargetKind.WEBSITE
+            targetId.startsWith("feed:") -> TargetKind.FEED
+            targetId.startsWith("group:") -> TargetKind.GROUP
+            else -> null
+        }
+
+        fun encodeMembers(members: List<String>): String =
+            members.filter { it.isNotBlank() }.joinToString(MEMBER_SEPARATOR)
+
+        /**
+         * Keeps every member it can still read rather than rejecting the row.
+         *
+         * Unlike [Schedule.decode] there is no degenerate value here that resolves toward more
+         * blocking -- a group with no members covers nothing, so "reject the lot" would be the
+         * fail-open answer. Dropping only the entries that are unreadable preserves as much
+         * coverage as survives, which is the nearest thing to a safe direction this has.
+         */
+        fun decodeMembers(text: String?): List<String> =
+            text?.split(MEMBER_SEPARATOR)?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty()
     }
 }
 

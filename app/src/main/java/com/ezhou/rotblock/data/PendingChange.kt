@@ -34,6 +34,13 @@ data class PendingChange(
     val grayscale: Boolean = false,
     @ColumnInfo(defaultValue = "")
     val schedule: Schedule = Schedule.ALWAYS,
+    /**
+     * Carried like every other field, because dropping a member is a weakening and therefore
+     * arrives here. Without it a queued edit would apply its quota an hour late and silently put
+     * back the members the edit was about.
+     */
+    @ColumnInfo(defaultValue = "")
+    val members: List<String> = emptyList(),
 ) {
     /** Applies this change's fields onto the policy as it stands now. */
     fun applyTo(current: Policy, nowMs: Long): Policy = current.copy(
@@ -43,6 +50,7 @@ data class PendingChange(
         frictionSeconds = frictionSeconds,
         grayscale = grayscale,
         schedule = schedule,
+        members = members,
         updatedAtMs = nowMs,
     )
 
@@ -59,6 +67,7 @@ data class PendingChange(
             frictionSeconds = target.frictionSeconds,
             grayscale = target.grayscale,
             schedule = target.schedule,
+            members = target.members,
         )
 
         fun deletion(targetId: String, applyAtMs: Long, description: String, nowMs: Long) =

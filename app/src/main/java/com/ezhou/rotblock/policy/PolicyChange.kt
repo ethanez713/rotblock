@@ -14,6 +14,11 @@ enum class ChangeDirection { STRENGTHENING, WEAKENING, NEUTRAL }
  *   adding friction is still delayed. Mixed edits fail closed.
  * - **Disabling is the most permissive state there is**, more so than any quota, because it turns
  *   the rule off entirely.
+ * - **Dropping a member from a group is a weakening**, for the same reason removing a rule is:
+ *   that target stops being covered by this allowance. Adding one is a strengthening. A group
+ *   whose members merely *moved* -- one dropped, one added -- is therefore a weakening, which is
+ *   the same fail-closed reading a schedule that moved gets, and for the same reason: the edit
+ *   somebody makes at 9pm is the one that drops the site they want.
  * - **A schedule that merely moved counts as a weakening.** Comparing how many hours each covers
  *   would call "block it 9-to-5" and "block it 5-to-1am" the same edit, and the second one is
  *   exactly the edit somebody makes at 9pm. So the only instant schedule change is one whose new
@@ -52,16 +57,26 @@ object PolicyChange {
         val hoursLost = bothOn && !new.schedule.coversAllOf(old.schedule)
         val hoursGained = bothOn && !old.schedule.coversAllOf(new.schedule)
 
+        // Unlike the schedule, membership is compared whether or not the rule is on. Switching a
+        // group off is already the largest weakening [permissiveness] can express, and switching
+        // one on with members attached is a strengthening on that count alone -- so there is no
+        // always-on default here to compare against and mis-read, the way an off rule's stored
+        // schedule would be.
+        val membersLost = !new.members.containsAll(old.members)
+        val membersGained = !old.members.containsAll(new.members)
+
         val weakens = newPerm > oldPerm ||
             new.frictionSeconds < old.frictionSeconds ||
             (old.grayscale && !new.grayscale) ||
-            hoursLost
+            hoursLost ||
+            membersLost
         if (weakens) return ChangeDirection.WEAKENING
 
         val strengthens = newPerm < oldPerm ||
             new.frictionSeconds > old.frictionSeconds ||
             (!old.grayscale && new.grayscale) ||
-            hoursGained
+            hoursGained ||
+            membersGained
         return if (strengthens) ChangeDirection.STRENGTHENING else ChangeDirection.NEUTRAL
     }
 

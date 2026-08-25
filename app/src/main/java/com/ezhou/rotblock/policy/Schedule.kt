@@ -134,6 +134,57 @@ data class Schedule(val blocks: List<TimeBlock> = emptyList()) {
         return mine.indices.all { !theirs[it] || mine[it] }
     }
 
+    /**
+     * The stretches this schedule is live for that overlap `[fromMs, toMs)`, merged and in order.
+     *
+     * Exists so a rule can be charged only for time it was actually live for. That used to fall
+     * out of the service closing the ledger session whenever a rule went out of hours, which was
+     * exact while a target had exactly one rule. It stopped being exact with groups: a target in
+     * front is charged whenever *any* policy covering it is live, so a rule sitting outside its own
+     * hours can now find usage in the ledger that it must not count. Left uncorrected that takes
+     * quota away for time the rule never governed, which is the one direction this app may not err
+     * in -- see the note on the timer under-counting.
+     *
+     * Always-on answers the whole range without touching the calendar, so every rule written before
+     * schedules existed, and every group without hours, pays nothing for this.
+     */
+    fun activeIntervalsWithin(
+        fromMs: Long,
+        toMs: Long,
+        tz: TimeZone = TimeZone.getDefault(),
+    ): List<Pair<Long, Long>> {
+        if (toMs <= fromMs) return emptyList()
+        if (isAlwaysOn) return listOf(fromMs to toMs)
+        val raw = ArrayList<Pair<Long, Long>>()
+        // occurrences() reaches a week and a bit either side of its anchor, so anchors a week apart
+        // leave no gap however long the range is -- a rolling window may be days wide.
+        var anchor = fromMs
+        while (true) {
+            raw.addAll(occurrences(anchor, tz))
+            if (anchor >= toMs) break
+            anchor = minOf(anchor + MINUTES_PER_WEEK * 60_000L, toMs)
+        }
+        val clipped = raw.mapNotNull { (start, end) ->
+            val lo = maxOf(start, fromMs)
+            val hi = minOf(end, toMs)
+            if (hi > lo) lo to hi else null
+        }
+        // Overlapping blocks, and the same occurrence found under two anchors, both produce
+        // duplicates. Merging is what stops a minute inside two of them being counted twice.
+        if (clipped.size <= 1) return clipped
+        val sorted = clipped.sortedBy { it.first }
+        val merged = ArrayList<Pair<Long, Long>>(sorted.size)
+        for (span in sorted) {
+            val last = merged.lastOrNull()
+            if (last != null && span.first <= last.second) {
+                if (span.second > last.second) merged[merged.size - 1] = last.first to span.second
+            } else {
+                merged.add(span)
+            }
+        }
+        return merged
+    }
+
     fun encode(): String = blocks.joinToString(",") { it.encode() }
 
     /** "Mon–Fri 10am–6pm · Sat 12pm–4pm", or null when always on. */

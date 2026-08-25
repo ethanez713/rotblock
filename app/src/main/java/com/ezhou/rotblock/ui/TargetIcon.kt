@@ -88,6 +88,10 @@ object TargetIcons {
             TargetKind.APP -> matcher
             TargetKind.FEED -> FeedRegistry.specs.firstOrNull { it.key == matcher }?.packageName
             TargetKind.WEBSITE -> hostOf(matcher)?.let { appDeclaring(pm, it, context.packageName) }
+            // A group is several targets and so has no icon of its own to find. The monogram tile
+            // is the answer here, not a placeholder for a lookup that failed; the Blocks row shows
+            // the members' own icons beside it.
+            TargetKind.GROUP -> null
         } ?: return null
         return runCatching {
             pm.getApplicationIcon(packageName).toBitmap(ICON_PX, ICON_PX).asImageBitmap()

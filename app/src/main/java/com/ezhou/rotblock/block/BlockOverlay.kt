@@ -35,6 +35,10 @@ data class Escape(val label: String, val action: () -> Unit)
  * The escape a block over [kind] has to offer, or null when closing the app is already a complete
  * answer because the app *is* the target.
  *
+ * [kind] is the kind of the target **on screen**, never of the rule that blocked it. Since groups
+ * those differ: a group can be the reason a website is blocked, and taking the escape from the
+ * blocking rule would offer "close this app" over a browser sitting on a page it cannot leave.
+ *
  * Exhaustive on purpose: a new kind of target cannot be added without someone deciding whether it
  * strands the user. That decision is the whole content of this function.
  */
@@ -42,6 +46,11 @@ fun escapeLabelFor(kind: TargetKind): String? = when (kind) {
     TargetKind.APP -> null
     TargetKind.FEED -> "Leave the feed"
     TargetKind.WEBSITE -> "Leave this site"
+    // Not "a group needs no escape" -- a group is never the thing on screen at all, so this is
+    // unreachable by construction rather than by judgement. Answering null keeps a routing mistake
+    // from silently dropping a website's way out: the caller resolves the kind from the target id,
+    // so arriving here at all means the target id was a group's, which nothing can produce.
+    TargetKind.GROUP -> null
 }
 
 /**

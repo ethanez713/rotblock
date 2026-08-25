@@ -65,6 +65,8 @@ class CaptureTest {
             hudDismissedThisSession = false,
             enabledTargets = listOf("web:reddit.com", "app:com.reddit.frontpage"),
             websiteMatchers = listOf("reddit.com"),
+            coveringPolicyIds = listOf("web:reddit.com", "group:brainrot"),
+            governingPolicyId = "group:brainrot",
         ),
         interstitialDepth = 0,
         interstitialShowing = false,

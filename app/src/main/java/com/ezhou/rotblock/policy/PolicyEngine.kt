@@ -47,6 +47,22 @@ sealed interface Decision {
 }
 
 /**
+ * The single answer for a target, folded from every policy that covers it.
+ *
+ * [governing] is the policy the answer is *about* -- the one blocking, or the one with least time
+ * left -- and is what the block screen and the countdown are labelled with. It is null only when
+ * no policy covers the target at all. [grayscale] and [frictionSeconds] are separate from it
+ * because they are the union across every live policy rather than a property of one: two rules can
+ * cover a page while only the other one wants the colour drained.
+ */
+data class Verdict(
+    val decision: Decision,
+    val governing: Policy?,
+    val grayscale: Boolean = false,
+    val frictionSeconds: Int = 0,
+)
+
+/**
  * Decides what to do about a target, from persisted state and the clock only.
  *
  * The fail-closed invariant lives here: this function is a pure fold over a timestamp and stored
@@ -110,7 +126,7 @@ object PolicyEngine {
         val quotaMs = policy.quotaMs
             ?: return Decision.Blocked(BlockReason.HARD_BLOCK, windowEndsMs, boundaryMs)
 
-        val usedMs = RollingQuota.usedInWindow(sessions, nowMs, policy.windowMs)
+        val usedMs = RollingQuota.usedInWindow(chargeable(policy, sessions, nowMs, tz), nowMs, policy.windowMs)
         val remainingMs = quotaMs - usedMs
         return if (remainingMs > 0) {
             Decision.Allowed(
@@ -120,7 +136,9 @@ object PolicyEngine {
                 recheckAtMs = soonest(nowMs + remainingMs, boundaryMs),
             )
         } else {
-            val releaseMs = RollingQuota.nextRelease(sessions, nowMs, policy.windowMs, quotaMs)
+            val releaseMs = RollingQuota.nextRelease(
+                chargeable(policy, sessions, nowMs, tz), nowMs, policy.windowMs, quotaMs,
+            )
             val liftsAtMs = soonest(releaseMs, windowEndsMs)
             Decision.Blocked(
                 reason = BlockReason.QUOTA_EXHAUSTED,
@@ -134,6 +152,109 @@ object PolicyEngine {
                 recheckAtMs = soonest(liftsAtMs, boundaryMs),
             )
         }
+    }
+
+    /**
+     * The parts of [sessions] this policy is allowed to charge for: the time it was live.
+     *
+     * A no-op for an always-on rule, which is what makes this free for every rule that has no
+     * hours. For one that does, see [Schedule.activeIntervalsWithin] for why the service closing
+     * the session at the boundary is no longer enough on its own.
+     */
+    private fun chargeable(
+        policy: Policy,
+        sessions: List<UsageSession>,
+        nowMs: Long,
+        tz: TimeZone,
+    ): List<UsageSession> {
+        if (policy.schedule.isAlwaysOn) return sessions
+        val windowStartMs = nowMs - policy.windowMs
+        val live = policy.schedule.activeIntervalsWithin(windowStartMs, nowMs, tz)
+        if (live.isEmpty()) return emptyList()
+        val out = ArrayList<UsageSession>(sessions.size)
+        for (session in sessions) {
+            for ((liveStart, liveEnd) in live) {
+                val lo = maxOf(session.startMs, liveStart)
+                val hi = minOf(session.endMs, liveEnd)
+                if (hi > lo) out.add(UsageSession(lo, hi))
+            }
+        }
+        return out
+    }
+
+    /**
+     * One answer folded from every policy covering the target in front, since a target can be
+     * covered by more than one: its own rule, and every group it belongs to.
+     *
+     * The fold is "the strictest wins" in every dimension, which is the only reading that makes a
+     * group mean anything -- a shared allowance that a per-target rule could undercut would not be
+     * a cap. Concretely: any policy blocking blocks; the block lifts when the *last* of them lets
+     * go; the countdown shows the least time remaining of any of them; and the ticker is armed for
+     * the soonest deadline any of them named, since a deadline missed is a rule that never comes
+     * back on.
+     *
+     * [sessionsFor] is a function rather than a list because a group's usage is the union of its
+     * members' -- the ledger is keyed by target and knows nothing about groups, which is exactly
+     * what lets a minute spent on one site be charged to every policy that covers it at once.
+     */
+    fun evaluateAll(
+        policies: List<Policy>,
+        sessionsFor: (Policy) -> List<UsageSession>,
+        pausedUntilMs: Long,
+        workoutUntilMs: Long?,
+        nowMs: Long,
+        tz: TimeZone = TimeZone.getDefault(),
+    ): Verdict {
+        if (policies.isEmpty()) return Verdict(Decision.Allow(), governing = null)
+        val judged = policies.map { it to evaluate(it, sessionsFor(it), pausedUntilMs, workoutUntilMs, nowMs, tz) }
+        val recheckAtMs = judged.mapNotNull { it.second.recheckAtMs }.minOrNull()
+
+        // Only a rule that is actually live gets to drain the colour or ask for a wait. One that
+        // is paused, outside its hours, or already blocking is not governing the screen you are
+        // looking at, and a group demanding friction for hours it does not cover would be the
+        // reverse of what a schedule means.
+        val live = judged.filter { it.second is Decision.Allowed }
+        val grayscale = live.any { it.first.grayscale }
+        val frictionSeconds = live.maxOfOrNull { it.first.frictionSeconds } ?: 0
+
+        val blocked = judged.filter { it.second is Decision.Blocked }
+        if (blocked.isNotEmpty()) {
+            // Whichever holds you longest, so the screen names the constraint that is really in
+            // the way. A block with no lift time at all outranks every dated one -- null here
+            // means "nothing but a pause or an edit lifts this", not "lifts at zero".
+            val governing = blocked.maxWith(
+                compareBy(
+                    { (it.second as Decision.Blocked).liftsAtMs == null },
+                    { (it.second as Decision.Blocked).liftsAtMs ?: Long.MIN_VALUE },
+                )
+            )
+            val decision = governing.second as Decision.Blocked
+            return Verdict(
+                decision = decision.copy(recheckAtMs = recheckAtMs),
+                governing = governing.first,
+                grayscale = false,
+                frictionSeconds = frictionSeconds,
+            )
+        }
+
+        val binding = live.minByOrNull { (it.second as Decision.Allowed).remainingMs }
+        if (binding != null) {
+            val decision = binding.second as Decision.Allowed
+            return Verdict(
+                decision = decision.copy(recheckAtMs = recheckAtMs),
+                governing = binding.first,
+                grayscale = grayscale,
+                frictionSeconds = frictionSeconds,
+            )
+        }
+
+        // Nothing is live. Any one of them being paused is enough to say so, since a pause covers
+        // the whole phone rather than one rule.
+        val paused = judged.firstNotNullOfOrNull { (it.second as? Decision.Allow)?.pausedUntilMs }
+        return Verdict(
+            decision = Decision.Allow(pausedUntilMs = paused, recheckAtMs = recheckAtMs),
+            governing = policies.first(),
+        )
     }
 
     private fun soonest(a: Long?, b: Long?): Long? = when {

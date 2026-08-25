@@ -65,6 +65,7 @@ import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicyEngine
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.UsageLedger
+import com.ezhou.rotblock.quota.UsageSession
 import com.ezhou.rotblock.setup.DetectionCounters
 import com.ezhou.rotblock.setup.gatherSetupFacts
 import com.ezhou.rotblock.setup.requirementsFor
@@ -400,6 +401,15 @@ class RotblockAccessibilityService : AccessibilityService() {
     /** Read on every window change, so it stays a plain volatile map lookup. */
     @Volatile private var policiesByTarget: Map<String, Policy> = emptyMap()
 
+    /**
+     * Every policy covering a target id, which since groups is no longer at most one.
+     *
+     * A target's own rule is indexed under its id; a group is indexed under each of its members.
+     * Nothing on screen is ever a group, so a group's own id never appears here as a key -- it
+     * appears as a value, beside the rule for the thing you are actually looking at.
+     */
+    @Volatile private var policiesCovering: Map<String, List<Policy>> = emptyMap()
+
     /** Website rule matchers, kept separately because they need scanning rather than lookup. */
     @Volatile private var websiteMatchers: List<String> = emptyList()
 
@@ -726,9 +736,17 @@ class RotblockAccessibilityService : AccessibilityService() {
                             Rotblock.changeQueue(this@RotblockAccessibilityService).applyDue()
                         }
                         policiesByTarget = list.associateBy { it.id }
-                        websiteMatchers = list
-                            .filter { it.enabled && it.kind == TargetKind.WEBSITE }
-                            .map { it.matcher }
+                        policiesCovering = coverageByTarget(list)
+                        // A group's website members have to be here too, or the page is never
+                        // recognised as a target at all and the group has nothing to cover.
+                        websiteMatchers = (
+                            list.filter { it.enabled && it.kind == TargetKind.WEBSITE }
+                                .map { it.matcher } +
+                                list.filter { it.enabled && it.kind == TargetKind.GROUP }
+                                    .flatMap { it.members }
+                                    .filter { Policy.kindOf(it) == TargetKind.WEBSITE }
+                                    .map { it.removePrefix("web:") }
+                            ).distinct()
                         handler.post { guard("policiesChanged") { reEvaluateCurrent() } }
                     }
             }
@@ -820,7 +838,7 @@ class RotblockAccessibilityService : AccessibilityService() {
      * So a mistake in either direction leaves blocking on rather than off.
      */
     private fun isForegroundChange(pkg: String, className: String?): Boolean {
-        if (policiesByTarget.containsKey(appTargetFor(pkg))) return true
+        if (policiesCovering.containsKey(appTargetFor(pkg))) return true
         if (pkg in inspectablePackages) return true
         return isActivity(pkg, className)
     }
@@ -919,9 +937,9 @@ class RotblockAccessibilityService : AccessibilityService() {
      *   [TargetConfidence]. Every call site must state which it is.
      */
     private fun applyTarget(targetId: String?, nowMs: Long, confirmed: Boolean) {
-        val policy = targetId?.let { policiesByTarget[it] }
-        trace("applyTarget($targetId) policy=${policy?.label} enabled=${policy?.enabled} cur=$currentTargetId servedFor=${friction.servedFor}")
-        if (policy == null || !policy.enabled) {
+        val covering = targetId?.let { enabledPoliciesCovering(it) }.orEmpty()
+        trace("applyTarget($targetId) policies=${covering.map { it.label }} cur=$currentTargetId servedFor=${friction.servedFor}")
+        if (targetId == null || covering.isEmpty()) {
             if (friction.servedFor != null) trace("  ENDING friction visit (no policy for $targetId)")
             if (currentTargetId != null) {
                 EnforcementStatus.note("target $currentTargetId -> none (nothing here is covered)")
@@ -1786,8 +1804,41 @@ class RotblockAccessibilityService : AccessibilityService() {
         }
     }
 
+    /** Every enabled policy covering [targetId]: its own rule, and every group it belongs to. */
+    private fun enabledPoliciesCovering(targetId: String): List<Policy> =
+        policiesCovering[targetId].orEmpty().filter { it.enabled }
+
+    /**
+     * Indexes policies by what they cover rather than by what they are.
+     *
+     * The one place group membership is turned into coverage, so nothing downstream has to know a
+     * group exists -- it asks what covers the target in front and gets a list.
+     */
+    private fun coverageByTarget(list: List<Policy>): Map<String, List<Policy>> {
+        val out = HashMap<String, MutableList<Policy>>()
+        for (policy in list) {
+            val targets =
+                if (policy.kind == TargetKind.GROUP) policy.members else listOf(policy.id)
+            for (target in targets) out.getOrPut(target) { mutableListOf() }.add(policy)
+        }
+        return out
+    }
+
+    /**
+     * A group's usage is the union of its members', which is the whole reason groups cost the
+     * ledger nothing: time is recorded against the target in front whoever asks about it, so a
+     * minute on one site is charged to that site's own rule and to every group holding it, at once.
+     */
+    private fun sessionsFor(policy: Policy, targetId: String, nowMs: Long): List<UsageSession> =
+        if (policy.kind == TargetKind.GROUP) {
+            policy.members.flatMap { ledger.sessionsFor(it, nowMs) }
+        } else {
+            ledger.sessionsFor(targetId, nowMs)
+        }
+
     private fun evaluateAndEnforceInner(targetId: String, nowMs: Long) {
-        val policy = policiesByTarget[targetId] ?: return
+        val covering = enabledPoliciesCovering(targetId)
+        if (covering.isEmpty()) return
         // The cap lapsing fires no onChanged of its own, and a held target reaches this function
         // far more often than the no-target tick path does -- so a workout ending mid-visit on a
         // covered app is logged here rather than waiting for the target to be dropped.
@@ -1796,10 +1847,9 @@ class RotblockAccessibilityService : AccessibilityService() {
         // legitimately not fire for its whole interval, and if the flush rode solely on the tick a
         // process kill would record the entire visit as zero seconds.
         ledger.touch(nowMs)
-        val sessions = ledger.sessionsFor(targetId, nowMs)
-        val decision = PolicyEngine.evaluate(
-            policy,
-            sessions,
+        val verdict = PolicyEngine.evaluateAll(
+            covering,
+            { sessionsFor(it, targetId, nowMs) },
             pause.pausedUntilMs,
             // Asked about the app in front rather than about the workout, so an allowed app falls
             // through to its own rules with no override in the fold. For a website target that is
@@ -1807,7 +1857,9 @@ class RotblockAccessibilityService : AccessibilityService() {
             WorkoutMode.overrideUntilMs(currentPackage, nowMs),
             nowMs,
         )
-        trace("decision for ${policy.label}: $decision")
+        val decision = verdict.decision
+        val policy = verdict.governing ?: return
+        trace("decision for ${policy.label} (of ${covering.size}): $decision")
         when (decision) {
             is Decision.Allow -> {
                 overlay.hide()
@@ -1846,9 +1898,9 @@ class RotblockAccessibilityService : AccessibilityService() {
                     showCountdown(policy.label, decision, nowMs)
                     EnforcementStatus.note("$targetId: charging")
                 }
-                refreshGrayscale(nowMs, ruleWantsGrayscale = policy.grayscale)
+                refreshGrayscale(nowMs, ruleWantsGrayscale = verdict.grayscale)
                 refreshWorkoutReminder(nowMs)
-                maybeShowFriction(policy, nowMs)
+                maybeShowFriction(targetId, policy.label, verdict.frictionSeconds, nowMs)
             }
 
             is Decision.Blocked -> {
@@ -1873,7 +1925,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                     EnforcementStatus.note(
                         "$targetId: blocked (${decision.reason.name.lowercase().replace('_', ' ')})",
                     )
-                    showBlock(policy, decision)
+                    showBlock(policy, targetId, decision)
                 }
                 // After the block goes up, not before: on the pass where a block first appears
                 // `overlay.isShowing` is still false beforehand, so a due reminder would slip onto
@@ -1941,15 +1993,22 @@ class RotblockAccessibilityService : AccessibilityService() {
         if (::notification.isInitialized) notification.hide()
     }
 
-    private fun showBlock(policy: Policy, decision: Decision.Blocked) {
+    /**
+     * [targetId] is what is on screen; [policy] is the rule that refused it, and since groups they
+     * are not always the same thing. The audit event is filed against the rule -- "most blocked"
+     * is a question about rules -- while the escape and its verification are about the page, which
+     * is what [verifyEscaped] compares against `currentTargetId`.
+     */
+    private fun showBlock(policy: Policy, targetId: String, decision: Decision.Blocked) {
         if (!overlay.isShowing) {
             audit.record(
                 AuditType.BLOCK_SHOWN,
                 targetId = policy.id,
-                detail = "${policy.label}: ${decision.reason.name.lowercase().replace('_', ' ')}",
+                detail = "${policy.label}: ${decision.reason.name.lowercase().replace('_', ' ')}" +
+                    if (policy.id != targetId) " on $targetId" else "",
             )
         }
-        val escape = escapeFor(policy)
+        val escape = escapeFor(targetId)
         val shown = overlay.show(
             label = policy.label,
             reason = decision.reason,
@@ -2007,11 +2066,12 @@ class RotblockAccessibilityService : AccessibilityService() {
      * blocked part. Reopening restores the same page and blocks again, and the only remaining way
      * out is disabling the policy, which is the failure this whole app exists to prevent.
      */
-    private fun escapeFor(policy: Policy): Escape? {
-        val label = escapeLabelFor(policy.kind) ?: return null
-        val leave: () -> Unit = when (policy.kind) {
-            // Unreachable: escapeLabelFor returns null for APP and we have already left.
-            TargetKind.APP -> return null
+    private fun escapeFor(targetId: String): Escape? {
+        val kind = Policy.kindOf(targetId) ?: return null
+        val label = escapeLabelFor(kind) ?: return null
+        val leave: () -> Unit = when (kind) {
+            // Unreachable: escapeLabelFor returns null for both and we have already left.
+            TargetKind.APP, TargetKind.GROUP -> return null
 
             // Backing out of a short-form player lands on the rest of the app, and if the app has
             // nothing to go back to it closes -- reopening then starts at its normal entry point
@@ -2046,8 +2106,8 @@ class RotblockAccessibilityService : AccessibilityService() {
         }
         return Escape(label) {
             leave()
-            noteEscaped(policy.id)
-            verifyEscaped(policy.id, System.currentTimeMillis())
+            noteEscaped(targetId)
+            verifyEscaped(targetId, System.currentTimeMillis())
         }
     }
 
@@ -2139,9 +2199,15 @@ class RotblockAccessibilityService : AccessibilityService() {
      * Shows the breathing screen once per visit -- once per *wait served*, not once per screen put
      * up. Backing out of the countdown leaves it owed and this puts it straight back. The whole
      * state machine, including the one case that must not be retried, is [FrictionGate].
+     *
+     * Keyed on the target, never on the rule that asked for the wait. Several policies can cover
+     * one page since groups, and a gate keyed on the rule would owe you a separate countdown for
+     * each of them -- while [FrictionGate.onDeclined] hands its key back to be compared against
+     * `currentTargetId`, which only a target id can ever match. [seconds] is the longest any live
+     * rule asks for, so adding a group cannot shorten a wait a rule already demanded.
      */
-    private fun maybeShowFriction(policy: Policy, nowMs: Long) {
-        if (policy.frictionSeconds <= 0) return
+    private fun maybeShowFriction(targetId: String, label: String, seconds: Int, nowMs: Long) {
+        if (seconds <= 0) return
         // A target restored by VisitMemory or the persisted visit, rather than confirmed by a read,
         // may still be *enforced* -- a block it turns out to be wrong about is lifted by the very
         // next read, which is the safe direction this app takes everywhere. It must not drive the
@@ -2152,35 +2218,35 @@ class RotblockAccessibilityService : AccessibilityService() {
         // read to confirm the target, and if the page stays scrolled and unreadable for the rest of
         // the visit, it simply never re-fires -- the wait was already served for that page.
         if (!confidence.confirmed) {
-            trace("friction withheld for ${policy.id}: target not confirmed by a read yet")
-            EnforcementStatus.note("${policy.id}: countdown held, target not yet confirmed by a read")
+            trace("friction withheld for $targetId: target not confirmed by a read yet")
+            EnforcementStatus.note("$targetId: countdown held, target not yet confirmed by a read")
             return
         }
-        if (!friction.shouldLaunch(policy.id, Interstitial.isShowing(), nowMs)) {
-            trace("friction not launched for ${policy.id} (served=${friction.servedFor})")
+        if (!friction.shouldLaunch(targetId, Interstitial.isShowing(), nowMs)) {
+            trace("friction not launched for $targetId (served=${friction.servedFor})")
             return
         }
-        trace("friction SHOWING for ${policy.id}")
-        EnforcementStatus.note("${policy.id}: showing the countdown, wait still owed")
-        friction.launched(policy.id, nowMs)
+        trace("friction SHOWING for $targetId")
+        EnforcementStatus.note("$targetId: showing the countdown, wait still owed")
+        friction.launched(targetId, nowMs)
         guard("friction") {
             startActivity(
                 Intent(this, FrictionActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    .putExtra(FrictionActivity.EXTRA_LABEL, policy.label)
-                    .putExtra(FrictionActivity.EXTRA_SECONDS, policy.frictionSeconds)
-                    .putExtra(FrictionActivity.EXTRA_TARGET, policy.id)
+                    .putExtra(FrictionActivity.EXTRA_LABEL, label)
+                    .putExtra(FrictionActivity.EXTRA_SECONDS, seconds)
+                    .putExtra(FrictionActivity.EXTRA_TARGET, targetId)
                     // "Take me back" has the same dead end as the block screen: going home leaves
                     // the browser on the site, so reopening it lands straight back on the page you
                     // just declined. Told which browser, the screen moves it off first.
-                    .putExtra(FrictionActivity.EXTRA_BROWSER, browserBehindWebsite(policy)),
+                    .putExtra(FrictionActivity.EXTRA_BROWSER, browserBehindWebsite(targetId)),
             )
         }
     }
 
     /** The browser showing a website target, or null for any other kind of block. */
-    private fun browserBehindWebsite(policy: Policy): String? {
-        if (policy.kind != TargetKind.WEBSITE) return null
+    private fun browserBehindWebsite(targetId: String): String? {
+        if (Policy.kindOf(targetId) != TargetKind.WEBSITE) return null
         return currentPackage?.takeIf { BrowserRegistry.specFor(it) != null }
     }
 
@@ -2571,19 +2637,21 @@ class RotblockAccessibilityService : AccessibilityService() {
         val appInfo = gatherAppInfo(this)
         val targetId = currentTargetId
         val sessions = targetId?.let { ledger.sessionsFor(it, now) }.orEmpty()
-        val decision = targetId?.let { id ->
-            toDecisionSnapshot(
-                PolicyEngine.evaluate(
-                    policiesByTarget[id],
-                    sessions,
-                    pause.pausedUntilMs,
-                    // The same question evaluateAndEnforce asked. A capture showing a workout block
-                    // where the live decision allowed would be a capture of a different phone.
-                    WorkoutMode.overrideUntilMs(currentPackage, now),
-                    now,
-                ),
+        val covering = targetId?.let { enabledPoliciesCovering(it) }.orEmpty()
+        // evaluateAll, not evaluate: the same question evaluateAndEnforce asked, over the same
+        // rules. A capture that folded only the target's own rule would show a website allowed
+        // while the phone in the user's hand was blocked by a group -- a capture of a different
+        // phone, which is the one thing this file may not produce.
+        val verdict = targetId?.let { id ->
+            PolicyEngine.evaluateAll(
+                covering,
+                { sessionsFor(it, id, now) },
+                pause.pausedUntilMs,
+                WorkoutMode.overrideUntilMs(currentPackage, now),
+                now,
             )
         }
+        val decision = verdict?.let { toDecisionSnapshot(it.decision) }
         return CaptureInput(
             capturedAtMs = now,
             processUptimeMs = now - Rotblock.processStartedAtMs,
@@ -2606,6 +2674,8 @@ class RotblockAccessibilityService : AccessibilityService() {
                 hudDismissedThisSession = hudDismissedThisSession,
                 enabledTargets = policiesByTarget.values.filter { it.enabled }.map { it.id },
                 websiteMatchers = websiteMatchers,
+                coveringPolicyIds = covering.map { it.id },
+                governingPolicyId = verdict?.governing?.id,
             ),
             interstitialDepth = Interstitial.currentDepth,
             interstitialShowing = Interstitial.isShowing(now),
