@@ -129,6 +129,7 @@ fun BlocksScreen(
                     nowMs = now,
                     budget = budget,
                     onEndPause = viewModel::endPause,
+                    onEndAllScoped = { viewModel.endTargetPause(settings.pausedTargets.keys) },
                     onPause = {
                         context.startActivity(
                             android.content.Intent(context, PauseRequestActivity::class.java),
@@ -174,12 +175,20 @@ fun BlocksScreen(
             }
 
             items(sorted, key = { it.id }) { policy ->
+                val globalPaused = settings.isPaused(now)
+                // The card's own scoped deadline, global excluded: the latest scoped pause across
+                // its charged targets (a group's members, or just its own id). Shown as a per-card
+                // "Resume" only when there is no global pause -- you cannot un-pause one app while
+                // everything is paused, and the banner owns that case.
+                val scopedUntil = policy.chargedTargets.maxOfOrNull { settings.pausedTargets[it] ?: 0L } ?: 0L
                 PolicyCard(
                     policy = policy,
                     usage = usage[policy.id],
                     effect = ruleEffects[policy.id],
                     nowMs = now,
-                    paused = settings.isPaused(now),
+                    paused = globalPaused || now < scopedUntil,
+                    scopedUntilMs = scopedUntil.takeIf { it > now && !globalPaused },
+                    onResume = { viewModel.endTargetPause(policy.chargedTargets) },
                     onToggle = { viewModel.setPolicyEnabled(policy, it) },
                     onDelete = { viewModel.deletePolicy(policy) },
                     onEdit = { editing = policy },
@@ -264,9 +273,11 @@ private fun PauseBanner(
     nowMs: Long,
     budget: com.ezhou.rotblock.pause.BudgetStatus?,
     onEndPause: () -> Unit,
+    onEndAllScoped: () -> Unit,
     onPause: () -> Unit,
 ) {
     val paused = settings.isPaused(nowMs)
+    val scoped = settings.activeScopedPauses(nowMs)
     Card(
         colors = CardDefaults.cardColors(
             containerColor = if (paused) {
@@ -295,18 +306,29 @@ private fun PauseBanner(
                 TextButton(onClick = onEndPause) { Text("Resume blocking now") }
             } else {
                 Text(
-                    "Blocking is on",
+                    if (scoped.isEmpty()) "Blocking is on" else "Blocking is on — ${scoped.size} app${if (scoped.size == 1) "" else "s"} paused",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    budget.describe(),
+                    if (scoped.isEmpty()) {
+                        budget.describe()
+                    } else {
+                        // The paused apps carry their own countdown and Resume on their cards below;
+                        // this is the roll-up and the one-tap way out of all of them.
+                        "The rest of your rules are still blocking. Each paused app lifts on its own."
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(8.dp))
-                TextButton(onClick = onPause) { Text("Pause blocking") }
+                Row {
+                    TextButton(onClick = onPause) { Text("Pause blocking") }
+                    if (scoped.isNotEmpty()) {
+                        TextButton(onClick = onEndAllScoped) { Text("Resume all") }
+                    }
+                }
             }
         }
     }
@@ -499,6 +521,8 @@ private fun PolicyCard(
     effect: RuleEffect?,
     nowMs: Long,
     paused: Boolean,
+    scopedUntilMs: Long?,
+    onResume: () -> Unit,
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onEdit: () -> Unit,
@@ -577,6 +601,19 @@ private fun PolicyCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            if (scopedUntilMs != null) {
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Paused — ${formatDuration(scopedUntilMs - nowMs)} left",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onResume) { Text("Resume") }
+                }
             }
 
             // A rule written this morning has nothing to report, and "Blocked 0 times · paused

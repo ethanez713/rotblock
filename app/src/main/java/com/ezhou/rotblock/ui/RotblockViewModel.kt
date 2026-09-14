@@ -19,6 +19,7 @@ import com.ezhou.rotblock.data.PendingChangeQueue
 import com.ezhou.rotblock.data.RotblockSettings
 import com.ezhou.rotblock.pause.BudgetStatus
 import com.ezhou.rotblock.pause.PauseResult
+import com.ezhou.rotblock.pause.PauseScope
 import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.policy.PolicyEngine
 import com.ezhou.rotblock.policy.PolicySort
@@ -291,8 +292,8 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    suspend fun startPause(minutes: Int, emergency: Boolean, reason: String?): PauseResult =
-        pauseController.startPause(minutes, emergency, reason).also { refresh() }
+    suspend fun startPause(minutes: Int, scope: PauseScope, emergency: Boolean, reason: String?): PauseResult =
+        pauseController.startPause(minutes, scope, emergency, reason).also { refresh() }
 
     /** The walkthrough is shown once; the Blocks banner is what keeps saying it if it was skipped. */
     fun completeOnboarding() {
@@ -307,6 +308,14 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
     fun endPause() {
         viewModelScope.launch {
             pauseController.endPauseNow()
+            refresh()
+        }
+    }
+
+    /** Ends the scoped pause on [targetIds] (a card's own target, or a group's members). */
+    fun endTargetPause(targetIds: Collection<String>) {
+        viewModelScope.launch {
+            pauseController.endTargetPauses(targetIds)
             refresh()
         }
     }

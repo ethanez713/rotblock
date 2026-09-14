@@ -28,6 +28,14 @@ class PauseController(
         private set
 
     /**
+     * Per-target pause deadlines, cached for the service the same way [pausedUntilMs] is. The narrow
+     * scopes: "this app" is one entry, "this group" is one per member, "everything" is
+     * [pausedUntilMs] instead. Kept fresh by [refresh] and every mutation here.
+     */
+    @Volatile var pausedTargets: Map<String, Long> = emptyMap()
+        private set
+
+    /**
      * Deadline of the most recently logged expiry, so one is never recorded twice.
      *
      * Seeded from the audit log itself rather than a separate flag, which means it survives
@@ -39,7 +47,9 @@ class PauseController(
     @Volatile private var expirySeedLoaded = false
 
     suspend fun refresh() {
-        pausedUntilMs = settings.current().pausedUntilMs
+        val s = settings.current()
+        pausedUntilMs = s.pausedUntilMs
+        pausedTargets = s.pausedTargets
         if (!expirySeedLoaded) {
             lastLoggedExpiryMs =
                 runCatching { auditDao.lastTimestampOf(AuditType.PAUSE_EXPIRED.name) }
@@ -52,6 +62,15 @@ class PauseController(
     fun isPaused(nowMs: Long = clock()): Boolean = nowMs < pausedUntilMs
 
     fun remainingMs(nowMs: Long = clock()): Long = (pausedUntilMs - nowMs).coerceAtLeast(0L)
+
+    /**
+     * When blocking is relaxed for [targetId]: the later of the global pause and this target's own
+     * scoped pause. This is the single value enforcement folds -- the engine is unchanged and still
+     * takes one pause deadline, because a global pause covers every target and a scoped one covers
+     * exactly itself.
+     */
+    fun effectivePauseUntil(targetId: String): Long =
+        maxOf(pausedUntilMs, pausedTargets[targetId] ?: 0L)
 
     /**
      * Records PAUSE_EXPIRED once a pause deadline has passed.
@@ -99,6 +118,7 @@ class PauseController(
      */
     suspend fun startPause(
         minutes: Int,
+        scope: PauseScope = PauseScope.Everything,
         emergency: Boolean = false,
         reason: String? = null,
         nowMs: Long = clock(),
@@ -111,10 +131,32 @@ class PauseController(
         }
         val effectiveMinutes = granted ?: minutes
         val overBudget = granted == null || granted < minutes
+        val addMs = effectiveMinutes * 60_000L
 
-        val until = maxOf(pausedUntilMs, nowMs) + effectiveMinutes * 60_000L
-        settings.setPausedUntil(until)
-        pausedUntilMs = until
+        // Extend any pause already covering the same scope rather than replacing it, so asking again
+        // never shortens what is running -- the same rule the global pause always followed.
+        val until = when (scope) {
+            is PauseScope.Everything -> {
+                val end = maxOf(pausedUntilMs, nowMs) + addMs
+                settings.setPausedUntil(end)
+                pausedUntilMs = end
+                end
+            }
+            is PauseScope.Scoped -> {
+                // Prune deadlines already elapsed while writing, so the map cannot grow without
+                // bound and the tile's count stays honest. A past entry was ignored anyway.
+                val next = pausedTargets.filterValues { it > nowMs }.toMutableMap()
+                var end = nowMs
+                for (id in scope.targets) {
+                    val e = maxOf(next[id] ?: 0L, nowMs) + addMs
+                    next[id] = e
+                    end = maxOf(end, e)
+                }
+                settings.setPausedTargets(next)
+                pausedTargets = next
+                end
+            }
+        }
 
         if (emergency) {
             // Captured before endManually() clears it -- otherwise a skip taken with no workout
@@ -123,7 +165,8 @@ class PauseController(
             WorkoutMode.endManually()
             audit.record(
                 AuditType.EMERGENCY_SKIP,
-                detail = "Skipped the cooldown for a $effectiveMinutes min pause" +
+                targetId = scope.auditTargetId,
+                detail = "Skipped the cooldown for a $effectiveMinutes min pause of ${scope.label}" +
                     if (endedWorkout) "; ended workout mode" else "",
                 userReason = reason,
                 overBudget = overBudget,
@@ -131,7 +174,9 @@ class PauseController(
         }
         audit.record(
             AuditType.PAUSE_STARTED,
-            detail = "Paused for $effectiveMinutes min" + if (overBudget) " (over budget)" else "",
+            targetId = scope.auditTargetId,
+            detail = "Paused ${scope.label} for $effectiveMinutes min" +
+                if (overBudget) " (over budget)" else "",
             userReason = reason,
             durationSeconds = effectiveMinutes * 60,
             overBudget = overBudget,
@@ -149,6 +194,46 @@ class PauseController(
             AuditType.PAUSE_ENDED_EARLY,
             detail = "Ended pause early with $remainingMin min left",
         )
+    }
+
+    /**
+     * Ends the scoped pause on [targetIds] immediately, leaving the global pause and other targets
+     * untouched. Strengthening, so it applies at once. A no-op for targets not currently paused.
+     */
+    suspend fun endTargetPauses(targetIds: Collection<String>, nowMs: Long = clock()) {
+        val next = pausedTargets.filterValues { it > nowMs }.toMutableMap()
+        val removed = targetIds.filter { next.remove(it) != null }
+        if (removed.isEmpty() && next.size == pausedTargets.size) return
+        settings.setPausedTargets(next)
+        pausedTargets = next
+        if (removed.isNotEmpty()) {
+            audit.record(
+                AuditType.PAUSE_ENDED_EARLY,
+                detail = "Ended scoped pause early: ${removed.joinToString(", ")}",
+            )
+        }
+    }
+}
+
+/**
+ * How wide a pause reaches. [Everything] is the global deadline that unblocks the whole phone;
+ * [Scoped] unblocks just the listed target ids -- one for "this app", a group's members for
+ * "this group" -- so pausing a game never unblocks a social app.
+ */
+sealed interface PauseScope {
+    /** For the audit log: the human-readable scope, e.g. "everything", "NecroMerger", "group Brainrot". */
+    val label: String
+
+    /** Filed on the audit event when the scope is a single target, so history can point at it; null otherwise. */
+    val auditTargetId: String?
+
+    data object Everything : PauseScope {
+        override val label: String = "everything"
+        override val auditTargetId: String? = null
+    }
+
+    data class Scoped(val targets: List<String>, override val label: String) : PauseScope {
+        override val auditTargetId: String? = targets.singleOrNull()
     }
 }
 

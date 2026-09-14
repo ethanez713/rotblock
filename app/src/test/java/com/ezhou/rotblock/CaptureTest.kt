@@ -83,6 +83,7 @@ class CaptureTest {
         ),
         currentSessions = listOf(SessionRow(1_699_999_900_000L, 1_700_000_000_000L)),
         pausedUntilMs = 0L,
+        pausedTargets = mapOf("app:com.grumpyrhinogames.necromerger" to 1_700_000_900_000L),
         pauseBudget = PauseBudgetSnapshot(pausesUsed = 1, minutesUsed = 20, maxPauses = 3, maxMinutes = 60),
         workout = WorkoutSnapshot(
             enabled = true,

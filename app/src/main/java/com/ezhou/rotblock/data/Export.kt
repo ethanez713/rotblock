@@ -58,6 +58,7 @@ suspend fun buildExport(db: RotblockDatabase, settings: RotblockSettings, nowMs:
 
     val settingsJson = JSONObject()
         .put("pausedUntilMs", settings.pausedUntilMs)
+        .put("pausedTargets", JSONObject(settings.pausedTargets))
         .put("cooldownSeconds", settings.cooldownSeconds)
         .put("maxPausesPerDay", settings.maxPausesPerDay)
         .put("maxPauseMinutesPerDay", settings.maxPauseMinutesPerDay)

@@ -161,6 +161,8 @@ data class CaptureInput(
     val currentDecision: DecisionSnapshot?,
     val currentSessions: List<SessionRow>,
     val pausedUntilMs: Long,
+    /** Scoped (per-target) pause deadlines, so a capture shows one app paused while the rest block. */
+    val pausedTargets: Map<String, Long>,
     val pauseBudget: PauseBudgetSnapshot?,
     val workout: WorkoutSnapshot,
     val requirements: List<RequirementSnapshot>,
@@ -196,6 +198,7 @@ fun buildCapture(input: CaptureInput): String {
         .put("currentDecision", input.currentDecision?.let(::decisionJson).orNull())
         .put("currentSessions", JSONArray(input.currentSessions.map(::sessionJson)))
         .put("pausedUntilMs", input.pausedUntilMs)
+        .put("pausedTargets", JSONObject(input.pausedTargets))
         .put("pauseBudget", input.pauseBudget?.let(::pauseBudgetJson).orNull())
         .put("workout", workoutJson(input.workout))
         .put("requirements", JSONArray(input.requirements.map(::requirementJson)))

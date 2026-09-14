@@ -55,13 +55,20 @@ class PauseTileService : TileService() {
         Rotblock.scope.launch {
             val settings = Rotblock.settings(this@PauseTileService).current()
             val now = System.currentTimeMillis()
-            val paused = settings.isPaused(now)
-            tile.state = if (paused) Tile.STATE_INACTIVE else Tile.STATE_ACTIVE
+            val globallyPaused = settings.isPaused(now)
+            val scoped = settings.activeScopedPauses(now)
+            // Only a global pause turns the tile off -- a scoped pause leaves most of the phone
+            // blocking, so the tile stays on and the subtitle carries the count instead.
+            tile.state = if (globallyPaused) Tile.STATE_INACTIVE else Tile.STATE_ACTIVE
             tile.label = "rotblock"
-            tile.subtitle = if (paused) {
-                formatDuration(settings.pausedUntilMs - now) + " left"
-            } else {
-                "Blocking on"
+            tile.subtitle = when {
+                globallyPaused -> formatDuration(settings.pausedUntilMs - now) + " left"
+                scoped.isNotEmpty() -> {
+                    val soonest = scoped.values.min()
+                    val n = scoped.size
+                    "$n app${if (n == 1) "" else "s"} paused · ${formatDuration(soonest - now)} left"
+                }
+                else -> "Blocking on"
             }
             runCatching { tile.updateTile() }
         }

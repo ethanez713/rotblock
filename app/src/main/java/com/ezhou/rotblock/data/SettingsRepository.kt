@@ -23,8 +23,23 @@ import kotlinx.coroutines.flow.map
  * reset, or disagree with the history the user is looking at.
  */
 data class RotblockSettings(
-    /** Epoch ms the current pause ends. 0 means not paused. Blocks resume the instant this passes. */
+    /**
+     * Epoch ms the *global* pause ends -- the widest scope, unblocking every target at once. 0
+     * means no global pause. Blocks resume the instant this passes. See [pausedTargets] for the
+     * narrower scopes that unblock one app or one group without touching the rest.
+     */
     val pausedUntilMs: Long = 0L,
+    /**
+     * Per-target pause deadlines: `targetId -> epoch ms it ends`. The narrow scopes live here, so
+     * pausing a game never unblocks Instagram. "This app" writes one entry; "this group" writes one
+     * per member target; "everything" is [pausedUntilMs] instead. A target is relaxed when the
+     * later of its entry and the global deadline is still in the future -- see [pausedUntilFor].
+     *
+     * Same fail-closed invariant as every relaxation here: each value is a deadline compared to the
+     * clock, so a crash, force-stop or reboot resumes blocking on its own. An entry in the past is
+     * simply ignored, which is why nothing prunes it for correctness.
+     */
+    val pausedTargets: Map<String, Long> = emptyMap(),
     /** Seconds of forced waiting before a pause takes effect. 0 disables the cooldown. */
     val cooldownSeconds: Int = 60,
     /** Max pauses that can be started per day. 0 means unlimited. */
@@ -119,7 +134,45 @@ data class RotblockSettings(
      */
     val workoutAllowedPackages: Set<String> = emptySet(),
 ) {
+    /** True when the *whole phone* is paused. Narrow scopes do not make this true -- see [isTargetPaused]. */
     fun isPaused(nowMs: Long): Boolean = nowMs < pausedUntilMs
+
+    /**
+     * When blocking is relaxed for [targetId]: the later of the global pause and this target's own
+     * deadline, or 0 if neither applies. This is the one number enforcement folds -- a global pause
+     * covers every target, a scoped one covers just its own.
+     */
+    fun pausedUntilFor(targetId: String): Long = maxOf(pausedUntilMs, pausedTargets[targetId] ?: 0L)
+
+    fun isTargetPaused(targetId: String, nowMs: Long): Boolean = nowMs < pausedUntilFor(targetId)
+
+    /** The scoped pauses still in the future, global excluded. What the tile counts. */
+    fun activeScopedPauses(nowMs: Long): Map<String, Long> = pausedTargets.filterValues { it > nowMs }
+}
+
+private const val PAUSED_TARGET_ENTRY = "\n"
+
+/**
+ * Encodes [pausedTargets] as `targetId=untilMs` lines. Split on the *last* `=` on decode, so a
+ * target id that itself contains `=` (a website matcher with a query string) still round-trips --
+ * the value is always trailing digits.
+ */
+fun encodePausedTargets(map: Map<String, Long>): String =
+    map.entries
+        .filter { it.key.isNotBlank() && it.value > 0L }
+        .joinToString(PAUSED_TARGET_ENTRY) { "${it.key}=${it.value}" }
+
+fun decodePausedTargets(text: String?): Map<String, Long> {
+    if (text.isNullOrBlank()) return emptyMap()
+    val out = LinkedHashMap<String, Long>()
+    for (line in text.split(PAUSED_TARGET_ENTRY)) {
+        if (line.isBlank()) continue
+        val sep = line.lastIndexOf('=')
+        if (sep <= 0) continue
+        val until = line.substring(sep + 1).toLongOrNull() ?: continue
+        out[line.substring(0, sep)] = until
+    }
+    return out
 }
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "rotblock")
@@ -129,6 +182,7 @@ class SettingsRepository(context: Context) {
 
     private object Keys {
         val pausedUntil = longPreferencesKey("paused_until_ms")
+        val pausedTargets = stringPreferencesKey("paused_targets")
         val cooldownSeconds = intPreferencesKey("cooldown_seconds")
         val maxPausesPerDay = intPreferencesKey("max_pauses_per_day")
         val maxPauseMinutesPerDay = intPreferencesKey("max_pause_minutes_per_day")
@@ -157,6 +211,7 @@ class SettingsRepository(context: Context) {
         val d = RotblockSettings()
         RotblockSettings(
             pausedUntilMs = p[Keys.pausedUntil] ?: d.pausedUntilMs,
+            pausedTargets = decodePausedTargets(p[Keys.pausedTargets]),
             cooldownSeconds = p[Keys.cooldownSeconds] ?: d.cooldownSeconds,
             maxPausesPerDay = p[Keys.maxPausesPerDay] ?: d.maxPausesPerDay,
             maxPauseMinutesPerDay = p[Keys.maxPauseMinutesPerDay] ?: d.maxPauseMinutesPerDay,
@@ -186,6 +241,11 @@ class SettingsRepository(context: Context) {
 
     suspend fun setPausedUntil(untilMs: Long) {
         store.edit { it[Keys.pausedUntil] = untilMs }
+    }
+
+    /** Replaces the whole scoped-pause map. Callers prune expired entries before writing. */
+    suspend fun setPausedTargets(map: Map<String, Long>) {
+        store.edit { it[Keys.pausedTargets] = encodePausedTargets(map) }
     }
 
     suspend fun setCooldownSeconds(seconds: Int) {

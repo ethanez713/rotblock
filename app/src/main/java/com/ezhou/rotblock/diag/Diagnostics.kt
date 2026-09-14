@@ -77,7 +77,7 @@ object Diagnostics {
         val decision = targetId?.let { id ->
             val policy = policies.firstOrNull { it.id == id }
             toDecisionSnapshot(
-                PolicyEngine.evaluate(policy, sessions, pause.pausedUntilMs, WorkoutMode.activeUntilMs(now), now),
+                PolicyEngine.evaluate(policy, sessions, pause.effectivePauseUntil(id), WorkoutMode.activeUntilMs(now), now),
             )
         }
         val budget = runCatching { pause.budgetStatus(now) }.getOrNull()?.let {
@@ -108,6 +108,7 @@ object Diagnostics {
             currentDecision = decision,
             currentSessions = sessions.map { SessionRow(it.startMs, it.endMs) },
             pausedUntilMs = pause.pausedUntilMs,
+            pausedTargets = pause.pausedTargets,
             pauseBudget = budget,
             workout = gatherWorkoutSnapshot(now),
             requirements = requirements,

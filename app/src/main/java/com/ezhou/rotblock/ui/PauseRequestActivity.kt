@@ -12,6 +12,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -52,6 +54,8 @@ import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.pause.BudgetStatus
 import com.ezhou.rotblock.pause.PauseResult
+import com.ezhou.rotblock.pause.PauseScope
+import com.ezhou.rotblock.policy.Policy
 import com.ezhou.rotblock.workout.WorkoutMode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -74,7 +78,14 @@ class PauseRequestActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_TARGET_LABEL = "target_label"
+        const val EXTRA_TARGET_ID = "target_id"
+        const val EXTRA_GROUP_IDS = "group_ids"
+        const val EXTRA_GROUP_LABELS = "group_labels"
+        const val EXTRA_GROUP_MEMBERS = "group_members"
     }
+
+    /** The scope choices this request offers, narrowest first. See [readScope]. */
+    private var scopeOptions by mutableStateOf<List<ScopeOption>>(listOf(ScopeOption("Everything", PauseScope.Everything)))
 
     /**
      * Sitting on a 60-second cooldown must not spend the quota of whatever is underneath. See
@@ -99,16 +110,42 @@ class PauseRequestActivity : ComponentActivity() {
      */
     private var targetLabel by mutableStateOf<String?>(null)
 
+    /**
+     * Turns the intent's target + covering groups into the scope rungs, narrowest first: "just this
+     * app", then one rung per group covering it, then "everything". A request with no target (the
+     * Quick Settings tile, the in-app button) has no narrow scope to offer and gets Everything only.
+     */
+    private fun readScope(intent: Intent) {
+        targetLabel = intent.getStringExtra(EXTRA_TARGET_LABEL)
+        val targetId = intent.getStringExtra(EXTRA_TARGET_ID)
+        val options = mutableListOf<ScopeOption>()
+        if (targetId != null) {
+            val label = targetLabel ?: targetId.substringAfter(':')
+            options += ScopeOption("Just $label", PauseScope.Scoped(listOf(targetId), label))
+            val ids = intent.getStringArrayListExtra(EXTRA_GROUP_IDS).orEmpty()
+            val labels = intent.getStringArrayListExtra(EXTRA_GROUP_LABELS).orEmpty()
+            val members = intent.getStringArrayListExtra(EXTRA_GROUP_MEMBERS).orEmpty()
+            for (i in ids.indices) {
+                val m = Policy.decodeMembers(members.getOrNull(i))
+                if (m.isEmpty()) continue
+                val name = labels.getOrElse(i) { "group" }
+                options += ScopeOption("All of $name", PauseScope.Scoped(m, "group $name"))
+            }
+        }
+        options += ScopeOption("Everything", PauseScope.Everything)
+        scopeOptions = options
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        targetLabel = intent.getStringExtra(EXTRA_TARGET_LABEL)
+        readScope(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        targetLabel = intent.getStringExtra(EXTRA_TARGET_LABEL)
+        readScope(intent)
         viewModel.refresh()
         setContent {
             RotblockTheme {
@@ -116,6 +153,7 @@ class PauseRequestActivity : ComponentActivity() {
                     PauseRequestScreen(
                         viewModel = viewModel,
                         targetLabel = targetLabel,
+                        scopeOptions = scopeOptions,
                         onDone = { finish() },
                     )
                 }
@@ -126,10 +164,14 @@ class PauseRequestActivity : ComponentActivity() {
 
 private enum class Step { Choose, Cooling, Emergency }
 
+/** One rung of the scope selector: what the user reads, and the [PauseScope] it commits. */
+data class ScopeOption(val display: String, val scope: PauseScope)
+
 @Composable
 private fun PauseRequestScreen(
     viewModel: RotblockViewModel,
     targetLabel: String?,
+    scopeOptions: List<ScopeOption>,
     onDone: () -> Unit,
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -138,12 +180,16 @@ private fun PauseRequestScreen(
 
     var step by remember { mutableStateOf(Step.Choose) }
     var minutes by remember { mutableIntStateOf(15) }
+    var scopeIndex by remember { mutableIntStateOf(0) }
     var secondsLeft by remember { mutableIntStateOf(0) }
     var denied by remember { mutableStateOf<BudgetStatus?>(null) }
 
+    // Guard the index against a scope list that shrank under onNewIntent (a tile tap after a block).
+    val chosenScope = scopeOptions.getOrElse(scopeIndex) { scopeOptions.last() }.scope
+
     fun commit(emergency: Boolean, reason: String?) {
         scope.launch {
-            when (val result = viewModel.startPause(minutes, emergency, reason)) {
+            when (val result = viewModel.startPause(minutes, chosenScope, emergency, reason)) {
                 is PauseResult.Started -> onDone()
                 is PauseResult.Denied -> {
                     denied = result.status
@@ -170,6 +216,9 @@ private fun PauseRequestScreen(
                 budget = budget,
                 minutes = minutes,
                 onMinutes = { minutes = it },
+                scopeOptions = scopeOptions,
+                scopeIndex = scopeIndex.coerceIn(0, (scopeOptions.size - 1).coerceAtLeast(0)),
+                onScope = { scopeIndex = it },
                 cooldownSeconds = settings.cooldownSeconds,
                 onStart = {
                     val spent = budget?.exhausted == true
@@ -219,12 +268,16 @@ private fun PauseRequestScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChooseStep(
     targetLabel: String?,
     budget: BudgetStatus?,
     minutes: Int,
     onMinutes: (Int) -> Unit,
+    scopeOptions: List<ScopeOption>,
+    scopeIndex: Int,
+    onScope: (Int) -> Unit,
     cooldownSeconds: Int,
     onStart: () -> Unit,
     onCancel: () -> Unit,
@@ -235,14 +288,47 @@ private fun ChooseStep(
         fontWeight = FontWeight.SemiBold,
     )
     Spacer(Modifier.height(8.dp))
+    val scopedNarrow = scopeOptions.getOrNull(scopeIndex)?.scope is PauseScope.Scoped
     Text(
-        "Everything unblocks for a set time, then blocking comes back on its own. You do not " +
-            "have to remember to turn it back on.",
+        if (scopedNarrow) {
+            "Only what you pick below unblocks for a set time; everything else keeps blocking. " +
+                "It comes back on its own — you do not have to remember."
+        } else {
+            "Everything unblocks for a set time, then blocking comes back on its own. You do not " +
+                "have to remember to turn it back on."
+        },
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
+    // Only worth a selector when there is more than one scope to choose -- a request with no target
+    // (the tile, the in-app button) offers Everything alone and shows no chips.
+    if (scopeOptions.size > 1) {
+        Spacer(Modifier.height(24.dp))
+        Text(
+            "What to pause",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            scopeOptions.forEachIndexed { i, option ->
+                FilterChip(
+                    selected = scopeIndex == i,
+                    onClick = { onScope(i) },
+                    label = { Text(option.display) },
+                )
+            }
+        }
+    }
+
     Spacer(Modifier.height(24.dp))
+    Text(
+        "For how long",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         DURATIONS.forEach { d ->
             FilterChip(

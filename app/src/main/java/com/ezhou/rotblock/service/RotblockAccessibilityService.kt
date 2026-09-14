@@ -1917,7 +1917,10 @@ class RotblockAccessibilityService : AccessibilityService() {
         val verdict = PolicyEngine.evaluateAll(
             covering,
             { sessionsFor(it, targetId, nowMs) },
-            pause.pausedUntilMs,
+            // The later of the global pause and this target's own scoped pause. A scoped pause
+            // relaxes only the app it names, so the game you paused unblocks while a social app
+            // covered by another rule stays blocked. See [PauseController.effectivePauseUntil].
+            pause.effectivePauseUntil(targetId),
             // Asked about the app in front rather than about the workout, so an allowed app falls
             // through to its own rules with no override in the fold. For a website target that is
             // the browser, which is the app you would have to have allowed.
@@ -2084,7 +2087,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             label = policy.label,
             reason = decision.reason,
             liftsAtMs = decision.liftsAtMs,
-            onPauseRequested = { launchPauseRequest(policy) },
+            onPauseRequested = { launchPauseRequest(targetId) },
             escape = escape,
         )
         if (!shown) {
@@ -2321,9 +2324,16 @@ class RotblockAccessibilityService : AccessibilityService() {
         return currentPackage?.takeIf { BrowserRegistry.specFor(it) != null }
     }
 
-    private fun launchPauseRequest(policy: Policy) {
+    private fun launchPauseRequest(targetId: String) {
         guard("launchPauseRequest") {
             overlay.hide()
+            // The scope selector needs the thing on screen and every group covering it: the target's
+            // own name (not the blocking rule's, which may be a group), and each covering group's id,
+            // label and members so "pause the whole group" can be offered as a rung.
+            val covering = enabledPoliciesCovering(targetId)
+            val targetLabel = covering.firstOrNull { it.id == targetId }?.label
+                ?: targetId.substringAfter(':')
+            val groups = covering.filter { it.kind == TargetKind.GROUP }
             startActivity(
                 Intent(this, PauseRequestActivity::class.java)
                     // No CLEAR_TASK: the activity is singleTask, so a second request while a
@@ -2331,7 +2341,14 @@ class RotblockAccessibilityService : AccessibilityService() {
                     // instead of destroying and recreating it -- which is what lets the cooldown
                     // keep counting rather than restarting from the top on a repeat tap.
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    .putExtra(PauseRequestActivity.EXTRA_TARGET_LABEL, policy.label),
+                    .putExtra(PauseRequestActivity.EXTRA_TARGET_ID, targetId)
+                    .putExtra(PauseRequestActivity.EXTRA_TARGET_LABEL, targetLabel)
+                    .putStringArrayListExtra(PauseRequestActivity.EXTRA_GROUP_IDS, ArrayList(groups.map { it.id }))
+                    .putStringArrayListExtra(PauseRequestActivity.EXTRA_GROUP_LABELS, ArrayList(groups.map { it.label }))
+                    .putStringArrayListExtra(
+                        PauseRequestActivity.EXTRA_GROUP_MEMBERS,
+                        ArrayList(groups.map { Policy.encodeMembers(it.members) }),
+                    ),
             )
         }
     }
@@ -2730,7 +2747,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             PolicyEngine.evaluateAll(
                 covering,
                 { sessionsFor(it, id, now) },
-                pause.pausedUntilMs,
+                pause.effectivePauseUntil(id),
                 WorkoutMode.overrideUntilMs(currentPackage, now),
                 now,
             )
@@ -2767,6 +2784,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             currentDecision = decision,
             currentSessions = sessions.map { SessionRow(it.startMs, it.endMs) },
             pausedUntilMs = pause.pausedUntilMs,
+            pausedTargets = pause.pausedTargets,
             // Filled in by withCaptureFacts, which needs a suspending read this main-thread pass
             // cannot do.
             pauseBudget = null,
