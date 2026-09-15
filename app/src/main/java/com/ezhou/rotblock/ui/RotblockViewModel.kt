@@ -8,11 +8,13 @@ import com.ezhou.rotblock.audit.AuditEvent
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.browser.WebMatcher
 import com.ezhou.rotblock.insights.DayBucket
+import com.ezhou.rotblock.insights.DiscouragingStatsResult
 import com.ezhou.rotblock.insights.RuleEffect
 import com.ezhou.rotblock.insights.TargetSession
 import com.ezhou.rotblock.insights.bucketByDay
 import com.ezhou.rotblock.insights.countByDay
 import com.ezhou.rotblock.insights.effectOf
+import com.ezhou.rotblock.insights.loadDiscouragingStats
 import com.ezhou.rotblock.insights.recentDayStarts
 import com.ezhou.rotblock.data.PendingChange
 import com.ezhou.rotblock.data.PendingChangeQueue
@@ -242,6 +244,23 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
         // a queued weakening shows up as its own countdown card on the Blocks screen.
         queue.submit(old, new)
         refresh()
+    }
+
+    private val _discouragingStats = MutableStateFlow<DiscouragingStatsResult?>(null)
+    val discouragingStats: StateFlow<DiscouragingStatsResult?> = _discouragingStats.asStateFlow()
+
+    fun loadDiscouragingStatsFor(targetId: String?) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val settings = settingsRepo.current()
+            _discouragingStats.value = loadDiscouragingStats(
+                usageDao = db.usageDao(),
+                policyDao = db.policyDao(),
+                dayStartHour = settings.dayStartHour,
+                nowMs = now,
+                targetId = targetId,
+            )
+        }
     }
 
     private val _insights = MutableStateFlow<InsightsState?>(null)

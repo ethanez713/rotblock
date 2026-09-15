@@ -27,6 +27,8 @@ import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.block.FrictionGate
 import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.block.Interstitial
+import com.ezhou.rotblock.insights.formatCompactStats
+import com.ezhou.rotblock.insights.loadDiscouragingStats
 import com.ezhou.rotblock.block.TimerHud
 import com.ezhou.rotblock.block.TrackingNotification
 import com.ezhou.rotblock.block.WorkoutReminder
@@ -2074,7 +2076,8 @@ class RotblockAccessibilityService : AccessibilityService() {
      * is what [verifyEscaped] compares against `currentTargetId`.
      */
     private fun showBlock(policy: Policy, targetId: String, decision: Decision.Blocked) {
-        if (!overlay.isShowing) {
+        val firstAppearance = !overlay.isShowing
+        if (firstAppearance) {
             audit.record(
                 AuditType.BLOCK_SHOWN,
                 targetId = policy.id,
@@ -2089,7 +2092,29 @@ class RotblockAccessibilityService : AccessibilityService() {
             liftsAtMs = decision.liftsAtMs,
             onPauseRequested = { launchPauseRequest(targetId) },
             escape = escape,
+            targetId = targetId,
         )
+        if (firstAppearance && shown && decision.reason != BlockReason.WORKOUT_MODE) {
+            val targetLabel = enabledPoliciesCovering(targetId)
+                .firstOrNull { it.id == targetId }?.label
+                ?: targetId.substringAfter(':')
+            scope.launch {
+                runCatching {
+                    val settings = Rotblock.settings(this@RotblockAccessibilityService).current()
+                    val stats = loadDiscouragingStats(
+                        usageDao = Rotblock.database(this@RotblockAccessibilityService).usageDao(),
+                        policyDao = Rotblock.database(this@RotblockAccessibilityService).policyDao(),
+                        dayStartHour = settings.dayStartHour,
+                        nowMs = System.currentTimeMillis(),
+                        targetId = targetId,
+                    )
+                    val text = formatCompactStats(stats, targetLabel)
+                    if (text.isNotBlank()) {
+                        withContext(Dispatchers.Main) { overlay.setStats(text, targetId) }
+                    }
+                }
+            }
+        }
         if (!shown) {
             // No overlay permission, or the window manager refused. Blocking still has to block,
             // so the user gets ejected -- but for a website or feed, ejecting alone is the dead

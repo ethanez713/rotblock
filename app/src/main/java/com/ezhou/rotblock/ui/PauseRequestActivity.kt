@@ -42,9 +42,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import com.ezhou.rotblock.block.formatDuration
+import com.ezhou.rotblock.insights.DiscouragingStatsResult
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -118,6 +123,7 @@ class PauseRequestActivity : ComponentActivity() {
     private fun readScope(intent: Intent) {
         targetLabel = intent.getStringExtra(EXTRA_TARGET_LABEL)
         val targetId = intent.getStringExtra(EXTRA_TARGET_ID)
+        viewModel.loadDiscouragingStatsFor(targetId)
         val options = mutableListOf<ScopeOption>()
         if (targetId != null) {
             val label = targetLabel ?: targetId.substringAfter(':')
@@ -176,6 +182,7 @@ private fun PauseRequestScreen(
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val budget by viewModel.budget.collectAsStateWithLifecycle()
+    val discouragingStats by viewModel.discouragingStats.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     var step by remember { mutableStateOf(Step.Choose) }
@@ -214,6 +221,7 @@ private fun PauseRequestScreen(
             Step.Choose -> ChooseStep(
                 targetLabel = targetLabel,
                 budget = budget,
+                discouragingStats = discouragingStats,
                 minutes = minutes,
                 onMinutes = { minutes = it },
                 scopeOptions = scopeOptions,
@@ -273,6 +281,7 @@ private fun PauseRequestScreen(
 private fun ChooseStep(
     targetLabel: String?,
     budget: BudgetStatus?,
+    discouragingStats: DiscouragingStatsResult?,
     minutes: Int,
     onMinutes: (Int) -> Unit,
     scopeOptions: List<ScopeOption>,
@@ -350,6 +359,11 @@ private fun ChooseStep(
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
         )
+    }
+
+    if (discouragingStats?.hasHistory == true) {
+        Spacer(Modifier.height(16.dp))
+        DiscouragingStatsRow(discouragingStats)
     }
 
     Spacer(Modifier.height(28.dp))
@@ -551,6 +565,49 @@ private fun HoldButton(label: String, fraction: Float, onPressChanged: (Boolean)
             color = MaterialTheme.colorScheme.onErrorContainer,
         )
     }
+}
+
+@Composable
+private fun DiscouragingStatsRow(stats: DiscouragingStatsResult) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (stats.hasTarget) {
+            StatsRow(
+                label = "This target",
+                today = stats.thisTargetToday,
+                yesterday = stats.thisTargetYesterday,
+                thisWeek = stats.thisTargetThisWeek,
+                lastWeek = stats.thisTargetLastWeek,
+            )
+        }
+        StatsRow(
+            label = "All blocked",
+            today = stats.allBlockedToday,
+            yesterday = stats.allBlockedYesterday,
+            thisWeek = stats.allBlockedThisWeek,
+            lastWeek = stats.allBlockedLastWeek,
+        )
+    }
+}
+
+@Composable
+private fun StatsRow(label: String, today: Long, yesterday: Long, thisWeek: Long, lastWeek: Long) {
+    val errorColor = MaterialTheme.colorScheme.error
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val todayDelta = today - yesterday
+    val weekDelta = thisWeek - lastWeek
+    val text = buildAnnotatedString {
+        withStyle(SpanStyle(color = mutedColor)) { append("$label  ·  Today: ${formatDuration(today)}") }
+        if (todayDelta != 0L) {
+            val arrow = if (todayDelta > 0) " ▲ ${formatDuration(todayDelta)}" else " ▼ ${formatDuration(-todayDelta)}"
+            withStyle(SpanStyle(color = if (todayDelta > 0) errorColor else mutedColor)) { append(arrow) }
+        }
+        withStyle(SpanStyle(color = mutedColor)) { append("  ·  This week: ${formatDuration(thisWeek)}") }
+        if (weekDelta != 0L) {
+            val arrow = if (weekDelta > 0) " ▲ ${formatDuration(weekDelta)}" else " ▼ ${formatDuration(-weekDelta)}"
+            withStyle(SpanStyle(color = if (weekDelta > 0) errorColor else mutedColor)) { append(arrow) }
+        }
+    }
+    Text(text = text, style = MaterialTheme.typography.bodySmall)
 }
 
 private fun BudgetStatus.summary(): String {

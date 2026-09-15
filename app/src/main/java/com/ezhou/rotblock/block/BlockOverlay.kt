@@ -76,11 +76,13 @@ class BlockOverlay(private val context: Context) {
 
     private var root: LinearLayout? = null
     private var countdownView: TextView? = null
+    private var statsView: TextView? = null
     private var liftsAtMs: Long? = null
     private var liftReason: BlockReason? = null
 
     /** The escape the visible screen was built with, so a changed one forces a rebuild. */
     private var shownEscapeLabel: String? = null
+    private var shownTargetId: String = ""
     private var onPauseRequested: (() -> Unit)? = null
 
     val isShowing: Boolean get() = root != null
@@ -112,6 +114,7 @@ class BlockOverlay(private val context: Context) {
          * would leave [BlockSelfTest] waiting for an end that never comes.
          */
         singleAction: Boolean = false,
+        targetId: String = "",
     ): Boolean {
         // Text can be swapped in place; the way out cannot. A block screen that stays up while the
         // target changes underneath it -- a website block replaced by an app block on the same
@@ -119,6 +122,13 @@ class BlockOverlay(private val context: Context) {
         // main button would try to move a browser that is no longer what you are in. Before the
         // fields below are set, because tearing down clears them.
         if (root != null && escape?.label != shownEscapeLabel) hide()
+        // A text-swap for a different target (same escape kind) clears any stale stats — the async
+        // load for the new target will arrive shortly and fill them in.
+        if (root != null && targetId != shownTargetId) {
+            statsView?.text = ""
+            statsView?.visibility = View.GONE
+        }
+        shownTargetId = targetId
 
         this.liftsAtMs = liftsAtMs
         this.liftReason = reason
@@ -158,12 +168,26 @@ class BlockOverlay(private val context: Context) {
         val view = root ?: return
         root = null
         countdownView = null
+        statsView = null
         shownEscapeLabel = null
+        shownTargetId = ""
         liftsAtMs = null
         liftReason = null
         onPauseRequested = null
         handler.removeCallbacks(tick)
         runCatching { windowManager.removeView(view) }
+    }
+
+    /**
+     * Fills in the pre-formatted stats string from the async load.
+     *
+     * No-op when hidden or when the block has moved to a different target since the load started.
+     */
+    fun setStats(text: String, forTargetId: String) {
+        if (root == null || forTargetId != shownTargetId || text.isBlank()) return
+        val view = statsView ?: return
+        view.text = text
+        view.visibility = View.VISIBLE
     }
 
     private fun canDrawOverlays(): Boolean = Settings.canDrawOverlays(context)
@@ -223,6 +247,15 @@ class BlockOverlay(private val context: Context) {
                 gravity = Gravity.CENTER
             }
             addView(reasonView)
+
+            statsView = TextView(context).apply {
+                setTextColor(Color.parseColor("#6E7681"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                gravity = Gravity.CENTER
+                setPadding(0, dp(16), 0, 0)
+                visibility = View.GONE
+            }
+            addView(statsView)
 
             addView(spacer(dp(24)))
 
