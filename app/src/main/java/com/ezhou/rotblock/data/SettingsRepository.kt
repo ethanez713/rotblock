@@ -40,6 +40,19 @@ data class RotblockSettings(
      * simply ignored, which is why nothing prunes it for correctness.
      */
     val pausedTargets: Map<String, Long> = emptyMap(),
+    /**
+     * Epoch ms the *global* pause was granted -- the anchor the pause squircle drains against, so
+     * its border reads full at the start of a pause and empty when it ends. 0 means no global pause,
+     * or one granted before this was tracked (the squircle then shows a full, non-draining border).
+     *
+     * Extending a running pause leaves this at the original grant, so the total the border measures
+     * against grows with the extension rather than snapping back to full. Purely a display anchor:
+     * enforcement never reads it, and a lost write costs a squircle that does not drain, not a
+     * fail-open.
+     */
+    val pausedSinceMs: Long = 0L,
+    /** Per-target grant times mirroring [pausedTargets], the scoped-pause equivalent of [pausedSinceMs]. */
+    val pausedTargetsSince: Map<String, Long> = emptyMap(),
     /** Seconds of forced waiting before a pause takes effect. 0 disables the cooldown. */
     val cooldownSeconds: Int = 60,
     /** Max pauses that can be started per day. 0 means unlimited. */
@@ -183,6 +196,8 @@ class SettingsRepository(context: Context) {
     private object Keys {
         val pausedUntil = longPreferencesKey("paused_until_ms")
         val pausedTargets = stringPreferencesKey("paused_targets")
+        val pausedSince = longPreferencesKey("paused_since_ms")
+        val pausedTargetsSince = stringPreferencesKey("paused_targets_since")
         val cooldownSeconds = intPreferencesKey("cooldown_seconds")
         val maxPausesPerDay = intPreferencesKey("max_pauses_per_day")
         val maxPauseMinutesPerDay = intPreferencesKey("max_pause_minutes_per_day")
@@ -212,6 +227,8 @@ class SettingsRepository(context: Context) {
         RotblockSettings(
             pausedUntilMs = p[Keys.pausedUntil] ?: d.pausedUntilMs,
             pausedTargets = decodePausedTargets(p[Keys.pausedTargets]),
+            pausedSinceMs = p[Keys.pausedSince] ?: d.pausedSinceMs,
+            pausedTargetsSince = decodePausedTargets(p[Keys.pausedTargetsSince]),
             cooldownSeconds = p[Keys.cooldownSeconds] ?: d.cooldownSeconds,
             maxPausesPerDay = p[Keys.maxPausesPerDay] ?: d.maxPausesPerDay,
             maxPauseMinutesPerDay = p[Keys.maxPauseMinutesPerDay] ?: d.maxPauseMinutesPerDay,
@@ -246,6 +263,15 @@ class SettingsRepository(context: Context) {
     /** Replaces the whole scoped-pause map. Callers prune expired entries before writing. */
     suspend fun setPausedTargets(map: Map<String, Long>) {
         store.edit { it[Keys.pausedTargets] = encodePausedTargets(map) }
+    }
+
+    suspend fun setPausedSince(sinceMs: Long) {
+        store.edit { it[Keys.pausedSince] = sinceMs }
+    }
+
+    /** Replaces the whole scoped-pause anchor map, kept in step with [setPausedTargets]. */
+    suspend fun setPausedTargetsSince(map: Map<String, Long>) {
+        store.edit { it[Keys.pausedTargetsSince] = encodePausedTargets(map) }
     }
 
     suspend fun setCooldownSeconds(seconds: Int) {

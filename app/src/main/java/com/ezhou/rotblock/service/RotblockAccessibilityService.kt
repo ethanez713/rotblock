@@ -29,7 +29,9 @@ import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.insights.formatCompactStats
 import com.ezhou.rotblock.insights.loadDiscouragingStats
+import com.ezhou.rotblock.block.HudShape
 import com.ezhou.rotblock.block.TimerHud
+import com.ezhou.rotblock.block.pauseArcTotalMs
 import com.ezhou.rotblock.block.TrackingNotification
 import com.ezhou.rotblock.block.WorkoutReminder
 import com.ezhou.rotblock.browser.AddressBar
@@ -353,6 +355,8 @@ class RotblockAccessibilityService : AccessibilityService() {
     private lateinit var overlay: BlockOverlay
     private lateinit var grayscale: Grayscale
     private lateinit var hud: TimerHud
+    /** The squircle counterpart of [hud], shown over a paused app counting down to blocking. */
+    private lateinit var pauseHud: TimerHud
     private lateinit var notification: TrackingNotification
     private lateinit var reminder: WorkoutReminder
 
@@ -388,6 +392,14 @@ class RotblockAccessibilityService : AccessibilityService() {
      * gesture indistinguishable from doing nothing.
      */
     @Volatile private var hudDismissedThisSession = false
+
+    /**
+     * The pause squircle's own dismissal, tracked separately from [hudDismissedThisSession] because
+     * a pause and an accrual are different sessions -- dismissing the squircle while paused must not
+     * suppress the ring once blocking resumes and time starts being spent again. Cleared everywhere
+     * [hideCountdown] runs, plus the two direct session ends that skip it (see that field's doc).
+     */
+    @Volatile private var pauseHudDismissedThisSession = false
 
     /**
      * Whether the breathing countdown is still owed for this visit. Reset whenever the target
@@ -629,6 +641,21 @@ class RotblockAccessibilityService : AccessibilityService() {
                         EnforcementStatus.note("$currentTargetId: ring dismissed for this session")
                     } }
                 },
+            )
+            pauseHud = TimerHud(
+                this,
+                onMoved = { x, y ->
+                    // Shares the one stored position with the ring: the two never show at once, so
+                    // "wherever you last put the countdown" is a single preference, not two.
+                    scope.launch { runCatching { Rotblock.settings(this@RotblockAccessibilityService).setHudPosition(x, y) } }
+                },
+                onDismissed = {
+                    handler.post { guard("pauseHudDismissed") {
+                        pauseHudDismissedThisSession = true
+                        EnforcementStatus.note("$currentTargetId: pause squircle dismissed for this session")
+                    } }
+                },
+                shape = HudShape.SQUIRCLE,
             )
             notification = TrackingNotification(this)
             ignoredPackages = buildIgnoredPackages()
@@ -945,6 +972,7 @@ class RotblockAccessibilityService : AccessibilityService() {
         // it once this closes the open one. A dismissal from ten minutes ago on the same site must
         // not silently apply to a visit that has not happened yet.
         hudDismissedThisSession = false
+        pauseHudDismissedThisSession = false
 
         // Whatever was accruing time has stopped.
         ledger.closeSession(nowMs)
@@ -1006,6 +1034,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             // different one (a link inside a browser, say), which never routes through
             // onForegroundChanged. See [hudDismissedThisSession]'s doc.
             hudDismissedThisSession = false
+            pauseHudDismissedThisSession = false
         }
         confidence.apply(changed, confirmed)
         evaluateAndEnforce(targetId, nowMs)
@@ -1935,19 +1964,30 @@ class RotblockAccessibilityService : AccessibilityService() {
         when (decision) {
             is Decision.Allow -> {
                 overlay.hide()
-                hideCountdown()
                 ledger.closeSession(nowMs)
                 // A pause suspends greyscale and friction too; a pause means "get out of my way".
                 // So do a policy's off-hours: outside them the rule does not exist, which means no
                 // colour drained, no countdown, and nothing charged against the quota.
                 refreshGrayscale(nowMs, ruleWantsGrayscale = false)
                 refreshWorkoutReminder(nowMs)
-                // Three quite different reasons nothing is happening, and "the app is open and
-                // nothing happens" is what every failure in this app looks like from the outside.
-                // Telling them apart in the trail is the entire point of the Right now panel.
+                val pausedUntil = decision.pausedUntilMs
+                // A pause gets the squircle counting down to when blocking resumes -- the same
+                // reason the ring shows what is left of an allowance. Off-hours and no-policy get
+                // no readout: nothing is being kept at bay, so there is nothing to count down.
+                // Our own screen covering the app is the exception a pause shares with accrual: it
+                // would put the squircle over one of our screens, so hold it back the same way.
+                if (pausedUntil != null && !Interstitial.isShowing()) {
+                    hideAllowanceCountdown()
+                    showPauseCountdown(pausedUntil, targetId, nowMs)
+                } else {
+                    hideCountdown()
+                }
+                // Different reasons nothing is happening, and "the app is open and nothing happens"
+                // is what every failure in this app looks like from the outside. Telling them apart
+                // in the trail is the entire point of the Right now panel.
                 EnforcementStatus.note(
                     when {
-                        decision.pausedUntilMs != null -> "$targetId: paused, not charging"
+                        pausedUntil != null -> "$targetId: paused, not charging"
                         // Asked of every rule covering the page, not just the one named: with
                         // nothing paused and nothing blocking, a rule that allows is a rule
                         // outside its hours, and the panel has to say which of the three
@@ -1971,6 +2011,9 @@ class RotblockAccessibilityService : AccessibilityService() {
                     EnforcementStatus.note("$targetId: not charging, one of our screens is up")
                 } else {
                     ledger.startSession(targetId, nowMs)
+                    // A pause elapsing into accrual on the same target fires no target change, so
+                    // the squircle would otherwise linger next to the ring. It is not a pause any more.
+                    hidePauseCountdown()
                     showCountdown(policy.label, decision, nowMs)
                     EnforcementStatus.note("$targetId: charging")
                 }
@@ -2064,9 +2107,41 @@ class RotblockAccessibilityService : AccessibilityService() {
      * target change -- and clear it directly; see [hudDismissedThisSession]'s own doc.
      */
     private fun hideCountdown() {
+        hideAllowanceCountdown()
+        hidePauseCountdown()
+    }
+
+    /**
+     * Takes down just the allowance readouts (ring and notification) and expires the ring's
+     * dismissal, without touching the pause squircle. Separate from [hideCountdown] so the paused
+     * branch can turn the ring off -- a pause is not accrual -- while the squircle it is about to
+     * show, and its own dismissal, are left alone.
+     */
+    private fun hideAllowanceCountdown() {
         hudDismissedThisSession = false
         if (::hud.isInitialized) hud.hide()
         if (::notification.isInitialized) notification.hide()
+    }
+
+    /**
+     * Shows the pause squircle over a paused app, counting down to when blocking resumes. The
+     * mirror of [showCountdown]: same dismissal-and-enable gate, with the border drained against the
+     * pause span from [pauseArcTotalMs].
+     */
+    private fun showPauseCountdown(untilMs: Long, targetId: String, nowMs: Long) {
+        if (!hudEnabled || pauseHudDismissedThisSession) {
+            pauseHud.hide()
+            return
+        }
+        val remainingMs = (untilMs - nowMs).coerceAtLeast(0L)
+        val totalMs = pauseArcTotalMs(untilMs, pause.effectivePauseSince(targetId), nowMs)
+        pauseHud.show(remainingMs, totalMs, hudOpacityPercent, hudPositionX, hudPositionY)
+    }
+
+    /** Takes the pause squircle down and expires its dismissal, the way [hideCountdown] does the ring's. */
+    private fun hidePauseCountdown() {
+        pauseHudDismissedThisSession = false
+        if (::pauseHud.isInitialized) pauseHud.hide()
     }
 
     /**

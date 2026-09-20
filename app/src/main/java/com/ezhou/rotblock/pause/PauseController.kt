@@ -36,6 +36,18 @@ class PauseController(
         private set
 
     /**
+     * Grant times for the current pauses -- [pausedSinceMs] for the global one, [pausedTargetsSince]
+     * per scoped target -- cached the same way the deadlines above are. The pause squircle drains
+     * its border against `until - since`; nothing in enforcement reads either. See
+     * [effectivePauseSince].
+     */
+    @Volatile var pausedSinceMs: Long = 0L
+        private set
+
+    @Volatile var pausedTargetsSince: Map<String, Long> = emptyMap()
+        private set
+
+    /**
      * Deadline of the most recently logged expiry, so one is never recorded twice.
      *
      * Seeded from the audit log itself rather than a separate flag, which means it survives
@@ -50,6 +62,8 @@ class PauseController(
         val s = settings.current()
         pausedUntilMs = s.pausedUntilMs
         pausedTargets = s.pausedTargets
+        pausedSinceMs = s.pausedSinceMs
+        pausedTargetsSince = s.pausedTargetsSince
         if (!expirySeedLoaded) {
             lastLoggedExpiryMs =
                 runCatching { auditDao.lastTimestampOf(AuditType.PAUSE_EXPIRED.name) }
@@ -71,6 +85,17 @@ class PauseController(
      */
     fun effectivePauseUntil(targetId: String): Long =
         maxOf(pausedUntilMs, pausedTargets[targetId] ?: 0L)
+
+    /**
+     * The grant time of whichever pause [effectivePauseUntil] returns -- the scoped one when it is
+     * the later deadline, the global one otherwise. Paired with that deadline, it gives the pause
+     * squircle the span to drain its border against. 0 when the governing pause predates anchor
+     * tracking, which the caller reads as "draw a full, non-draining border".
+     */
+    fun effectivePauseSince(targetId: String): Long {
+        val scopedUntil = pausedTargets[targetId] ?: 0L
+        return if (scopedUntil > pausedUntilMs) pausedTargetsSince[targetId] ?: 0L else pausedSinceMs
+    }
 
     /**
      * Records PAUSE_EXPIRED once a pause deadline has passed.
@@ -137,23 +162,35 @@ class PauseController(
         // never shortens what is running -- the same rule the global pause always followed.
         val until = when (scope) {
             is PauseScope.Everything -> {
+                // Anchor the squircle's total only when starting from rest; extending a running
+                // pause keeps the original grant, so the border measures against the whole span.
+                val wasRunning = pausedUntilMs > nowMs
                 val end = maxOf(pausedUntilMs, nowMs) + addMs
                 settings.setPausedUntil(end)
                 pausedUntilMs = end
+                if (!wasRunning) {
+                    settings.setPausedSince(nowMs)
+                    pausedSinceMs = nowMs
+                }
                 end
             }
             is PauseScope.Scoped -> {
                 // Prune deadlines already elapsed while writing, so the map cannot grow without
                 // bound and the tile's count stays honest. A past entry was ignored anyway.
                 val next = pausedTargets.filterValues { it > nowMs }.toMutableMap()
+                val nextSince = pausedTargetsSince.filterKeys { next.containsKey(it) }.toMutableMap()
                 var end = nowMs
                 for (id in scope.targets) {
+                    val wasRunning = (next[id] ?: 0L) > nowMs
                     val e = maxOf(next[id] ?: 0L, nowMs) + addMs
                     next[id] = e
+                    if (!wasRunning) nextSince[id] = nowMs
                     end = maxOf(end, e)
                 }
                 settings.setPausedTargets(next)
+                settings.setPausedTargetsSince(nextSince)
                 pausedTargets = next
+                pausedTargetsSince = nextSince
                 end
             }
         }
@@ -190,6 +227,8 @@ class PauseController(
         val remainingMin = ((pausedUntilMs - nowMs) / 60_000L).toInt()
         settings.setPausedUntil(0L)
         pausedUntilMs = 0L
+        settings.setPausedSince(0L)
+        pausedSinceMs = 0L
         audit.record(
             AuditType.PAUSE_ENDED_EARLY,
             detail = "Ended pause early with $remainingMin min left",
@@ -204,8 +243,11 @@ class PauseController(
         val next = pausedTargets.filterValues { it > nowMs }.toMutableMap()
         val removed = targetIds.filter { next.remove(it) != null }
         if (removed.isEmpty() && next.size == pausedTargets.size) return
+        val nextSince = pausedTargetsSince.filterKeys { next.containsKey(it) }
         settings.setPausedTargets(next)
+        settings.setPausedTargetsSince(nextSince)
         pausedTargets = next
+        pausedTargetsSince = nextSince
         if (removed.isNotEmpty()) {
             audit.record(
                 AuditType.PAUSE_ENDED_EARLY,

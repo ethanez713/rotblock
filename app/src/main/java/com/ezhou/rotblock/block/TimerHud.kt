@@ -7,6 +7,8 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PathMeasure
 import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.os.Build
@@ -25,6 +27,17 @@ import kotlin.math.hypot
 private const val RING_SIZE_DP = 58
 private const val DEFAULT_EDGE_INSET_DP = 12
 private const val DEFAULT_TOP_DP = 88
+
+/** Corner radius of the squircle border, as a fraction of the drawn box. */
+private const val SQUIRCLE_CORNER_FRACTION = 0.32f
+
+/**
+ * Which outline the readout draws. The two are the same widget in every other respect -- same
+ * countdown, same drag-and-dismiss, same window plumbing -- and differ only in shape, so a glance
+ * tells a pause apart from a spent allowance without reading the number: a [CIRCLE] counts down an
+ * allowance being burned, a [SQUIRCLE] counts down a pause before blocking resumes.
+ */
+enum class HudShape { CIRCLE, SQUIRCLE }
 
 /**
  * How far a drag may be clamped from the top and bottom of the screen. Not the resting position --
@@ -49,7 +62,8 @@ private const val DISMISS_TARGET_FADE_MS = 120L
 private const val SNAP_ANIMATION_MS = 160L
 
 /**
- * A small countdown ring over the app you are spending an allowance in. Draggable anywhere on
+ * A small countdown readout over the app in front -- a [HudShape.CIRCLE] over an app whose
+ * allowance is being spent, a [HudShape.SQUIRCLE] over an app that is paused. Draggable anywhere on
  * screen, and dismissible for the rest of the visit with the standard chat-head gesture: drag it
  * onto the X that appears at the bottom of the screen and let go.
  *
@@ -96,6 +110,8 @@ class TimerHud(
     private val onMoved: (x: Int, y: Int) -> Unit,
     /** Fired once the bubble is released on the dismiss target, after the window is already gone. */
     private val onDismissed: () -> Unit,
+    /** The outline this instance draws. See [HudShape]. */
+    private val shape: HudShape = HudShape.CIRCLE,
 ) {
 
     private val windowManager =
@@ -173,7 +189,7 @@ class TimerHud(
         }
         if (!Settings.canDrawOverlays(context)) return false
 
-        val ring = RingView(context, this).apply { alpha = opacityPercent.coerceIn(10, 100) / 100f }
+        val ring = RingView(context, this, shape).apply { alpha = opacityPercent.coerceIn(10, 100) / 100f }
         val size = dp(RING_SIZE_DP)
         val metrics = context.resources.displayMetrics
         val layoutParams = WindowManager.LayoutParams(
@@ -422,6 +438,19 @@ class TimerHud(
 }
 
 /**
+ * The denominator the pause squircle drains its border against.
+ *
+ * When the pause's grant time [sinceMs] is known, that is the whole span it counts down over, so
+ * the border reads full at the start and empty at the end. When it is not -- a pause older than
+ * anchor tracking, or one whose anchor write was lost -- there is no honest total, so it falls back
+ * to the time remaining: the fraction is then 1 and the border sits full rather than draining from
+ * a nonsense number. Never zero, so [TimerHud.show] can divide by it.
+ */
+fun pauseArcTotalMs(untilMs: Long, sinceMs: Long, nowMs: Long): Long =
+    if (sinceMs in 1 until untilMs) untilMs - sinceMs
+    else (untilMs - nowMs).coerceAtLeast(1L)
+
+/**
  * "9:59" under ten minutes, "24m" above it.
  *
  * Not [formatDuration]: that is written for a sentence ("more time in 4m 12s") and is too wide for
@@ -437,8 +466,12 @@ private fun shortDuration(ms: Long): String {
     }
 }
 
-/** The ring itself: a track, an arc for what is left, and the number in the middle. */
-private class RingView(context: Context, private val hud: TimerHud) : View(context) {
+/** The readout itself: a track, an arc for what is left, and the number in the middle. */
+private class RingView(
+    context: Context,
+    private val hud: TimerHud,
+    private val shape: HudShape,
+) : View(context) {
 
     /** Share of the allowance still unspent, 0..1. */
     var fraction: Float = 1f
@@ -467,6 +500,10 @@ private class RingView(context: Context, private val hud: TimerHud) : View(conte
     }
 
     private val bounds = RectF()
+    private val corner = RectF()
+    private val trackPath = Path()
+    private val arcSegment = Path()
+    private val pathMeasure = PathMeasure()
 
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
@@ -474,21 +511,69 @@ private class RingView(context: Context, private val hud: TimerHud) : View(conte
         val inset = 4f * density + track.strokeWidth / 2f
         bounds.set(inset, inset, w - inset, h - inset)
 
-        canvas.drawCircle(w / 2f, h / 2f, w / 2f - 2f * density, backdrop)
-        canvas.drawArc(bounds, 0f, 360f, false, track)
-
         // Warmer as it empties: the colour is doing the same job as the number, for the glance
-        // that does not stop to read it.
+        // that does not stop to read it. On a squircle "empty" means the pause is nearly over and
+        // blocking is about to resume, which is the same heads-up.
         arc.color = when {
             fraction <= 0.1f -> Color.parseColor("#F08A7A")
             fraction <= 0.25f -> Color.parseColor("#F0BE6E")
             else -> Color.parseColor("#7FD1A6")
         }
-        // From twelve o'clock, anticlockwise, so the ring empties the way a clock hand would.
-        canvas.drawArc(bounds, -90f, -360f * fraction, false, arc)
+
+        when (shape) {
+            HudShape.CIRCLE -> {
+                canvas.drawCircle(w / 2f, h / 2f, w / 2f - 2f * density, backdrop)
+                canvas.drawArc(bounds, 0f, 360f, false, track)
+                // From twelve o'clock, anticlockwise, so the ring empties the way a clock hand would.
+                canvas.drawArc(bounds, -90f, -360f * fraction, false, arc)
+            }
+            HudShape.SQUIRCLE -> {
+                val radius = minOf(bounds.width(), bounds.height()) * SQUIRCLE_CORNER_FRACTION
+                val backInset = 2f * density
+                canvas.drawRoundRect(
+                    backInset, backInset, w - backInset, h - backInset, radius, radius, backdrop,
+                )
+                buildTopCenterRoundRect(trackPath, bounds, radius)
+                canvas.drawPath(trackPath, track)
+                // Same top-centre start and anticlockwise drain as the circle, traced along the
+                // rounded-rect perimeter, so the two readouts empty the same direction.
+                pathMeasure.setPath(trackPath, false)
+                val drawLen = pathMeasure.length * fraction
+                if (drawLen > 0f) {
+                    arcSegment.reset()
+                    pathMeasure.getSegment(0f, drawLen, arcSegment, true)
+                    canvas.drawPath(arcSegment, arc)
+                }
+            }
+        }
 
         val baseline = h / 2f - (text.descent() + text.ascent()) / 2f
         canvas.drawText(label, w / 2f, baseline, text)
+    }
+
+    /**
+     * A rounded-rect outline as a single contour beginning at the top-centre and running
+     * anticlockwise back to it, so [PathMeasure.getSegment] from zero draws the border the same way
+     * [drawArc] does for the circle. Left open on purpose -- the closing edge is the final `lineTo`,
+     * so the measured length is the whole perimeter with no extra join segment.
+     */
+    private fun buildTopCenterRoundRect(path: Path, b: RectF, r: Float) {
+        path.reset()
+        val cx = b.centerX()
+        path.moveTo(cx, b.top)
+        path.lineTo(b.left + r, b.top)
+        corner.set(b.left, b.top, b.left + 2 * r, b.top + 2 * r)
+        path.arcTo(corner, 270f, -90f)
+        path.lineTo(b.left, b.bottom - r)
+        corner.set(b.left, b.bottom - 2 * r, b.left + 2 * r, b.bottom)
+        path.arcTo(corner, 180f, -90f)
+        path.lineTo(b.right - r, b.bottom)
+        corner.set(b.right - 2 * r, b.bottom - 2 * r, b.right, b.bottom)
+        path.arcTo(corner, 90f, -90f)
+        path.lineTo(b.right, b.top + r)
+        corner.set(b.right - 2 * r, b.top, b.right, b.top + 2 * r)
+        path.arcTo(corner, 0f, -90f)
+        path.lineTo(cx, b.top)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

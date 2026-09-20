@@ -3,6 +3,7 @@ package com.ezhou.rotblock
 import com.ezhou.rotblock.block.clampX
 import com.ezhou.rotblock.block.clampY
 import com.ezhou.rotblock.block.isOverDismissTarget
+import com.ezhou.rotblock.block.pauseArcTotalMs
 import com.ezhou.rotblock.block.snapEdgeX
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -107,5 +108,35 @@ class HudGeometryTest {
         // valid position, not a crash.
         assertEquals(50, clampY(y = 40, sizePx = 100, screenHeightPx = 100, topInsetPx = 50, bottomInsetPx = 50))
         assertEquals(50, clampY(y = 9000, sizePx = 100, screenHeightPx = 100, topInsetPx = 50, bottomInsetPx = 50))
+    }
+
+    @Test
+    fun `pause arc drains against the whole span when the grant time is known`() {
+        // Granted at 1000, ends at 5000: a 4000ms span. Halfway through, remaining/total is 2000/4000.
+        val total = pauseArcTotalMs(untilMs = 5000, sinceMs = 1000, nowMs = 3000)
+        assertEquals(4000, total)
+    }
+
+    @Test
+    fun `pause arc holds full when the grant time is unknown`() {
+        // No anchor (a pause older than tracking): total equals the remaining, so the fraction is 1
+        // and the border sits full rather than draining from a nonsense number.
+        val nowMs = 3000L
+        val untilMs = 5000L
+        assertEquals(untilMs - nowMs, pauseArcTotalMs(untilMs, sinceMs = 0, nowMs))
+    }
+
+    @Test
+    fun `pause arc ignores an anchor at or after the deadline`() {
+        // A since >= until could only come from a corrupt write; treat it as unknown, not as a
+        // zero or negative total that would divide badly.
+        assertEquals(2000, pauseArcTotalMs(untilMs = 5000, sinceMs = 5000, nowMs = 3000))
+        assertEquals(2000, pauseArcTotalMs(untilMs = 5000, sinceMs = 6000, nowMs = 3000))
+    }
+
+    @Test
+    fun `pause arc total is never zero even at the deadline`() {
+        // Divisible by construction: an unknown anchor with no time left must still not be zero.
+        assertEquals(1, pauseArcTotalMs(untilMs = 5000, sinceMs = 0, nowMs = 5000))
     }
 }
