@@ -222,12 +222,12 @@ class DayBarsView @JvmOverloads constructor(
         val slot = innerW / n
         val barW = max(2.5f * d, slot * 0.42f)
 
-        overlayPaint.color = if (onDarkSurface) 0xFF3A3630.toInt() else 0xFFE8E2D8.toInt()
-        appPaint.color = if (onDarkSurface) 0xFFC8C2B6.toInt() else 0xFF3E3830.toInt()
+        overlayPaint.color = if (onDarkSurface) 0xFF6B6459.toInt() else 0xFFE8E2D8.toInt()
+        appPaint.color = if (onDarkSurface) 0xFFD6D0C5.toInt() else 0xFF3E3830.toInt()
         todayPaint.color = if (onDarkSurface) 0xFFF7F4ED.toInt() else 0xFF211D18.toInt()
-        gridPale.color = 0xFF70685B.toInt()
+        gridPale.color = if (onDarkSurface) 0xFF8A8173.toInt() else 0xFF70685B.toInt()
         gridBright.color = if (onDarkSurface) 0xB3211D18.toInt() else 0xB3FDFCF9.toInt()
-        textPaint.color = if (onDarkSurface) 0xFF9A9385.toInt() else 0xFF70685B.toInt()
+        textPaint.color = if (onDarkSurface) 0xFFB4AEA2.toInt() else 0xFF70685B.toInt()
 
         fun y(v: Long) = padT + innerH * (1f - v.toFloat() / top)
         fun ht(v: Long) = innerH * (v.toFloat() / top)
