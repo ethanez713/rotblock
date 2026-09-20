@@ -70,11 +70,21 @@ fun foldStats(
 }
 
 /**
+ * How far apart the paired [AuditType.EMERGENCY_SKIP] and [AuditType.PAUSE_STARTED] rows may sit
+ * and still be joined. Wide enough to absorb clock jitter between two audit writes, far short of
+ * the gap between two deliberate pauses, which cost a screen and a confirmation each.
+ */
+private const val EMERGENCY_JOIN_WINDOW_MS = 2_000L
+
+/**
  * Minutes of emergency skip per day, oldest-first.
  *
- * An emergency skip is two audit rows written together: [AuditType.EMERGENCY_SKIP] and the
- * [AuditType.PAUSE_STARTED] it unlocks, sharing a timestamp. Duration lives on the pause
- * row. A skip with no matching pause contributes nothing rather than inventing a length.
+ * An emergency skip writes two audit rows in one call: [AuditType.EMERGENCY_SKIP] and the
+ * [AuditType.PAUSE_STARTED] it unlocks, and only the pause row carries the duration. Each skip
+ * claims the nearest unclaimed pause within [EMERGENCY_JOIN_WINDOW_MS] rather than one at an exact
+ * matching instant, so a millisecond of jitter between the two writes cannot drop the skip. Each
+ * pause is claimed at most once, so an unpaired skip contributes nothing rather than borrowing an
+ * ordinary pause's length. The duration lands in the day of the skip.
  */
 fun foldEmergencyMinutes(
     events: List<AuditEvent>,
@@ -82,19 +92,36 @@ fun foldEmergencyMinutes(
     nowMs: Long,
 ): List<Long> {
     require(dayStarts.size == STATS_DAYS)
-    val skipTs = HashSet<Long>()
-    for (e in events) if (e.type == AuditType.EMERGENCY_SKIP) skipTs.add(e.tsMs)
-    val durations = ArrayList<Pair<Long, Long>>()
-    for (e in events) {
-        if (e.type != AuditType.PAUSE_STARTED || e.tsMs !in skipTs) continue
-        durations.add(e.tsMs to (e.durationSeconds ?: 0) * 1000L)
+    val skips = events.filter { it.type == AuditType.EMERGENCY_SKIP }.sortedBy { it.tsMs }
+    val pauses = events.filter { it.type == AuditType.PAUSE_STARTED }.sortedBy { it.tsMs }
+    val claimed = BooleanArray(pauses.size)
+    val perDay = LongArray(dayStarts.size)
+    for (skip in skips) {
+        var bestIdx = -1
+        var bestGap = Long.MAX_VALUE
+        for (i in pauses.indices) {
+            if (claimed[i]) continue
+            val gap = kotlin.math.abs(pauses[i].tsMs - skip.tsMs)
+            if (gap <= EMERGENCY_JOIN_WINDOW_MS && gap < bestGap) {
+                bestGap = gap
+                bestIdx = i
+            }
+        }
+        if (bestIdx < 0) continue
+        claimed[bestIdx] = true
+        val day = dayIndexOf(skip.tsMs, dayStarts, nowMs)
+        if (day >= 0) perDay[day] += (pauses[bestIdx].durationSeconds ?: 0) * 1000L
     }
-    return dayStarts.mapIndexed { i, start ->
+    return perDay.toList()
+}
+
+/** Which day bucket [tsMs] falls in, or -1 if it is before the first day or after [nowMs]. */
+private fun dayIndexOf(tsMs: Long, dayStarts: List<Long>, nowMs: Long): Int {
+    for (i in dayStarts.indices) {
         val end = dayStarts.getOrNull(i + 1) ?: nowMs
-        var sum = 0L
-        for ((ts, ms) in durations) if (ts in start until end) sum += ms
-        sum
+        if (tsMs in dayStarts[i] until end) return i
     }
+    return -1
 }
 
 /**

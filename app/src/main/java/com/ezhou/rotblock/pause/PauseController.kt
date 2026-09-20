@@ -207,9 +207,9 @@ class PauseController(
                     if (endedWorkout) "; ended workout mode" else "",
                 userReason = reason,
                 overBudget = overBudget,
-                // Same stamp as the PAUSE_STARTED below: foldEmergencyMinutes joins the two rows on
-                // an identical timestamp, and two separate clock reads can straddle a millisecond
-                // and drop the skip from the emergency stats.
+                // Same stamp as the PAUSE_STARTED below, so the pair lands in one day bucket and
+                // joins cleanly in foldEmergencyMinutes -- which also tolerates a little jitter, but
+                // there is no reason to hand it any.
                 tsMs = nowMs,
             )
         }

@@ -259,6 +259,47 @@ class FoldEmergencyMinutesTest {
         val days = foldEmergencyMinutes(events, dayStarts, now)
         assertEquals(0L, days.last())
     }
+
+    @Test
+    fun `a millisecond of jitter between the two rows still joins`() {
+        val now = at(31, 12)
+        val dayStarts = makeDayStarts(now)
+        val ts = dayStarts.last() + HOUR
+        val events = listOf(
+            AuditEvent(tsMs = ts, type = AuditType.EMERGENCY_SKIP),
+            AuditEvent(tsMs = ts + 1, type = AuditType.PAUSE_STARTED, durationSeconds = 15 * 60),
+        )
+        val days = foldEmergencyMinutes(events, dayStarts, now)
+        assertEquals(15 * 60 * 1000L, days.last())
+    }
+
+    @Test
+    fun `an ordinary pause well outside the window is not borrowed by a skip`() {
+        val now = at(31, 12)
+        val dayStarts = makeDayStarts(now)
+        val skipTs = dayStarts.last() + HOUR
+        val events = listOf(
+            AuditEvent(tsMs = skipTs, type = AuditType.EMERGENCY_SKIP),
+            AuditEvent(tsMs = skipTs + 10_000L, type = AuditType.PAUSE_STARTED, durationSeconds = 15 * 60),
+        )
+        val days = foldEmergencyMinutes(events, dayStarts, now)
+        assertTrue("a pause 10s away is a separate action, not this skip's", days.all { it == 0L })
+    }
+
+    @Test
+    fun `two clustered skips claim distinct pauses`() {
+        val now = at(31, 12)
+        val dayStarts = makeDayStarts(now)
+        val base = dayStarts.last() + HOUR
+        val events = listOf(
+            AuditEvent(tsMs = base, type = AuditType.EMERGENCY_SKIP),
+            AuditEvent(tsMs = base + 1, type = AuditType.PAUSE_STARTED, durationSeconds = 10 * 60),
+            AuditEvent(tsMs = base + 500, type = AuditType.EMERGENCY_SKIP),
+            AuditEvent(tsMs = base + 501, type = AuditType.PAUSE_STARTED, durationSeconds = 5 * 60),
+        )
+        val days = foldEmergencyMinutes(events, dayStarts, now)
+        assertEquals(15 * 60 * 1000L, days.last())
+    }
 }
 
 class FormatHoursMinutesTest {
