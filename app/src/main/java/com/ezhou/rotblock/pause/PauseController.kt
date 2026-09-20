@@ -207,6 +207,10 @@ class PauseController(
                     if (endedWorkout) "; ended workout mode" else "",
                 userReason = reason,
                 overBudget = overBudget,
+                // Same stamp as the PAUSE_STARTED below: foldEmergencyMinutes joins the two rows on
+                // an identical timestamp, and two separate clock reads can straddle a millisecond
+                // and drop the skip from the emergency stats.
+                tsMs = nowMs,
             )
         }
         audit.record(
@@ -217,6 +221,7 @@ class PauseController(
             userReason = reason,
             durationSeconds = effectiveMinutes * 60,
             overBudget = overBudget,
+            tsMs = nowMs,
         )
         return PauseResult.Started(untilMs = until, grantedMinutes = effectiveMinutes, overBudget = overBudget)
     }
