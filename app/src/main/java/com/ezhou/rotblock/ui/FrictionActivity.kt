@@ -14,11 +14,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -155,7 +158,7 @@ class FrictionActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this) { leave(covering.browser) }
 
         setContent {
-            RotblockTheme {
+            InterstitialTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
                     val (target, label, seconds, browser) = covering
                     val stats by viewModel.discouragingStats.collectAsStateWithLifecycle()
@@ -230,20 +233,26 @@ private fun FrictionScreen(
     )
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.systemBars)
+            .padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(contentAlignment = Alignment.Center) {
             CircularProgressIndicator(
                 progress = { progress },
-                modifier = Modifier.size(120.dp),
-                strokeWidth = 5.dp,
+                modifier = Modifier.size(128.dp),
+                strokeWidth = 5.5.dp,
+                color = MaterialTheme.colorScheme.onSurface,
+                trackColor = MaterialTheme.colorScheme.outlineVariant,
             )
             Text(
                 if (left > 0) "$left" else "→",
                 style = MaterialTheme.typography.displaySmall,
-                fontWeight = FontWeight.Light,
+                fontFamily = InterstitialMono,
+                fontWeight = FontWeight.Normal,
             )
         }
 
@@ -251,7 +260,6 @@ private fun FrictionScreen(
         Text(
             label,
             style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(6.dp))
@@ -261,10 +269,8 @@ private fun FrictionScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
-        if (todayMs != null && todayMs > 0L) {
-            Spacer(Modifier.height(16.dp))
-            HourClocks(todayMs, onDark = isSystemInDarkTheme())
-        }
+        Spacer(Modifier.height(16.dp))
+        HourClocks(todayMs ?: 0L, onDark = isSystemInDarkTheme())
 
         Spacer(Modifier.height(28.dp))
         Button(

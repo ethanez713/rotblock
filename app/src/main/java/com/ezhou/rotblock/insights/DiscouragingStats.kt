@@ -12,9 +12,9 @@ const val STATS_DAYS = 30
 /**
  * Per-day ms totals for the interstitial screens.
  *
- * Raw wall-clock foreground time, not schedule-clipped: this is a behavioural mirror
- * ("you spent 3h here today"), not quota accounting. Daily series are oldest-first and
- * always [STATS_DAYS] long; a day with no sessions is 0.
+ * Raw wall-clock foreground time, not schedule-clipped and not pause-clipped: this is a
+ * behavioural mirror ("you spent 3h here today"), not quota accounting. Daily series are
+ * oldest-first and always [STATS_DAYS] long; a day with no sessions is 0.
  */
 data class DiscouragingStatsResult(
     val thisTargetDailyMs: List<Long> = List(STATS_DAYS) { 0L },

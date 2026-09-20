@@ -17,11 +17,14 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -52,6 +55,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ezhou.rotblock.insights.DiscouragingStatsResult
+import com.ezhou.rotblock.insights.STATS_DAYS
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -156,7 +160,7 @@ class PauseRequestActivity : ComponentActivity() {
         readScope(intent)
         viewModel.refresh()
         setContent {
-            RotblockTheme {
+            InterstitialTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
                     PauseRequestScreen(
                         viewModel = viewModel,
@@ -209,7 +213,10 @@ private fun PauseRequestScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(28.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.systemBars)
+            .padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -319,15 +326,13 @@ private fun ChooseStep(
         )
     }
 
-    if (discouragingStats?.hasHistory == true) {
-        Spacer(Modifier.height(18.dp))
-        UsageGlance(
-            stats = discouragingStats,
-            targetLabel = scopeOptions.getOrNull(scopeIndex)?.titleWord() ?: targetLabel,
-            dense = true,
-            onDark = isSystemInDarkTheme(),
-        )
-    }
+    Spacer(Modifier.height(18.dp))
+    UsageGlance(
+        stats = discouragingStats ?: DiscouragingStatsResult(),
+        targetLabel = scopeOptions.getOrNull(scopeIndex)?.titleWord() ?: targetLabel,
+        dense = true,
+        onDark = isSystemInDarkTheme(),
+    )
 
     Spacer(Modifier.height(28.dp))
     Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
@@ -467,16 +472,18 @@ private fun EmergencyStep(
         )
     }
 
-    if (stats?.hasEmergencyHistory == true) {
-        Spacer(Modifier.height(16.dp))
-        DayBars(
-            appMs = stats.emergencyDailyMs,
-            quarterHour = true,
-            onDark = isSystemInDarkTheme(),
-        )
-        Spacer(Modifier.height(10.dp))
-        CompareDelta(stats.emergencyDailyMs.lastOrNull() ?: 0L, stats.emergencyAvg30Ms)
-    }
+    Spacer(Modifier.height(16.dp))
+    DayBars(
+        appMs = stats?.emergencyDailyMs?.ifEmpty { List(STATS_DAYS) { 0L } }
+            ?: List(STATS_DAYS) { 0L },
+        quarterHour = true,
+        onDark = isSystemInDarkTheme(),
+    )
+    Spacer(Modifier.height(10.dp))
+    CompareDelta(
+        stats?.emergencyDailyMs?.lastOrNull() ?: 0L,
+        stats?.emergencyAvg30Ms ?: 0L,
+    )
 
     Spacer(Modifier.height(16.dp))
     OutlinedTextField(

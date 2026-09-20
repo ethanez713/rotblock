@@ -38,9 +38,22 @@ private val MIGRATION_2_3 = object : Migration(2, 3) {
     }
 }
 
+/**
+ * Marks sessions recorded during a pause so they can feed the interstitial mirror
+ * without counting toward quota. Existing rows default to counting, which is what
+ * they already were.
+ */
+private val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "ALTER TABLE usage_sessions ADD COLUMN countsTowardQuota INTEGER NOT NULL DEFAULT 1",
+        )
+    }
+}
+
 @Database(
     entities = [Policy::class, UsageSessionEntity::class, AuditEvent::class, PendingChange::class],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -62,7 +75,7 @@ abstract class RotblockDatabase : RoomDatabase() {
                 // No destructive migration: the audit log is the one thing in this app that is
                 // genuinely irreplaceable, so a schema mistake should fail loudly at build time
                 // rather than silently wipe months of history on the phone.
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
                 .also { instance = it }
         }

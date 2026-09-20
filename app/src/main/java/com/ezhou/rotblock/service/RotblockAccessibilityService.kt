@@ -1963,13 +1963,20 @@ class RotblockAccessibilityService : AccessibilityService() {
         when (decision) {
             is Decision.Allow -> {
                 overlay.hide()
-                ledger.closeSession(nowMs)
+                val pausedUntil = decision.pausedUntilMs
+                // A pause still records the visit — an hour on reddit while paused is an hour
+                // spent — but it must not count toward quota. Off-hours is different: the rule
+                // does not exist, so nothing is recorded.
+                if (pausedUntil != null && !Interstitial.isShowing()) {
+                    ledger.startSession(targetId, nowMs, countsTowardQuota = false)
+                } else {
+                    ledger.closeSession(nowMs)
+                }
                 // A pause suspends greyscale and friction too; a pause means "get out of my way".
                 // So do a policy's off-hours: outside them the rule does not exist, which means no
                 // colour drained, no countdown, and nothing charged against the quota.
                 refreshGrayscale(nowMs, ruleWantsGrayscale = false)
                 refreshWorkoutReminder(nowMs)
-                val pausedUntil = decision.pausedUntilMs
                 // A pause gets the squircle counting down to when blocking resumes -- the same
                 // reason the ring shows what is left of an allowance. Off-hours and no-policy get
                 // no readout: nothing is being kept at bay, so there is nothing to count down.
@@ -1986,7 +1993,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 // in the trail is the entire point of the Right now panel.
                 EnforcementStatus.note(
                     when {
-                        pausedUntil != null -> "$targetId: paused, not charging"
+                        pausedUntil != null -> "$targetId: paused, tracking, not charging"
                         // Asked of every rule covering the page, not just the one named: with
                         // nothing paused and nothing blocking, a rule that allows is a rule
                         // outside its hours, and the panel has to say which of the three

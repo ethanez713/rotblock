@@ -87,6 +87,14 @@ class PolicyEngineTest {
     }
 
     @Test
+    fun `pause-tagged sessions do not count toward quota`() {
+        val paused = UsageSession(NOW - 10 * MIN, NOW, countsTowardQuota = false)
+        val d = PolicyEngine.evaluate(policy(180), listOf(paused), 0L, null, NOW) as Decision.Allowed
+        assertEquals(3 * MIN, d.remainingMs)
+        assertEquals(0L, d.usedMs)
+    }
+
+    @Test
     fun `within quota reports remaining time`() {
         val sessions = listOf(UsageSession(NOW - 10 * MIN, NOW - 9 * MIN)) // 1 min used
         val d = PolicyEngine.evaluate(policy(180), sessions, 0L, null, NOW) as Decision.Allowed

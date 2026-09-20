@@ -1,7 +1,15 @@
 package com.ezhou.rotblock.quota
 
 /** A closed-open interval of foreground time, `[startMs, endMs)`. */
-data class UsageSession(val startMs: Long, val endMs: Long) {
+data class UsageSession(
+    val startMs: Long,
+    val endMs: Long,
+    /**
+     * False for time recorded while a pause was in effect. The interstitial mirror still
+     * counts it; quota must not, or a pause would over-charge.
+     */
+    val countsTowardQuota: Boolean = true,
+) {
     val durationMs: Long get() = (endMs - startMs).coerceAtLeast(0L)
 }
 

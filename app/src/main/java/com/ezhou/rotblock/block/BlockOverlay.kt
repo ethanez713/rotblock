@@ -20,13 +20,20 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.ezhou.rotblock.insights.DiscouragingStatsResult
+import com.ezhou.rotblock.insights.STATS_DAYS
 import com.ezhou.rotblock.insights.formatHoursMinutes
 import com.ezhou.rotblock.policy.BlockReason
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.ui.DayBarsView
+import com.ezhou.rotblock.ui.DsAndroid
 import com.ezhou.rotblock.ui.HourClocksView
 import com.ezhou.rotblock.ui.compareColorInt
 import com.ezhou.rotblock.ui.compareHead
+import com.ezhou.rotblock.ui.dsBodyTypeface
+import com.ezhou.rotblock.ui.dsHeadingTypeface
+import com.ezhou.rotblock.ui.dsMonoMediumTypeface
+import com.ezhou.rotblock.ui.dsMonoTypeface
+import com.ezhou.rotblock.ui.dsNight
 
 /**
  * The way out of a block that is narrower than the app it covers.
@@ -140,7 +147,7 @@ class BlockOverlay(private val context: Context) {
         // A text-swap for a different target (same escape kind) clears any stale stats — the async
         // load for the new target will arrive shortly and fill them in.
         if (root != null && targetId != shownTargetId) {
-            statsColumn?.visibility = View.GONE
+            resetStatsPlaceholder()
         }
         shownTargetId = targetId
 
@@ -201,8 +208,8 @@ class BlockOverlay(private val context: Context) {
      */
     @SuppressLint("SetTextI18n")
     fun setStats(stats: DiscouragingStatsResult, targetLabel: String?, forTargetId: String) {
-        if (root == null || forTargetId != shownTargetId || !stats.hasHistory) return
-        val column = statsColumn ?: return
+        if (root == null || forTargetId != shownTargetId) return
+        val night = dsNight(context)
         val clocks = targetClocks ?: return
         val label = targetLabelView ?: return
         val head = compareHeadView ?: return
@@ -212,28 +219,26 @@ class BlockOverlay(private val context: Context) {
         val bars = dayBars ?: return
 
         val name = targetLabel ?: forTargetId.substringAfter(':')
-        if (stats.hasTarget) {
-            label.text = "$name · ${formatHoursMinutes(stats.thisTargetToday)} today"
-            label.visibility = View.VISIBLE
-            clocks.minutesMs = stats.thisTargetToday
-            clocks.visibility = View.VISIBLE
-            val color = compareColorInt(stats.thisTargetToday, stats.thisTargetAvg30Ms, onDark = true)
-            head.text = compareHead(stats.thisTargetToday, stats.thisTargetAvg30Ms)
-            head.setTextColor(color)
-            head.visibility = View.VISIBLE
-            sub.setTextColor(color)
-            sub.visibility = View.VISIBLE
-        } else {
-            label.visibility = View.GONE
-            clocks.visibility = View.GONE
-            head.visibility = View.GONE
-            sub.visibility = View.GONE
-        }
+        label.text = "$name · ${formatHoursMinutes(stats.thisTargetToday)} today"
+        clocks.minutesMs = stats.thisTargetToday
+        val color = compareColorInt(stats.thisTargetToday, stats.thisTargetAvg30Ms, onDark = night)
+        head.text = compareHead(stats.thisTargetToday, stats.thisTargetAvg30Ms)
+        head.setTextColor(color)
+        sub.setTextColor(color)
         allLab.text = "all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today"
         all.minutesMs = stats.allBlockedToday
-        bars.appMs = stats.thisTargetDailyMs
-        bars.overlayMs = stats.allBlockedDailyMs
-        column.visibility = View.VISIBLE
+        bars.appMs = stats.thisTargetDailyMs.ifEmpty { List(STATS_DAYS) { 0L } }
+        bars.overlayMs = stats.allBlockedDailyMs.ifEmpty { List(STATS_DAYS) { 0L } }
+    }
+
+    private fun resetStatsPlaceholder() {
+        targetLabelView?.text = " "
+        targetClocks?.minutesMs = 0L
+        compareHeadView?.text = " "
+        allLabelView?.text = " "
+        allClocks?.minutesMs = 0L
+        dayBars?.appMs = List(STATS_DAYS) { 0L }
+        dayBars?.overlayMs = List(STATS_DAYS) { 0L }
     }
 
     private fun clearStatViews() {
@@ -267,7 +272,14 @@ class BlockOverlay(private val context: Context) {
         escape: Escape?,
         singleAction: Boolean = false,
     ): View {
-        val pad = dp(28)
+        val night = dsNight(context)
+        val ds = DsAndroid(night)
+        val pad = dp(24)
+        val heading = dsHeadingTypeface(context)
+        val body = dsBodyTypeface(context)
+        val mono = dsMonoTypeface(context)
+        val monoMed = dsMonoMediumTypeface(context)
+
         val column = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -277,9 +289,9 @@ class BlockOverlay(private val context: Context) {
 
             reasonView = TextView(context).apply {
                 text = reasonText(reason)
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 34f)
-                typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                setTextColor(ds.heading)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 35f)
+                typeface = heading
                 gravity = Gravity.CENTER
             }
             addView(reasonView)
@@ -288,15 +300,17 @@ class BlockOverlay(private val context: Context) {
 
             titleView = TextView(context).apply {
                 text = label
-                setTextColor(Color.parseColor("#B6BCC4"))
+                setTextColor(ds.body)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                typeface = body
                 gravity = Gravity.CENTER
             }
             addView(titleView)
 
             countdownView = TextView(context).apply {
-                setTextColor(Color.parseColor("#7FD1A6"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                setTextColor(ds.muted)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                typeface = mono
                 gravity = Gravity.CENTER
                 setPadding(0, dp(4), 0, 0)
             }
@@ -305,14 +319,13 @@ class BlockOverlay(private val context: Context) {
             statsColumn = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
-                visibility = View.GONE
                 setPadding(0, dp(18), 0, 0)
 
-                targetLabelView = monoLabel()
+                targetLabelView = monoLabel(ds.faint, mono)
                 addView(targetLabelView)
                 addView(spacer(dp(6)))
                 targetClocks = HourClocksView(context).apply {
-                    onDarkSurface = true
+                    onDarkSurface = night
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -321,25 +334,28 @@ class BlockOverlay(private val context: Context) {
                 addView(targetClocks)
                 addView(spacer(dp(6)))
                 compareHeadView = TextView(context).apply {
-                    typeface = Typeface.MONOSPACE
+                    text = " "
+                    typeface = monoMed
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+                    minHeight = dp(24)
                     gravity = Gravity.CENTER
                 }
                 addView(compareHeadView)
                 compareSubView = TextView(context).apply {
                     text = "than your 30-day average"
-                    typeface = Typeface.MONOSPACE
+                    typeface = mono
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    setTextColor(ds.faint)
                     gravity = Gravity.CENTER
                     setPadding(0, dp(2), 0, 0)
                 }
                 addView(compareSubView)
                 addView(spacer(dp(12)))
-                allLabelView = monoLabel()
+                allLabelView = monoLabel(ds.faint, mono)
                 addView(allLabelView)
                 addView(spacer(dp(6)))
                 allClocks = HourClocksView(context).apply {
-                    onDarkSurface = true
+                    onDarkSurface = night
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -348,7 +364,9 @@ class BlockOverlay(private val context: Context) {
                 addView(allClocks)
                 addView(spacer(dp(14)))
                 dayBars = DayBarsView(context).apply {
-                    onDarkSurface = true
+                    onDarkSurface = night
+                    appMs = List(STATS_DAYS) { 0L }
+                    overlayMs = List(STATS_DAYS) { 0L }
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -358,14 +376,14 @@ class BlockOverlay(private val context: Context) {
             }
             addView(statsColumn)
 
-            addView(spacer(dp(36)))
+            addView(spacer(dp(28)))
 
             // The one button on the screen is the one that does what the block is asking for:
             // leave. For a website or a feed that means moving the app off the blocked page,
             // because closing it alone strands you -- it reopens on the same page and blocks
             // again. For an app there is nothing narrower to leave, so leaving *is* closing it.
             addView(
-                primaryButton(escape?.label ?: CLOSE_LABEL) {
+                primaryButton(escape?.label ?: CLOSE_LABEL, ds) {
                     if (escape == null) {
                         goHome()
                     } else {
@@ -380,36 +398,49 @@ class BlockOverlay(private val context: Context) {
             // of a rule should never be the easiest-looking thing on the screen.
             if (!singleAction) {
                 if (escape != null) {
-                    addView(spacer(dp(18)))
-                    addView(textLink(CLOSE_LABEL, "#9BA3AD") { goHome() })
+                    addView(spacer(dp(8)))
+                    addView(textLink(CLOSE_LABEL, ds.muted, body) { goHome() })
                 }
 
-                addView(spacer(dp(14)))
-                addView(textLink("I actually need this", "#6E7681") { onPauseRequested?.invoke() })
+                addView(spacer(dp(4)))
+                addView(textLink("I actually need this", ds.faint, body) { onPauseRequested?.invoke() })
             }
+        }
+
+        val cluster = FrameLayout(context).apply {
+            minimumHeight = context.resources.displayMetrics.heightPixels
+            addView(
+                column,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER,
+                ),
+            )
         }
 
         return ScrollView(context).apply {
             isFillViewport = true
             isClickable = true
             isFocusable = false
-            setBackgroundColor(Color.parseColor("#F2101014"))
+            setBackgroundColor(ds.bg)
             addView(
-                column,
+                cluster,
                 FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.WRAP_CONTENT,
-                    Gravity.CENTER_VERTICAL,
                 ),
             )
         }
     }
 
-    private fun monoLabel(): TextView = TextView(context).apply {
-        setTextColor(Color.parseColor("#9A9385"))
+    private fun monoLabel(color: Int, typeface: Typeface): TextView = TextView(context).apply {
+        text = " "
+        setTextColor(color)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-        typeface = Typeface.MONOSPACE
+        this.typeface = typeface
         gravity = Gravity.CENTER
+        minHeight = dp(14)
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -417,17 +448,18 @@ class BlockOverlay(private val context: Context) {
     }
 
     /** A filled, rounded, full-width tap target built by hand -- there is no theme out here. */
-    private fun primaryButton(label: String, onClick: () -> Unit): TextView =
+    private fun primaryButton(label: String, ds: DsAndroid, onClick: () -> Unit): TextView =
         TextView(context).apply {
             text = label
-            setTextColor(Color.parseColor("#0B1F17"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(ds.onAccent)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            typeface = dsBodyTypeface(context)
             gravity = Gravity.CENTER
-            setPadding(dp(20), dp(15), dp(20), dp(15))
+            setPadding(dp(20), dp(14), dp(20), dp(14))
+            minHeight = dp(44)
             background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(Color.parseColor("#7FD1A6"))
+                cornerRadius = dp(7).toFloat()
+                setColor(ds.accent)
             }
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -438,13 +470,16 @@ class BlockOverlay(private val context: Context) {
         }
 
     /** Text that is tappable and does not pretend to be a button. Padded to stay reachable. */
-    private fun textLink(label: String, color: String, onClick: () -> Unit): TextView =
+    private fun textLink(label: String, color: Int, typeface: Typeface, onClick: () -> Unit): TextView =
         TextView(context).apply {
             text = label
-            setTextColor(Color.parseColor(color))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setTextColor(color)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            this.typeface = typeface
+            paint.isUnderlineText = true
             gravity = Gravity.CENTER
             setPadding(dp(16), dp(10), dp(16), dp(10))
+            minHeight = dp(44)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,

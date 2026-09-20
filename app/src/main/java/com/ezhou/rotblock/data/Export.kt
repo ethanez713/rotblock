@@ -42,6 +42,7 @@ suspend fun buildExport(db: RotblockDatabase, settings: RotblockSettings, nowMs:
             .put("targetId", s.targetId)
             .put("startMs", s.startMs)
             .put("endMs", s.endMs)
+            .put("countsTowardQuota", s.countsTowardQuota)
     })
 
     val auditEventsJson = JSONArray(auditEvents.map { e ->

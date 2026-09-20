@@ -1,5 +1,6 @@
 package com.ezhou.rotblock.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -17,8 +18,10 @@ data class UsageSessionEntity(
     val targetId: String,
     val startMs: Long,
     val endMs: Long,
+    @ColumnInfo(defaultValue = "1")
+    val countsTowardQuota: Boolean = true,
 ) {
-    fun toSession() = UsageSession(startMs, endMs)
+    fun toSession() = UsageSession(startMs, endMs, countsTowardQuota)
 }
 
 class Converters {

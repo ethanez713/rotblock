@@ -18,7 +18,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -28,6 +27,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.isSystemInDarkTheme
 import com.ezhou.rotblock.insights.DiscouragingStatsResult
+import com.ezhou.rotblock.insights.STATS_DAYS
 import com.ezhou.rotblock.insights.deltaMinutes
 import com.ezhou.rotblock.insights.formatHoursMinutes
 import com.ezhou.rotblock.insights.yTicks
@@ -63,10 +63,10 @@ fun compareColorInt(todayMs: Long, avgMs: Long, onDark: Boolean): Int {
 }
 
 @Composable
-fun moreColor(): Color = if (isSystemInDarkTheme()) MoreRedDark else MoreRedLight
+fun moreColor(): Color = if (isSystemInDarkTheme()) Ds.Night.more else Ds.more
 
 @Composable
-fun lessColor(): Color = if (isSystemInDarkTheme()) LessGreenDark else LessGreenLight
+fun lessColor(): Color = if (isSystemInDarkTheme()) Ds.Night.less else Ds.less
 
 class HourClocksView @JvmOverloads constructor(
     context: Context,
@@ -101,14 +101,10 @@ class HourClocksView @JvmOverloads constructor(
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val width = MeasureSpec.getSize(widthMeasureSpec)
-        val n = clockCount(minutesMs)
-        if (n == 0 || width <= 0) {
-            setMeasuredDimension(width, 0)
-            return
-        }
+        val n = clockCount(minutesMs).coerceAtLeast(1)
+        val width = MeasureSpec.getSize(widthMeasureSpec).coerceAtLeast(suggestedMinimumWidth)
         val per = (clockPx + gapPx)
-        val cols = max(1, ((width + gapPx) / per).toInt())
+        val cols = max(1, if (width <= 0) 1 else ((width + gapPx) / per).toInt())
         val rows = (n + cols - 1) / cols
         val height = (rows * clockPx + (rows - 1) * gapPx).toInt()
         setMeasuredDimension(width, height)
@@ -336,7 +332,7 @@ fun CompareDelta(todayMs: Long, avgMs: Long, modifier: Modifier = Modifier) {
         Text(
             head,
             color = color,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = InterstitialMono,
             fontSize = 20.sp,
             fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
@@ -344,7 +340,7 @@ fun CompareDelta(todayMs: Long, avgMs: Long, modifier: Modifier = Modifier) {
         Text(
             "than your 30-day average",
             color = color,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = InterstitialMono,
             fontSize = 12.sp,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 2.dp),
@@ -360,38 +356,37 @@ fun UsageGlance(
     onDark: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    if (!stats.hasHistory) return
+    val appDays = stats.thisTargetDailyMs.ifEmpty { List(STATS_DAYS) { 0L } }
+    val allDays = stats.allBlockedDailyMs.ifEmpty { List(STATS_DAYS) { 0L } }
     Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        if (stats.hasTarget) {
-            if (targetLabel != null) {
-                Text(
-                    "$targetLabel · ${formatHoursMinutes(stats.thisTargetToday)} today",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontFamily = FontFamily.Monospace,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(6.dp))
-            }
-            HourClocks(stats.thisTargetToday, onDark)
+        if (targetLabel != null) {
+            Text(
+                "$targetLabel · ${formatHoursMinutes(stats.thisTargetToday)} today",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = InterstitialMono,
+                textAlign = TextAlign.Center,
+            )
             Spacer(Modifier.height(6.dp))
-            CompareDelta(stats.thisTargetToday, stats.thisTargetAvg30Ms)
         }
+        HourClocks(stats.thisTargetToday, onDark)
+        Spacer(Modifier.height(6.dp))
+        CompareDelta(stats.thisTargetToday, stats.thisTargetAvg30Ms)
         if (!dense) {
             Spacer(Modifier.height(12.dp))
             Text(
                 "all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = InterstitialMono,
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(6.dp))
             HourClocks(stats.allBlockedToday, onDark)
             Spacer(Modifier.height(14.dp))
             DayBars(
-                appMs = stats.thisTargetDailyMs,
-                overlayMs = stats.allBlockedDailyMs,
+                appMs = appDays,
+                overlayMs = allDays,
                 onDark = onDark,
             )
         }

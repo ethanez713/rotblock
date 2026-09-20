@@ -42,7 +42,11 @@ class UsageLedger(
 
     @Volatile private var open: Open? = null
 
-    private class Open(val targetId: String, val startMs: Long) {
+    private class Open(
+        val targetId: String,
+        val startMs: Long,
+        val countsTowardQuota: Boolean,
+    ) {
         @Volatile var endMs: Long = startMs
         @Volatile var lastFlushMs: Long = startMs
         val rowId = CompletableDeferred<Long>()
@@ -66,17 +70,31 @@ class UsageLedger(
         val o = open
         if (o == null || o.targetId != targetId) return stored
         // The live session runs from its start up to now, regardless of how recently `touch` ran.
-        return stored + UsageSession(o.startMs, maxOf(o.startMs, nowMs))
+        return stored + UsageSession(o.startMs, maxOf(o.startMs, nowMs), o.countsTowardQuota)
     }
 
-    /** Starts accruing time against [targetId]. Closes any previously open session first. */
-    fun startSession(targetId: String, nowMs: Long) {
-        if (open?.targetId == targetId) return
+    /**
+     * Starts accruing time against [targetId]. Closes any previously open session first.
+     *
+     * [countsTowardQuota] is false while a pause is in effect: the visit still lands in the
+     * ledger for the interstitial mirror, but [PolicyEngine.chargeable] drops it so a pause
+     * cannot over-charge.
+     */
+    fun startSession(targetId: String, nowMs: Long, countsTowardQuota: Boolean = true) {
+        val current = open
+        if (current?.targetId == targetId && current.countsTowardQuota == countsTowardQuota) return
         closeSession(nowMs)
-        val o = Open(targetId, nowMs)
+        val o = Open(targetId, nowMs, countsTowardQuota)
         open = o
         scope.launch {
-            val id = dao.insert(UsageSessionEntity(targetId = targetId, startMs = nowMs, endMs = nowMs))
+            val id = dao.insert(
+                UsageSessionEntity(
+                    targetId = targetId,
+                    startMs = nowMs,
+                    endMs = nowMs,
+                    countsTowardQuota = countsTowardQuota,
+                ),
+            )
             o.rowId.complete(id)
         }
     }
@@ -97,7 +115,8 @@ class UsageLedger(
         val o = open ?: return
         open = null
         val endMs = maxOf(o.startMs, nowMs)
-        closed.getOrPut(o.targetId) { CopyOnWriteArrayList() }.add(UsageSession(o.startMs, endMs))
+        closed.getOrPut(o.targetId) { CopyOnWriteArrayList() }
+            .add(UsageSession(o.startMs, endMs, o.countsTowardQuota))
         scope.launch { dao.updateEnd(o.rowId.await(), endMs) }
     }
 

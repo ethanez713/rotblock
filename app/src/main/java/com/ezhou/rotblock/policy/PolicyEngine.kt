@@ -156,7 +156,8 @@ object PolicyEngine {
     }
 
     /**
-     * The parts of [sessions] this policy is allowed to charge for: the time it was live.
+     * The parts of [sessions] this policy is allowed to charge for: the time it was live,
+     * excluding visits tagged as pause-time ([UsageSession.countsTowardQuota] false).
      *
      * A no-op for an always-on rule, which is what makes this free for every rule that has no
      * hours. For one that does, see [Schedule.activeIntervalsWithin] for why the service closing
@@ -168,12 +169,13 @@ object PolicyEngine {
         nowMs: Long,
         tz: TimeZone = TimeZone.getDefault(),
     ): List<UsageSession> {
-        if (policy.schedule.isAlwaysOn) return sessions
+        val countable = sessions.filter { it.countsTowardQuota }
+        if (policy.schedule.isAlwaysOn) return countable
         val windowStartMs = nowMs - policy.windowMs
         val live = policy.schedule.activeIntervalsWithin(windowStartMs, nowMs, tz)
         if (live.isEmpty()) return emptyList()
-        val out = ArrayList<UsageSession>(sessions.size)
-        for (session in sessions) {
+        val out = ArrayList<UsageSession>(countable.size)
+        for (session in countable) {
             for ((liveStart, liveEnd) in live) {
                 val lo = maxOf(session.startMs, liveStart)
                 val hi = minOf(session.endMs, liveEnd)
