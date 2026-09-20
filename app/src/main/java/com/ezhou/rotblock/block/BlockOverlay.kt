@@ -170,7 +170,16 @@ class BlockOverlay(private val context: Context) {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT,
-        ).apply { gravity = Gravity.CENTER }
+        ).apply {
+            gravity = Gravity.CENTER
+            // Draw into the status-bar and camera-cutout strips too, or the block leaves a band of
+            // the app it covers showing along the top edge. LAYOUT_NO_LIMITS extends the window;
+            // this lets it paint the cutout region rather than being pushed below it.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            }
+        }
 
         return try {
             windowManager.addView(view, params)
@@ -423,7 +432,7 @@ class BlockOverlay(private val context: Context) {
             isFillViewport = true
             isClickable = true
             isFocusable = false
-            setBackgroundColor(ds.bg)
+            setBackgroundColor(overlayBackground(ds.bg))
             addView(
                 cluster,
                 FrameLayout.LayoutParams(
@@ -544,7 +553,18 @@ class BlockOverlay(private val context: Context) {
 
     private fun dp(value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
+
+    /**
+     * The paper colour, held just short of opaque so the blocked app reads through faintly -- enough
+     * to place where you are without the feed being usable. The window is [PixelFormat.TRANSLUCENT],
+     * so the alpha here is what shows through.
+     */
+    private fun overlayBackground(bg: Int): Int =
+        (bg and 0x00FFFFFF) or (OVERLAY_BG_ALPHA shl 24)
 }
+
+/** Overlay opacity, 0..255. Below 255 so a little of the blocked app shows through. */
+private const val OVERLAY_BG_ALPHA = 0xEB
 
 /** "4m 12s" / "58s" / "1h 3m". Shared by the overlay and the Compose UI. */
 fun formatDuration(ms: Long): String {
