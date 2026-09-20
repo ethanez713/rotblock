@@ -27,7 +27,6 @@ import com.ezhou.rotblock.block.Grayscale
 import com.ezhou.rotblock.block.FrictionGate
 import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.block.Interstitial
-import com.ezhou.rotblock.insights.formatCompactStats
 import com.ezhou.rotblock.insights.loadDiscouragingStats
 import com.ezhou.rotblock.block.HudShape
 import com.ezhou.rotblock.block.TimerHud
@@ -2179,13 +2178,15 @@ class RotblockAccessibilityService : AccessibilityService() {
                     val stats = loadDiscouragingStats(
                         usageDao = Rotblock.database(this@RotblockAccessibilityService).usageDao(),
                         policyDao = Rotblock.database(this@RotblockAccessibilityService).policyDao(),
+                        auditDao = Rotblock.database(this@RotblockAccessibilityService).auditDao(),
                         dayStartHour = settings.dayStartHour,
                         nowMs = System.currentTimeMillis(),
                         targetId = targetId,
                     )
-                    val text = formatCompactStats(stats, targetLabel)
-                    if (text.isNotBlank()) {
-                        withContext(Dispatchers.Main) { overlay.setStats(text, targetId) }
+                    if (stats.hasHistory) {
+                        withContext(Dispatchers.Main) {
+                            overlay.setStats(stats, targetLabel, targetId)
+                        }
                     }
                 }
             }

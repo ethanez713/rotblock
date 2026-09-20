@@ -256,6 +256,7 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
             _discouragingStats.value = loadDiscouragingStats(
                 usageDao = db.usageDao(),
                 policyDao = db.policyDao(),
+                auditDao = db.auditDao(),
                 dayStartHour = settings.dayStartHour,
                 nowMs = now,
                 targetId = targetId,

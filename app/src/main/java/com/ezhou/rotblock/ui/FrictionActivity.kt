@@ -6,6 +6,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +49,8 @@ import kotlinx.coroutines.delay
  * feed, which is usually enough to notice you did not actually mean to open it.
  */
 class FrictionActivity : ComponentActivity() {
+
+    private val viewModel: RotblockViewModel by viewModels()
 
     companion object {
         const val EXTRA_LABEL = "label"
@@ -128,13 +133,18 @@ class FrictionActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        applyIntent(intent)
+    }
+
+    private fun applyIntent(intent: Intent) {
         covering = covering(intent)
+        viewModel.loadDiscouragingStatsFor(covering.targetId)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        covering = covering(intent)
+        applyIntent(intent)
 
         // Back is the bypass this screen was built without: it finishes the activity, the app
         // underneath resumes, and no foreground change fires to say so because our own package is
@@ -148,10 +158,12 @@ class FrictionActivity : ComponentActivity() {
             RotblockTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
                     val (target, label, seconds, browser) = covering
+                    val stats by viewModel.discouragingStats.collectAsStateWithLifecycle()
                     FrictionScreen(
                         label = label,
                         seconds = seconds,
                         visit = visit,
+                        todayMs = stats?.takeIf { it.hasHistory }?.thisTargetToday,
                         onServed = { target?.let { FrictionGate.onServed?.invoke(it) } },
                         onContinue = { finish() },
                         onLeave = { leave(browser) },
@@ -193,6 +205,7 @@ private fun FrictionScreen(
     seconds: Int,
     /** Changes whenever the screen is re-entered, which starts the wait over. */
     visit: Int,
+    todayMs: Long?,
     /** The wait was actually sat through. The only thing that spends it; see [FrictionGate]. */
     onServed: () -> Unit,
     onContinue: () -> Unit,
@@ -234,22 +247,26 @@ private fun FrictionScreen(
             )
         }
 
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(22.dp))
         Text(
-            "Opening $label",
+            label,
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         Text(
             "Was there something you actually wanted here?",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
+        if (todayMs != null && todayMs > 0L) {
+            Spacer(Modifier.height(16.dp))
+            HourClocks(todayMs, onDark = isSystemInDarkTheme())
+        }
 
-        Spacer(Modifier.height(36.dp))
+        Spacer(Modifier.height(28.dp))
         Button(
             onClick = onContinue,
             enabled = left <= 0,

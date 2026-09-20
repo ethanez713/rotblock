@@ -15,10 +15,18 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
+import com.ezhou.rotblock.insights.DiscouragingStatsResult
+import com.ezhou.rotblock.insights.formatHoursMinutes
 import com.ezhou.rotblock.policy.BlockReason
 import com.ezhou.rotblock.policy.TargetKind
+import com.ezhou.rotblock.ui.DayBarsView
+import com.ezhou.rotblock.ui.HourClocksView
+import com.ezhou.rotblock.ui.compareColorInt
+import com.ezhou.rotblock.ui.compareHead
 
 /**
  * The way out of a block that is narrower than the app it covers.
@@ -74,9 +82,16 @@ class BlockOverlay(private val context: Context) {
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val handler = Handler(Looper.getMainLooper())
 
-    private var root: LinearLayout? = null
+    private var root: View? = null
     private var countdownView: TextView? = null
-    private var statsView: TextView? = null
+    private var statsColumn: LinearLayout? = null
+    private var targetClocks: HourClocksView? = null
+    private var targetLabelView: TextView? = null
+    private var compareHeadView: TextView? = null
+    private var compareSubView: TextView? = null
+    private var allLabelView: TextView? = null
+    private var allClocks: HourClocksView? = null
+    private var dayBars: DayBarsView? = null
     private var liftsAtMs: Long? = null
     private var liftReason: BlockReason? = null
 
@@ -125,8 +140,7 @@ class BlockOverlay(private val context: Context) {
         // A text-swap for a different target (same escape kind) clears any stale stats — the async
         // load for the new target will arrive shortly and fill them in.
         if (root != null && targetId != shownTargetId) {
-            statsView?.text = ""
-            statsView?.visibility = View.GONE
+            statsColumn?.visibility = View.GONE
         }
         shownTargetId = targetId
 
@@ -160,6 +174,7 @@ class BlockOverlay(private val context: Context) {
         } catch (t: Throwable) {
             root = null
             countdownView = null
+            clearStatViews()
             false
         }
     }
@@ -168,7 +183,7 @@ class BlockOverlay(private val context: Context) {
         val view = root ?: return
         root = null
         countdownView = null
-        statsView = null
+        clearStatViews()
         shownEscapeLabel = null
         shownTargetId = ""
         liftsAtMs = null
@@ -179,15 +194,57 @@ class BlockOverlay(private val context: Context) {
     }
 
     /**
-     * Fills in the pre-formatted stats string from the async load.
+     * Fills in the charts from the async load.
      *
-     * No-op when hidden or when the block has moved to a different target since the load started.
+     * No-op when hidden, when the block has moved to a different target since the load started,
+     * or when there is nothing to show — same as skipping the old two-line string of zeros.
      */
-    fun setStats(text: String, forTargetId: String) {
-        if (root == null || forTargetId != shownTargetId || text.isBlank()) return
-        val view = statsView ?: return
-        view.text = text
-        view.visibility = View.VISIBLE
+    @SuppressLint("SetTextI18n")
+    fun setStats(stats: DiscouragingStatsResult, targetLabel: String?, forTargetId: String) {
+        if (root == null || forTargetId != shownTargetId || !stats.hasHistory) return
+        val column = statsColumn ?: return
+        val clocks = targetClocks ?: return
+        val label = targetLabelView ?: return
+        val head = compareHeadView ?: return
+        val sub = compareSubView ?: return
+        val allLab = allLabelView ?: return
+        val all = allClocks ?: return
+        val bars = dayBars ?: return
+
+        val name = targetLabel ?: forTargetId.substringAfter(':')
+        if (stats.hasTarget) {
+            label.text = "$name · ${formatHoursMinutes(stats.thisTargetToday)} today"
+            label.visibility = View.VISIBLE
+            clocks.minutesMs = stats.thisTargetToday
+            clocks.visibility = View.VISIBLE
+            val color = compareColorInt(stats.thisTargetToday, stats.thisTargetAvg30Ms, onDark = true)
+            head.text = compareHead(stats.thisTargetToday, stats.thisTargetAvg30Ms)
+            head.setTextColor(color)
+            head.visibility = View.VISIBLE
+            sub.setTextColor(color)
+            sub.visibility = View.VISIBLE
+        } else {
+            label.visibility = View.GONE
+            clocks.visibility = View.GONE
+            head.visibility = View.GONE
+            sub.visibility = View.GONE
+        }
+        allLab.text = "all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today"
+        all.minutesMs = stats.allBlockedToday
+        bars.appMs = stats.thisTargetDailyMs
+        bars.overlayMs = stats.allBlockedDailyMs
+        column.visibility = View.VISIBLE
+    }
+
+    private fun clearStatViews() {
+        statsColumn = null
+        targetClocks = null
+        targetLabelView = null
+        compareHeadView = null
+        compareSubView = null
+        allLabelView = null
+        allClocks = null
+        dayBars = null
     }
 
     private fun canDrawOverlays(): Boolean = Settings.canDrawOverlays(context)
@@ -209,62 +266,97 @@ class BlockOverlay(private val context: Context) {
         reason: BlockReason,
         escape: Escape?,
         singleAction: Boolean = false,
-    ): LinearLayout {
+    ): View {
         val pad = dp(28)
-        return LinearLayout(context).apply {
+        val column = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#F2101014"))
+            gravity = Gravity.CENTER_HORIZONTAL
             setPadding(pad, pad, pad, pad)
             isClickable = true
             isFocusable = false
 
-            addView(TextView(context).apply {
-                text = "rotblock"
-                setTextColor(Color.parseColor("#6E7681"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                letterSpacing = 0.18f
-                gravity = Gravity.CENTER
-            })
-
-            addView(spacer(dp(20)))
-
-            titleView = TextView(context).apply {
-                text = label
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
-                typeface = Typeface.create("sans-serif", Typeface.BOLD)
-                gravity = Gravity.CENTER
-            }
-            addView(titleView)
-
-            addView(spacer(dp(10)))
-
             reasonView = TextView(context).apply {
                 text = reasonText(reason)
-                setTextColor(Color.parseColor("#B6BCC4"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 34f)
+                typeface = Typeface.create("sans-serif", Typeface.BOLD)
                 gravity = Gravity.CENTER
             }
             addView(reasonView)
 
-            statsView = TextView(context).apply {
-                setTextColor(Color.parseColor("#6E7681"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                gravity = Gravity.CENTER
-                setPadding(0, dp(16), 0, 0)
-                visibility = View.GONE
-            }
-            addView(statsView)
+            addView(spacer(dp(8)))
 
-            addView(spacer(dp(24)))
+            titleView = TextView(context).apply {
+                text = label
+                setTextColor(Color.parseColor("#B6BCC4"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                gravity = Gravity.CENTER
+            }
+            addView(titleView)
 
             countdownView = TextView(context).apply {
                 setTextColor(Color.parseColor("#7FD1A6"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
                 gravity = Gravity.CENTER
+                setPadding(0, dp(4), 0, 0)
             }
             addView(countdownView)
+
+            statsColumn = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                visibility = View.GONE
+                setPadding(0, dp(18), 0, 0)
+
+                targetLabelView = monoLabel()
+                addView(targetLabelView)
+                addView(spacer(dp(6)))
+                targetClocks = HourClocksView(context).apply {
+                    onDarkSurface = true
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                }
+                addView(targetClocks)
+                addView(spacer(dp(6)))
+                compareHeadView = TextView(context).apply {
+                    typeface = Typeface.MONOSPACE
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+                    gravity = Gravity.CENTER
+                }
+                addView(compareHeadView)
+                compareSubView = TextView(context).apply {
+                    text = "than your 30-day average"
+                    typeface = Typeface.MONOSPACE
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    gravity = Gravity.CENTER
+                    setPadding(0, dp(2), 0, 0)
+                }
+                addView(compareSubView)
+                addView(spacer(dp(12)))
+                allLabelView = monoLabel()
+                addView(allLabelView)
+                addView(spacer(dp(6)))
+                allClocks = HourClocksView(context).apply {
+                    onDarkSurface = true
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                }
+                addView(allClocks)
+                addView(spacer(dp(14)))
+                dayBars = DayBarsView(context).apply {
+                    onDarkSurface = true
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                }
+                addView(dayBars)
+            }
+            addView(statsColumn)
 
             addView(spacer(dp(36)))
 
@@ -296,6 +388,32 @@ class BlockOverlay(private val context: Context) {
                 addView(textLink("I actually need this", "#6E7681") { onPauseRequested?.invoke() })
             }
         }
+
+        return ScrollView(context).apply {
+            isFillViewport = true
+            isClickable = true
+            isFocusable = false
+            setBackgroundColor(Color.parseColor("#F2101014"))
+            addView(
+                column,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER_VERTICAL,
+                ),
+            )
+        }
+    }
+
+    private fun monoLabel(): TextView = TextView(context).apply {
+        setTextColor(Color.parseColor("#9A9385"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        typeface = Typeface.MONOSPACE
+        gravity = Gravity.CENTER
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        )
     }
 
     /** A filled, rounded, full-width tap target built by hand -- there is no theme out here. */
@@ -342,9 +460,9 @@ class BlockOverlay(private val context: Context) {
     }
 
     private fun reasonText(reason: BlockReason): String = when (reason) {
-        BlockReason.HARD_BLOCK -> "Blocked by one of your policies."
-        BlockReason.QUOTA_EXHAUSTED -> "You have used up your time for now."
-        BlockReason.WORKOUT_MODE -> "Workout in progress."
+        BlockReason.HARD_BLOCK -> "Blocked"
+        BlockReason.QUOTA_EXHAUSTED -> "Time's up"
+        BlockReason.WORKOUT_MODE -> "Workout"
     }
 
     @SuppressLint("SetTextI18n")

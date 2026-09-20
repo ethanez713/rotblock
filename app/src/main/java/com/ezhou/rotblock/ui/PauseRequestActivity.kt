@@ -10,6 +10,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -23,13 +24,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -42,13 +48,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import com.ezhou.rotblock.block.formatDuration
 import com.ezhou.rotblock.insights.DiscouragingStatsResult
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -209,14 +211,8 @@ private fun PauseRequestScreen(
     Column(
         modifier = Modifier.fillMaxSize().padding(28.dp),
         verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
-            "rotblock",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(12.dp))
-
         when (step) {
             Step.Choose -> ChooseStep(
                 targetLabel = targetLabel,
@@ -269,6 +265,7 @@ private fun PauseRequestScreen(
             Step.Emergency -> EmergencyStep(
                 minutes = minutes,
                 deniedStatus = denied,
+                stats = discouragingStats,
                 onConfirm = { reason -> commit(emergency = true, reason = reason) },
                 onCancel = onDone,
             )
@@ -276,7 +273,6 @@ private fun PauseRequestScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChooseStep(
     targetLabel: String?,
@@ -291,47 +287,9 @@ private fun ChooseStep(
     onStart: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    Text(
-        if (targetLabel != null) "Pause blocking for $targetLabel?" else "Pause blocking?",
-        style = MaterialTheme.typography.headlineMedium,
-        fontWeight = FontWeight.SemiBold,
-    )
-    Spacer(Modifier.height(8.dp))
-    val scopedNarrow = scopeOptions.getOrNull(scopeIndex)?.scope is PauseScope.Scoped
-    Text(
-        if (scopedNarrow) {
-            "Only what you pick below unblocks for a set time; everything else keeps blocking. " +
-                "It comes back on its own — you do not have to remember."
-        } else {
-            "Everything unblocks for a set time, then blocking comes back on its own. You do not " +
-                "have to remember to turn it back on."
-        },
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    ScopeTitle(options = scopeOptions, selected = scopeIndex, onSelect = onScope)
 
-    // Only worth a selector when there is more than one scope to choose -- a request with no target
-    // (the tile, the in-app button) offers Everything alone and shows no chips.
-    if (scopeOptions.size > 1) {
-        Spacer(Modifier.height(24.dp))
-        Text(
-            "What to pause",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(8.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            scopeOptions.forEachIndexed { i, option ->
-                FilterChip(
-                    selected = scopeIndex == i,
-                    onClick = { onScope(i) },
-                    label = { Text(option.display) },
-                )
-            }
-        }
-    }
-
-    Spacer(Modifier.height(24.dp))
+    Spacer(Modifier.height(18.dp))
     Text(
         "For how long",
         style = MaterialTheme.typography.labelLarge,
@@ -362,8 +320,13 @@ private fun ChooseStep(
     }
 
     if (discouragingStats?.hasHistory == true) {
-        Spacer(Modifier.height(16.dp))
-        DiscouragingStatsRow(discouragingStats)
+        Spacer(Modifier.height(18.dp))
+        UsageGlance(
+            stats = discouragingStats,
+            targetLabel = scopeOptions.getOrNull(scopeIndex)?.titleWord() ?: targetLabel,
+            dense = true,
+            onDark = isSystemInDarkTheme(),
+        )
     }
 
     Spacer(Modifier.height(28.dp))
@@ -430,17 +393,10 @@ private fun CoolingStep(
                     fontWeight = FontWeight.Light,
                 )
             }
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(20.dp))
             Text(
-                "Pausing for $minutes min once this finishes.",
+                "$minutes min pause",
                 style = MaterialTheme.typography.bodyLarge,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "If the urge passes before then, just leave.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
         }
@@ -459,15 +415,17 @@ private fun CoolingStep(
 private fun EmergencyStep(
     minutes: Int,
     deniedStatus: BudgetStatus?,
+    stats: DiscouragingStatsResult?,
     onConfirm: (String?) -> Unit,
     onCancel: () -> Unit,
 ) {
     var reason by remember { mutableStateOf("") }
     var holding by remember { mutableStateOf(false) }
     var heldFraction by remember { mutableStateOf(0f) }
+    val filled = reason.trim().isNotEmpty()
 
-    LaunchedEffect(holding) {
-        if (!holding) {
+    LaunchedEffect(holding, filled) {
+        if (filled || !holding) {
             heldFraction = 0f
             return@LaunchedEffect
         }
@@ -486,46 +444,67 @@ private fun EmergencyStep(
 
     Text(
         "Emergency skip",
-        style = MaterialTheme.typography.headlineMedium,
+        style = MaterialTheme.typography.headlineSmall,
         fontWeight = FontWeight.SemiBold,
         color = MaterialTheme.colorScheme.error,
+        textAlign = TextAlign.Center,
     )
-    Spacer(Modifier.height(8.dp))
-    Text(
-        if (deniedStatus?.exhausted == true) {
-            "You are out of pause budget for today. This will still go through — it is just " +
-                "recorded as over budget."
-        } else {
-            "This skips the wait. It goes in the log with its own marker so you can see later " +
-                "how often you reached for it."
-        },
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    if (WorkoutMode.activeUntilMs() != null) {
-        Spacer(Modifier.height(8.dp))
+    if (deniedStatus?.exhausted == true) {
+        Spacer(Modifier.height(6.dp))
         Text(
-            "This also ends workout mode.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            "Over budget. Still goes through.",
+            style = MaterialTheme.typography.bodySmall,
+            color = moreColor(),
+            textAlign = TextAlign.Center,
+        )
+    }
+    if (WorkoutMode.activeUntilMs() != null) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Also ends workout mode.",
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
         )
     }
 
-    Spacer(Modifier.height(20.dp))
+    if (stats?.hasEmergencyHistory == true) {
+        Spacer(Modifier.height(16.dp))
+        DayBars(
+            appMs = stats.emergencyDailyMs,
+            quarterHour = true,
+            onDark = isSystemInDarkTheme(),
+        )
+        Spacer(Modifier.height(10.dp))
+        CompareDelta(stats.emergencyDailyMs.lastOrNull() ?: 0L, stats.emergencyAvg30Ms)
+    }
+
+    Spacer(Modifier.height(16.dp))
     OutlinedTextField(
         value = reason,
         onValueChange = { reason = it.take(120) },
-        label = { Text("What do you need it for?") },
+        label = { Text("Reason") },
+        placeholder = { Text("Fill this to proceed without waiting") },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
 
     Spacer(Modifier.height(24.dp))
-    HoldButton(
-        label = "Hold to pause $minutes min",
-        fraction = heldFraction,
-        onPressChanged = { holding = it },
-    )
+    if (filled) {
+        Button(
+            onClick = { onConfirm(reason.trim()) },
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError,
+            ),
+        ) { Text("Pause $minutes min") }
+    } else {
+        HoldButton(
+            label = "Hold to pause $minutes min",
+            fraction = heldFraction,
+            onPressChanged = { holding = it },
+        )
+    }
     Spacer(Modifier.height(4.dp))
     TextButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Never mind") }
 }
@@ -567,54 +546,68 @@ private fun HoldButton(label: String, fraction: Float, onPressChanged: (Boolean)
     }
 }
 
-@Composable
-private fun DiscouragingStatsRow(stats: DiscouragingStatsResult) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        if (stats.hasTarget) {
-            StatsRow(
-                label = "This target",
-                today = stats.thisTargetToday,
-                yesterday = stats.thisTargetYesterday,
-                thisWeek = stats.thisTargetThisWeek,
-                lastWeek = stats.thisTargetLastWeek,
-            )
-        }
-        StatsRow(
-            label = "All blocked",
-            today = stats.allBlockedToday,
-            yesterday = stats.allBlockedYesterday,
-            thisWeek = stats.allBlockedThisWeek,
-            lastWeek = stats.allBlockedLastWeek,
-        )
-    }
-}
-
-@Composable
-private fun StatsRow(label: String, today: Long, yesterday: Long, thisWeek: Long, lastWeek: Long) {
-    val errorColor = MaterialTheme.colorScheme.error
-    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val todayDelta = today - yesterday
-    val weekDelta = thisWeek - lastWeek
-    val text = buildAnnotatedString {
-        withStyle(SpanStyle(color = mutedColor)) { append("$label  ·  Today: ${formatDuration(today)}") }
-        if (todayDelta != 0L) {
-            val arrow = if (todayDelta > 0) " ▲ ${formatDuration(todayDelta)}" else " ▼ ${formatDuration(-todayDelta)}"
-            withStyle(SpanStyle(color = if (todayDelta > 0) errorColor else mutedColor)) { append(arrow) }
-        }
-        withStyle(SpanStyle(color = mutedColor)) { append("  ·  This week: ${formatDuration(thisWeek)}") }
-        if (weekDelta != 0L) {
-            val arrow = if (weekDelta > 0) " ▲ ${formatDuration(weekDelta)}" else " ▼ ${formatDuration(-weekDelta)}"
-            withStyle(SpanStyle(color = if (weekDelta > 0) errorColor else mutedColor)) { append(arrow) }
-        }
-    }
-    Text(text = text, style = MaterialTheme.typography.bodySmall)
-}
-
 private fun BudgetStatus.summary(): String {
     val bits = buildList {
-        if (maxPauses > 0) add("$pausesUsed of $maxPauses pauses used today")
-        if (maxMinutes > 0) add("$minutesUsed of $maxMinutes min used")
+        if (maxPauses > 0) add("$pausesUsed/$maxPauses pauses")
+        if (maxMinutes > 0) add("$minutesUsed/$maxMinutes min")
     }
     if (bits.isEmpty()) return "No daily limit on pauses."
     return bits.joinToString(" · ") + if (exhausted) " — budget spent" else ""
+}
+
+private fun ScopeOption.titleWord(): String = when (val s = scope) {
+    PauseScope.Everything -> "everything"
+    is PauseScope.Scoped -> s.label.removePrefix("group ")
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ScopeTitle(
+    options: List<ScopeOption>,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val word = options.getOrNull(selected)?.titleWord() ?: "everything"
+    val titleStyle = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.SemiBold)
+    FlowRow(
+        horizontalArrangement = Arrangement.Center,
+        verticalArrangement = Arrangement.Center,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text("Pause blocking for ", style = titleStyle, textAlign = TextAlign.Center)
+        if (options.size <= 1) {
+            Text(word, style = titleStyle)
+        } else {
+            Box {
+                Row(
+                    modifier = Modifier.clickable { open = true }.padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        word,
+                        style = titleStyle,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textDecoration = TextDecoration.Underline,
+                    )
+                    Text(
+                        " ▼",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                    options.forEachIndexed { i, option ->
+                        DropdownMenuItem(
+                            text = { Text(option.display) },
+                            onClick = {
+                                onSelect(i)
+                                open = false
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
