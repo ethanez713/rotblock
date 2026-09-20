@@ -222,8 +222,8 @@ class DayBarsView @JvmOverloads constructor(
         val slot = innerW / n
         val barW = max(2.5f * d, slot * 0.42f)
 
-        overlayPaint.color = if (onDarkSurface) 0xFF6B6459.toInt() else 0xFFE8E2D8.toInt()
-        appPaint.color = if (onDarkSurface) 0xFFD6D0C5.toInt() else 0xFF3E3830.toInt()
+        overlayPaint.color = if (onDarkSurface) 0xFF827B6E.toInt() else 0xFFE8E2D8.toInt()
+        appPaint.color = if (onDarkSurface) 0xFFE4DFD5.toInt() else 0xFF3E3830.toInt()
         todayPaint.color = if (onDarkSurface) 0xFFF7F4ED.toInt() else 0xFF211D18.toInt()
         gridPale.color = if (onDarkSurface) 0xFF8A8173.toInt() else 0xFF70685B.toInt()
         gridBright.color = if (onDarkSurface) 0xB3211D18.toInt() else 0xB3FDFCF9.toInt()
