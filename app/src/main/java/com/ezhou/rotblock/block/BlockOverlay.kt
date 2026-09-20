@@ -564,7 +564,7 @@ class BlockOverlay(private val context: Context) {
 }
 
 /** Overlay opacity, 0..255. Below 255 so a little of the blocked app shows through. */
-private const val OVERLAY_BG_ALPHA = 0xEB
+private const val OVERLAY_BG_ALPHA = 0xF2
 
 /** "4m 12s" / "58s" / "1h 3m". Shared by the overlay and the Compose UI. */
 fun formatDuration(ms: Long): String {
