@@ -123,24 +123,62 @@ class PolicyGroupTest {
     }
 
     @Test
-    fun `time on one member is charged to the group as well as to the site's own rule`() {
-        // Three minutes on reddit, three on youtube. Each site's own four-minute rule still has a
-        // minute left; the group's five-minute allowance is a minute over. This is the whole
-        // complaint the feature is for -- per-site limits that never add up to the time spent.
+    fun `a member with its own rule drains the group for the others but is not held to it`() {
+        // Three minutes on reddit and three on youtube is six minutes of group time, over its
+        // five-minute cap. youtube has no rule of its own, so the exhausted group blocks it. reddit
+        // has its own four-minute rule with a minute still left, so that rule governs reddit and the
+        // group it filled does not block it -- the individual rule wins for behaviour, the group
+        // still counts the time.
         val usage = mapOf(
             REDDIT to listOf(UsageSession(now - 50 * MIN, now - 47 * MIN)),
             YOUTUBE to listOf(UsageSession(now - 40 * MIN, now - 37 * MIN)),
         )
-        val siteAlone = verdict(listOf(site("reddit.com", 240)), usage)
-        assertTrue("its own rule still has a minute left", siteAlone.decision is Decision.Allowed)
+        val brainrot = group(300, listOf(REDDIT, YOUTUBE))
 
-        val withGroup = verdict(
-            listOf(site("reddit.com", 240), group(300, listOf(REDDIT, YOUTUBE))),
-            usage,
+        val youtube = verdict(listOf(brainrot), usage)
+        assertEquals(BlockReason.QUOTA_EXHAUSTED, (youtube.decision as Decision.Blocked).reason)
+        assertEquals("Brainrot", youtube.governing?.label)
+
+        val reddit = verdict(listOf(site("reddit.com", 240), brainrot), usage)
+        assertTrue("its own rule still has a minute left", reddit.decision is Decision.Allowed)
+        assertEquals("reddit.com", reddit.governing?.label)
+    }
+
+    @Test
+    fun `an own rule's friction and greyscale govern, the group's do not reach it`() {
+        // The necromerger case: the individual rule wants no wait and no greyscale, the group it is
+        // in wants both. The individual rule governs, so neither reaches the target.
+        val v = verdict(
+            listOf(
+                site("reddit.com", 600),
+                group(900, listOf(REDDIT), frictionSeconds = 10, grayscale = true),
+            ),
         )
-        val blocked = withGroup.decision as Decision.Blocked
-        assertEquals(BlockReason.QUOTA_EXHAUSTED, blocked.reason)
-        assertEquals("Brainrot", withGroup.governing?.label)
+        assertTrue(v.decision is Decision.Allowed)
+        assertEquals("reddit.com", v.governing?.label)
+        assertTrue("the group's greyscale must not reach a target with its own rule", !v.grayscale)
+        assertEquals(0, v.frictionSeconds)
+        assertNull(v.frictionFrom)
+    }
+
+    @Test
+    fun `a disabled own rule steps aside and the group governs`() {
+        val usage = mapOf(REDDIT to listOf(UsageSession(now - 30 * MIN, now - 20 * MIN)))
+        val disabledSite = site("reddit.com", 600).copy(enabled = false)
+        val v = verdict(listOf(disabledSite, group(180, listOf(REDDIT))), usage)
+        // Ten minutes spent, group cap three -- with the individual rule off, the group is back in
+        // charge and blocks.
+        assertEquals(BlockReason.QUOTA_EXHAUSTED, (v.decision as Decision.Blocked).reason)
+        assertEquals("Brainrot", v.governing?.label)
+    }
+
+    @Test
+    fun `an own rule's ticker ignores a sooner group deadline it no longer answers`() {
+        val usage = mapOf(REDDIT to listOf(UsageSession(now - 30 * MIN, now - 29 * MIN)))
+        // reddit's own ten-minute rule has nine left; the group has two. The group no longer governs
+        // reddit, so waking at its two-minute mark would change nothing on this screen.
+        val v = verdict(listOf(site("reddit.com", 600), group(180, listOf(REDDIT))), usage)
+        assertEquals(now + 9 * MIN, v.decision.recheckAtMs)
     }
 
     @Test
@@ -155,18 +193,20 @@ class PolicyGroupTest {
     }
 
     @Test
-    fun `the countdown shows the least time left of any rule covering the page`() {
+    fun `the countdown shows the least time left of any group covering a plain member`() {
         val usage = mapOf(REDDIT to listOf(UsageSession(now - 30 * MIN, now - 29 * MIN)))
-        val v = verdict(listOf(site("reddit.com", 600), group(180, listOf(REDDIT))), usage)
+        val evening = group(180, listOf(REDDIT)).copy(id = "group:evening", label = "Evening")
+        val v = verdict(listOf(group(600, listOf(REDDIT)), evening), usage)
         val allowed = v.decision as Decision.Allowed
         assertEquals(2 * MIN, allowed.remainingMs)
-        assertEquals("Brainrot", v.governing?.label)
+        assertEquals("Evening", v.governing?.label)
     }
 
     @Test
     fun `a hard block outranks a dated one, because it is the one still holding you`() {
         val usage = mapOf(REDDIT to listOf(UsageSession(now - 30 * MIN, now - 20 * MIN)))
-        val v = verdict(listOf(site("reddit.com", 180), group(null, listOf(REDDIT))), usage)
+        val dated = group(180, listOf(REDDIT)).copy(id = "group:evening", label = "Evening")
+        val v = verdict(listOf(dated, group(null, listOf(REDDIT))), usage)
         val blocked = v.decision as Decision.Blocked
         assertEquals(BlockReason.HARD_BLOCK, blocked.reason)
         assertNull("nothing but a pause or an edit lifts this", blocked.liftsAtMs)
@@ -178,26 +218,26 @@ class PolicyGroupTest {
             REDDIT to listOf(UsageSession(now - 50 * MIN, now - 47 * MIN)),
             YOUTUBE to listOf(UsageSession(now - 20 * MIN, now - 17 * MIN)),
         )
-        val v = verdict(
-            listOf(site("reddit.com", 60), group(60, listOf(REDDIT, YOUTUBE))),
-            usage,
-        )
+        val onlyReddit = group(60, listOf(REDDIT))
+        val both = group(60, listOf(REDDIT, YOUTUBE)).copy(id = "group:evening", label = "Evening")
+        val v = verdict(listOf(onlyReddit, both), usage)
         val blocked = v.decision as Decision.Blocked
-        val siteAlone = PolicyEngine.evaluate(
-            site("reddit.com", 60), usage[REDDIT]!!, 0L, null, now, UTC,
+        val redditGroupAlone = PolicyEngine.evaluate(
+            onlyReddit, usage[REDDIT]!!, 0L, null, now, UTC,
         ) as Decision.Blocked
         assertTrue(
-            "the group holds on longer than the site's own rule",
-            blocked.liftsAtMs!! > siteAlone.liftsAtMs!!,
+            "the group holding more of the usage lifts later",
+            blocked.liftsAtMs!! > redditGroupAlone.liftsAtMs!!,
         )
     }
 
     @Test
-    fun `the ticker is armed for the soonest deadline any rule named`() {
+    fun `the ticker is armed for the soonest deadline any group named`() {
         val usage = mapOf(REDDIT to listOf(UsageSession(now - 30 * MIN, now - 29 * MIN)))
-        val v = verdict(listOf(site("reddit.com", 600), group(180, listOf(REDDIT))), usage)
-        // The group runs out in two minutes; the site's own rule in nine. Missing the sooner one
-        // is a rule that never comes back on.
+        val evening = group(180, listOf(REDDIT)).copy(id = "group:evening", label = "Evening")
+        val v = verdict(listOf(group(600, listOf(REDDIT)), evening), usage)
+        // The evening group runs out in two minutes, the other in nine. Missing the sooner one is a
+        // rule that never comes back on.
         assertEquals(now + 2 * MIN, v.decision.recheckAtMs)
     }
 
@@ -211,32 +251,28 @@ class PolicyGroupTest {
     }
 
     @Test
-    fun `greyscale and the wait are the union across every live rule, not the governing one's`() {
-        val v = verdict(
-            listOf(
-                site("reddit.com", 600),
-                group(900, listOf(REDDIT), frictionSeconds = 8, grayscale = true),
-            ),
-        )
+    fun `greyscale and the wait are the union across the live groups covering a plain member`() {
+        val plain = group(600, listOf(REDDIT))
+        val strict = group(900, listOf(REDDIT), frictionSeconds = 8, grayscale = true)
+            .copy(id = "group:evening", label = "Evening")
+        val v = verdict(listOf(plain, strict))
         assertTrue(v.decision is Decision.Allowed)
-        // The site's own rule is the one with least left, so it governs -- and it asks for
-        // neither. Taking these off the governing rule would silently drop the group's.
-        assertEquals("reddit.com", v.governing?.label)
+        // The plain group has least left, so it governs -- and it asks for neither. Taking these off
+        // the governing rule would silently drop the other group's.
+        assertEquals("Brainrot", v.governing?.label)
         assertTrue(v.grayscale)
         assertEquals(8, v.frictionSeconds)
         // And the countdown is named after the rule that asked for it, not the one governing.
-        assertEquals("Brainrot", v.frictionFrom?.label)
+        assertEquals("Evening", v.frictionFrom?.label)
     }
 
     @Test
-    fun `a rule outside its hours asks for no wait and drains no colour`() {
+    fun `a group outside its hours asks for no wait and drains no colour`() {
         val evenings = Schedule(listOf(TimeBlock(TimeBlock.ALL_DAYS, 18 * 60, 23 * 60)))
-        val v = verdict(
-            listOf(
-                site("reddit.com", 600),
-                group(900, listOf(REDDIT), schedule = evenings, frictionSeconds = 8, grayscale = true),
-            ),
-        )
+        val plain = group(600, listOf(REDDIT))
+        val evening = group(900, listOf(REDDIT), schedule = evenings, frictionSeconds = 8, grayscale = true)
+            .copy(id = "group:evening", label = "Evening")
+        val v = verdict(listOf(plain, evening))
         assertTrue(v.decision is Decision.Allowed)
         assertTrue("noon is outside the evening group's hours", !v.grayscale)
         assertEquals(0, v.frictionSeconds)

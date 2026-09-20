@@ -186,15 +186,20 @@ object PolicyEngine {
     }
 
     /**
-     * One answer folded from every policy covering the target in front, since a target can be
-     * covered by more than one: its own rule, and every group it belongs to.
+     * One answer for the target in front, since a target can be covered by more than one policy:
+     * its own individual rule, and every group it belongs to.
      *
-     * The fold is "the strictest wins" in every dimension, which is the only reading that makes a
-     * group mean anything -- a shared allowance that a per-target rule could undercut would not be
-     * a cap. Concretely: any policy blocking blocks; the block lifts when the *last* of them lets
-     * go; the countdown shows the least time remaining of any of them; and the ticker is armed for
-     * the soonest deadline any of them named, since a deadline missed is a rule that never comes
-     * back on.
+     * A target with its own rule is governed by *that rule alone* -- its friction, its greyscale,
+     * its block, its countdown. The groups it also belongs to drop to pure accounting: their shared
+     * timers still fill, because the ledger is keyed by target and each group's [chargeable] sums
+     * its members' sessions, so this target still drains every group's cap for the other members --
+     * it simply is not itself held to them. A no-wait app rule inside a group that asks for a wait
+     * therefore keeps its no-wait behaviour rather than inheriting the group's.
+     *
+     * A target *without* its own rule -- a plain group member -- folds strictest-wins across the
+     * groups covering it, which is the only reading that makes a shared cap mean anything: any group
+     * blocking blocks; the block lifts when the last of them lets go; the countdown shows the least
+     * time left; greyscale and friction are the union of the live ones.
      *
      * [sessionsFor] is a function rather than a list because a group's usage is the union of its
      * members' -- the ledger is keyed by target and knows nothing about groups, which is exactly
@@ -210,12 +215,27 @@ object PolicyEngine {
     ): Verdict {
         if (policies.isEmpty()) return Verdict(Decision.Allow(), governing = null)
         val judged = policies.map { it to evaluate(it, sessionsFor(it), pausedUntilMs, workoutUntilMs, nowMs, tz) }
-        val recheckAtMs = judged.mapNotNull { it.second.recheckAtMs }.minOrNull()
 
-        // Only a rule that is actually live gets to drain the colour or ask for a wait. One that
-        // is paused, outside its hours, or already blocking is not governing the screen you are
-        // looking at, and a group demanding friction for hours it does not cover would be the
-        // reverse of what a schedule means.
+        // The individual rule for this exact target -- the only non-group policy that can cover it,
+        // since a non-group policy charges only its own id. When present and enabled it governs
+        // alone; a disabled one steps aside and the groups fold as normal. Behaviour and the ticker
+        // both look only at the governing set: a group's deadline cannot change an answer the
+        // group no longer decides, so arming for it would be a wakeup that changes nothing.
+        val behavioral = judged.filter { it.first.kind != TargetKind.GROUP && it.first.enabled }
+            .ifEmpty { judged }
+        val recheckAtMs = behavioral.mapNotNull { it.second.recheckAtMs }.minOrNull()
+        return foldVerdict(behavioral, recheckAtMs)
+    }
+
+    /**
+     * Collapses the governing set into one [Verdict], strictest-wins. For a target with its own
+     * rule this set is that single rule; for a plain group member it is every group covering it.
+     */
+    private fun foldVerdict(judged: List<Pair<Policy, Decision>>, recheckAtMs: Long?): Verdict {
+        // Only a rule that is actually live gets to drain the colour or ask for a wait. One that is
+        // paused, outside its hours, or already blocking is not governing the screen you are looking
+        // at, and a group demanding friction for hours it does not cover is the reverse of what a
+        // schedule means.
         val live = judged.filter { it.second is Decision.Allowed }
         val grayscale = live.any { it.first.grayscale }
         // The longest wait any live rule asks for, and which one asked -- the countdown is named
@@ -263,7 +283,7 @@ object PolicyEngine {
         val paused = judged.firstNotNullOfOrNull { (it.second as? Decision.Allow)?.pausedUntilMs }
         return Verdict(
             decision = Decision.Allow(pausedUntilMs = paused, recheckAtMs = recheckAtMs),
-            governing = policies.first(),
+            governing = judged.first().first,
         )
     }
 
