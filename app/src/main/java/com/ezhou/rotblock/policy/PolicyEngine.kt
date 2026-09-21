@@ -195,11 +195,12 @@ object PolicyEngine {
      * the least time remaining; the ticker arms for the soonest deadline any of them named. So an
      * app in a group is blocked as soon as *either* its own quota or the group's is spent.
      *
-     * The *friction wait* is the exception, and it belongs to the target's own rule: when a target
-     * has an individual rule that wait is authoritative, and a group can neither lengthen nor shorten
-     * it. A no-wait app inside a group that asks for a wait keeps its no wait. See [frictionSource].
-     * Greyscale stays a union across the live rules, like the budget: a group can still drain the
-     * colour on a member that has its own rule.
+     * The *friction wait* and *greyscale* are the exception, and belong to the target's own rule:
+     * when a target has a live individual rule, its wait and its colour are that rule's alone, and a
+     * group can neither add a wait nor drain the colour on a member that has its own rule. A no-wait
+     * app inside a group that asks for a wait keeps its no wait. Only the time budget is shared. With
+     * no live individual rule these fall back to the groups -- greyscale unions, the wait is the
+     * longest asked.
      *
      * [sessionsFor] is a function rather than a list because a group's usage is the union of its
      * members' -- the ledger is keyed by target and knows nothing about groups, which is exactly
@@ -220,8 +221,20 @@ object PolicyEngine {
         // Only a rule that is actually live gets to drain the colour. One that is paused, outside its
         // hours, or already blocking is not governing the screen you are looking at.
         val live = judged.filter { it.second is Decision.Allowed }
-        val grayscale = live.any { it.first.grayscale }
-        val frictionFrom = frictionSource(judged, live)
+        // Friction and greyscale are the app's own behaviour: when the target has a live individual
+        // rule they are that rule's alone -- a group can neither add a wait nor drain the colour on a
+        // member that has its own rule. Only the time budget is shared. With no live individual rule
+        // they fall back to the groups: greyscale unions, the wait is the longest asked.
+        val ownLive = judged.firstOrNull {
+            it.first.kind != TargetKind.GROUP && it.first.enabled && it.second is Decision.Allowed
+        }?.first
+        val grayscale = if (ownLive != null) ownLive.grayscale else live.any { it.first.grayscale }
+        val frictionFrom =
+            if (ownLive != null) {
+                ownLive.takeIf { it.frictionSeconds > 0 }
+            } else {
+                live.map { it.first }.filter { it.frictionSeconds > 0 }.maxByOrNull { it.frictionSeconds }
+            }
         val frictionSeconds = frictionFrom?.frictionSeconds ?: 0
 
         val blocked = judged.filter { it.second is Decision.Blocked }
@@ -264,27 +277,6 @@ object PolicyEngine {
             decision = Decision.Allow(pausedUntilMs = paused, recheckAtMs = recheckAtMs),
             governing = judged.first().first,
         )
-    }
-
-    /**
-     * Which rule's wait to show. The target's own rule owns its friction: when it has a live
-     * individual rule, that rule's configured wait is authoritative -- a group can neither lengthen
-     * it nor add one, so a no-wait app inside a group that demands a wait keeps its no wait. This is
-     * the one dimension the group fold does not touch; the time budget still folds strictest-wins.
-     * With no live individual rule, the wait is the longest any live group asks for, named after the
-     * group that asked -- the plain-member behaviour, unchanged.
-     */
-    private fun frictionSource(
-        judged: List<Pair<Policy, Decision>>,
-        live: List<Pair<Policy, Decision>>,
-    ): Policy? {
-        val own = judged.firstOrNull {
-            it.first.kind != TargetKind.GROUP && it.first.enabled && it.second is Decision.Allowed
-        }
-        if (own != null) return own.first.takeIf { it.frictionSeconds > 0 }
-        return live.map { it.first }
-            .filter { it.frictionSeconds > 0 }
-            .maxByOrNull { it.frictionSeconds }
     }
 
     private fun soonest(a: Long?, b: Long?): Long? = when {

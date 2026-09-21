@@ -211,7 +211,7 @@ class PolicyGroupTest {
     }
 
     @Test
-    fun `greyscale unions across the live rules but the wait belongs to the app's own rule`() {
+    fun `an app rule owns its wait and greyscale, the group's do not reach it`() {
         val v = verdict(
             listOf(
                 site("reddit.com", 600),
@@ -220,13 +220,23 @@ class PolicyGroupTest {
         )
         assertTrue(v.decision is Decision.Allowed)
         assertEquals("reddit.com", v.governing?.label)
-        // Greyscale is part of the budget side and still unions across live rules, so the group's
-        // colour drain reaches a member that has its own rule.
-        assertTrue(v.grayscale)
-        // The wait is the exception: it belongs to the app's own rule, which asks for none, so the
-        // group's 8s does not reach it.
+        // The app's own rule wants neither a wait nor greyscale, so the group's do not reach it --
+        // only the time budget is shared.
+        assertTrue("the group's greyscale must not reach a member with its own rule", !v.grayscale)
         assertEquals(0, v.frictionSeconds)
         assertNull(v.frictionFrom)
+    }
+
+    @Test
+    fun `a plain member still unions greyscale and the wait across its live groups`() {
+        val plain = group(600, listOf(REDDIT))
+        val strict = group(900, listOf(REDDIT), frictionSeconds = 8, grayscale = true)
+            .copy(id = "group:evening", label = "Evening")
+        val v = verdict(listOf(plain, strict))
+        assertTrue(v.decision is Decision.Allowed)
+        assertTrue(v.grayscale)
+        assertEquals(8, v.frictionSeconds)
+        assertEquals("Evening", v.frictionFrom?.label)
     }
 
     @Test
