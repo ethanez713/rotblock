@@ -186,21 +186,28 @@ object PolicyEngine {
     }
 
     /**
+     * How a [Policy] component combines when several policies cover one target -- its own individual
+     * rule and every group it belongs to. Every component belongs to exactly one of these, and the
+     * fold is split so that adding a component means placing it in one, not writing a fresh branch.
+     *
+     *  - [SHARED_STRICTEST] -- the **budget**: block, countdown, ticker. Every covering policy has a
+     *    say and the strictest wins, because a shared cap a per-target rule could undercut would not
+     *    be a cap. Folded by [foldBudget].
+     *  - [OWN_WINS] -- **behaviour**: friction wait, greyscale. The target's own rule decides alone;
+     *    the groups apply only as a fallback when there is no live own rule. Folded by [foldBehaviour]
+     *    through [ownElseGroups].
+     *  - [COUNT_ALL] -- **accrual**: a minute is charged to every covering policy at once. Not folded
+     *    here -- realised by the ledger being keyed by target plus [Policy.chargedTargets]/[chargeable].
+     *
+     * When a new component is added to [Policy], it is added to whichever of these its nature fits,
+     * and to the matching fold. There is no fourth option and no "default".
+     */
+    enum class MergeStrategy { SHARED_STRICTEST, OWN_WINS, COUNT_ALL }
+
+    /**
      * One answer folded from every policy covering the target in front, since a target can be
-     * covered by more than one: its own individual rule, and every group it belongs to.
-     *
-     * The *time budget* is strictest-wins across all of them, which is the only reading that makes a
-     * shared cap mean anything -- a cap a per-target rule could undercut would not be a cap. Any
-     * policy blocking blocks; the block lifts when the *last* of them lets go; the countdown shows
-     * the least time remaining; the ticker arms for the soonest deadline any of them named. So an
-     * app in a group is blocked as soon as *either* its own quota or the group's is spent.
-     *
-     * The *friction wait* and *greyscale* are the exception, and belong to the target's own rule:
-     * when a target has a live individual rule, its wait and its colour are that rule's alone, and a
-     * group can neither add a wait nor drain the colour on a member that has its own rule. A no-wait
-     * app inside a group that asks for a wait keeps its no wait. Only the time budget is shared. With
-     * no live individual rule these fall back to the groups -- greyscale unions, the wait is the
-     * longest asked.
+     * covered by more than one: its own individual rule, and every group it belongs to. The budget
+     * ([foldBudget]) and the behaviour ([foldBehaviour]) fold by different rules -- see [MergeStrategy].
      *
      * [sessionsFor] is a function rather than a list because a group's usage is the union of its
      * members' -- the ledger is keyed by target and knows nothing about groups, which is exactly
@@ -218,30 +225,32 @@ object PolicyEngine {
         val judged = policies.map { it to evaluate(it, sessionsFor(it), pausedUntilMs, workoutUntilMs, nowMs, tz) }
         val recheckAtMs = judged.mapNotNull { it.second.recheckAtMs }.minOrNull()
 
-        // Only a rule that is actually live gets to drain the colour. One that is paused, outside its
-        // hours, or already blocking is not governing the screen you are looking at.
-        val live = judged.filter { it.second is Decision.Allowed }
-        // Friction and greyscale are the app's own behaviour: when the target has a live individual
-        // rule they are that rule's alone -- a group can neither add a wait nor drain the colour on a
-        // member that has its own rule. Only the time budget is shared. With no live individual rule
-        // they fall back to the groups: greyscale unions, the wait is the longest asked.
-        val ownLive = judged.firstOrNull {
-            it.first.kind != TargetKind.GROUP && it.first.enabled && it.second is Decision.Allowed
-        }?.first
-        val grayscale = if (ownLive != null) ownLive.grayscale else live.any { it.first.grayscale }
-        val frictionFrom =
-            if (ownLive != null) {
-                ownLive.takeIf { it.frictionSeconds > 0 }
-            } else {
-                live.map { it.first }.filter { it.frictionSeconds > 0 }.maxByOrNull { it.frictionSeconds }
-            }
-        val frictionSeconds = frictionFrom?.frictionSeconds ?: 0
+        val budget = foldBudget(judged, recheckAtMs)
+        val behaviour = foldBehaviour(judged)
+        // A blocked screen is never greyscale: you are not in the app to have its colour drained.
+        val grayscale = if (budget.decision is Decision.Blocked) false else behaviour.grayscale
+        return Verdict(
+            decision = budget.decision,
+            governing = budget.governing,
+            grayscale = grayscale,
+            frictionSeconds = behaviour.frictionSeconds,
+            frictionFrom = behaviour.frictionFrom,
+        )
+    }
 
+    private data class BudgetVerdict(val decision: Decision, val governing: Policy?)
+
+    /**
+     * The [MergeStrategy.SHARED_STRICTEST] fold: block, countdown and ticker, strictest-wins across
+     * every covering policy, so an app in a group is blocked as soon as *either* its own quota or the
+     * group's is spent.
+     */
+    private fun foldBudget(judged: List<Pair<Policy, Decision>>, recheckAtMs: Long?): BudgetVerdict {
         val blocked = judged.filter { it.second is Decision.Blocked }
         if (blocked.isNotEmpty()) {
-            // Whichever holds you longest, so the screen names the constraint that is really in
-            // the way. A block with no lift time at all outranks every dated one -- null here
-            // means "nothing but a pause or an edit lifts this", not "lifts at zero".
+            // Whichever holds you longest, so the screen names the constraint that is really in the
+            // way. A block with no lift time at all outranks every dated one -- null here means
+            // "nothing but a pause or an edit lifts this", not "lifts at zero".
             val governing = blocked.maxWith(
                 compareBy(
                     { (it.second as Decision.Blocked).liftsAtMs == null },
@@ -249,35 +258,56 @@ object PolicyEngine {
                 )
             )
             val decision = governing.second as Decision.Blocked
-            return Verdict(
-                decision = decision.copy(recheckAtMs = recheckAtMs),
-                governing = governing.first,
-                grayscale = false,
-                frictionSeconds = frictionSeconds,
-                frictionFrom = frictionFrom,
-            )
+            return BudgetVerdict(decision.copy(recheckAtMs = recheckAtMs), governing.first)
         }
-
-        val binding = live.minByOrNull { (it.second as Decision.Allowed).remainingMs }
+        // The countdown shows the least time left of any of them, since that is the one that blocks
+        // first.
+        val binding = judged.filter { it.second is Decision.Allowed }
+            .minByOrNull { (it.second as Decision.Allowed).remainingMs }
         if (binding != null) {
             val decision = binding.second as Decision.Allowed
-            return Verdict(
-                decision = decision.copy(recheckAtMs = recheckAtMs),
-                governing = binding.first,
-                grayscale = grayscale,
-                frictionSeconds = frictionSeconds,
-                frictionFrom = frictionFrom,
-            )
+            return BudgetVerdict(decision.copy(recheckAtMs = recheckAtMs), binding.first)
         }
-
-        // Nothing is live. Any one of them being paused is enough to say so, since a pause covers
-        // the whole phone rather than one rule.
+        // Nothing is live. Any one being paused is enough to say so, since a pause covers the whole
+        // phone rather than one rule.
         val paused = judged.firstNotNullOfOrNull { (it.second as? Decision.Allow)?.pausedUntilMs }
-        return Verdict(
-            decision = Decision.Allow(pausedUntilMs = paused, recheckAtMs = recheckAtMs),
-            governing = judged.first().first,
-        )
+        return BudgetVerdict(Decision.Allow(pausedUntilMs = paused, recheckAtMs = recheckAtMs), judged.first().first)
     }
+
+    private data class Behaviour(val grayscale: Boolean, val frictionSeconds: Int, val frictionFrom: Policy?)
+
+    /**
+     * The [MergeStrategy.OWN_WINS] fold: friction and greyscale belong to the target's own rule. When
+     * it has a live individual rule those are that rule's alone, so a group can neither add a wait nor
+     * drain the colour on a member that has its own rule; with no live own rule they fall back to the
+     * live groups. Only a *live* rule (paused, off-hours and blocking ones contribute neither) has a say.
+     */
+    private fun foldBehaviour(judged: List<Pair<Policy, Decision>>): Behaviour {
+        val ownLive = judged.firstOrNull {
+            it.first.kind != TargetKind.GROUP && it.first.enabled && it.second is Decision.Allowed
+        }?.first
+        val liveGroups = judged.filter { it.first.kind == TargetKind.GROUP && it.second is Decision.Allowed }
+            .map { it.first }
+        val grayscale = ownElseGroups(ownLive, liveGroups, { it.grayscale }, { gs -> gs.any { it.grayscale } })
+        val frictionFrom = ownElseGroups(
+            ownLive, liveGroups,
+            { it.takeIf { p -> p.frictionSeconds > 0 } },
+            { gs -> gs.filter { it.frictionSeconds > 0 }.maxByOrNull { it.frictionSeconds } },
+        )
+        return Behaviour(grayscale, frictionFrom?.frictionSeconds ?: 0, frictionFrom)
+    }
+
+    /**
+     * The one way an [MergeStrategy.OWN_WINS] component combines: the target's own rule when it has a
+     * live one, otherwise the groups. Every behaviour component goes through this, so the own-wins rule
+     * cannot be forgotten by copying a nearby branch.
+     */
+    private fun <T> ownElseGroups(
+        ownLive: Policy?,
+        liveGroups: List<Policy>,
+        own: (Policy) -> T,
+        groups: (List<Policy>) -> T,
+    ): T = if (ownLive != null) own(ownLive) else groups(liveGroups)
 
     private fun soonest(a: Long?, b: Long?): Long? = when {
         a == null -> b

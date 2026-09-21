@@ -33,6 +33,11 @@ private const val MEMBER_SEPARATOR = "|"
  *
  * [schedule] gates all of that: outside its hours the rule does nothing at all, and nothing spent
  * there counts against the quota.
+ *
+ * When several policies cover one target -- an app's own rule and the groups it is in -- each
+ * component below combines by its [PolicyEngine.MergeStrategy]: the budget is shared and
+ * strictest-wins, behaviour ([frictionSeconds], [grayscale]) is the own rule's, accrual counts
+ * toward all. A component added here must choose one; there is no default.
  */
 @Entity(tableName = "policies")
 data class Policy(
@@ -44,13 +49,16 @@ data class Policy(
     /** Human-readable name, used in the UI and in audit entries. */
     val label: String,
     val enabled: Boolean = true,
-    /** null = hard block, no allowance at all. */
+    /**
+     * null = hard block, no allowance at all. The budget: [PolicyEngine.MergeStrategy.SHARED_STRICTEST]
+     * for whether it blocks, [PolicyEngine.MergeStrategy.COUNT_ALL] for the time it accrues.
+     */
     val quotaSeconds: Int? = null,
     /** Rolling window the quota is measured over. Ignored when [quotaSeconds] is null. */
     val windowSeconds: Int = 3600,
-    /** Seconds of breathing screen before the target opens. 0 = none. (Phase 7) */
+    /** Seconds of breathing screen before the target opens. 0 = none. [PolicyEngine.MergeStrategy.OWN_WINS]. */
     val frictionSeconds: Int = 0,
-    /** Force the display to greyscale while this target is in the foreground. (Phase 7) */
+    /** Greyscale the display while this target is in front. [PolicyEngine.MergeStrategy.OWN_WINS]. */
     val grayscale: Boolean = false,
     /**
      * The hours this rule is live for. Empty means always, which is what every rule written before
