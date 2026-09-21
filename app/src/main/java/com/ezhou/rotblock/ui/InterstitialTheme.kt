@@ -43,6 +43,7 @@ object Ds {
     val onDanger = Color(0xFFFDFCFF)
     val more = Color(0xFFE80808)
     val less = Color(0xFF1B8A32)
+    val divider = Color(0xFFC7BEAD)
 
     object Night {
         val paper0 = Color(0xFF232019)
@@ -61,6 +62,7 @@ object Ds {
         val onDanger = Color(0xFFFFFFFF)
         val more = Color(0xFFFF4A4A)
         val less = Color(0xFF4DDB6F)
+        val divider = Color(0xFF57503F)
     }
 }
 
@@ -201,7 +203,7 @@ class DsAndroid(night: Boolean) {
     val body = if (night) 0xFFD6D0C5.toInt() else 0xFF3E3830.toInt()
     val muted = if (night) 0xFFB4AEA2.toInt() else 0xFF574F45.toInt()
     val faint = if (night) 0xFF9A9385.toInt() else 0xFF70685B.toInt()
-    val divider = if (night) 0xFF322E27.toInt() else 0xFFE8E2D8.toInt()
+    val divider = if (night) 0xFF57503F.toInt() else 0xFFC7BEAD.toInt()
     val accent = 0xFFDD7A32.toInt()
     val onAccent = 0xFFFFF8F1.toInt()
     val more = if (night) 0xFFFF4A4A.toInt() else 0xFFE80808.toInt()

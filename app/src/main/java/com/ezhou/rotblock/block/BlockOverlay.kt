@@ -554,7 +554,7 @@ class BlockOverlay(private val context: Context) {
     private fun hairline(ds: DsAndroid) = View(context).apply {
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
-            1,
+            (1.5f * context.resources.displayMetrics.density).toInt().coerceAtLeast(1),
         ).apply {
             topMargin = dp(12)
             bottomMargin = dp(12)
