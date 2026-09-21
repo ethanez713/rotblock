@@ -359,7 +359,7 @@ class BlockOverlay(private val context: Context) {
                     setPadding(0, dp(2), 0, 0)
                 }
                 addView(compareSubView)
-                addView(spacer(dp(12)))
+                addView(hairline(ds))
                 allLabelView = monoLabel(ds.faint, mono)
                 addView(allLabelView)
                 addView(spacer(dp(6)))
@@ -371,7 +371,7 @@ class BlockOverlay(private val context: Context) {
                     )
                 }
                 addView(allClocks)
-                addView(spacer(dp(14)))
+                addView(hairline(ds))
                 dayBars = DayBarsView(context).apply {
                     onDarkSurface = night
                     appMs = List(STATS_DAYS) { 0L }
@@ -549,6 +549,17 @@ class BlockOverlay(private val context: Context) {
 
     private fun spacer(height: Int) = View(context).apply {
         layoutParams = LinearLayout.LayoutParams(1, height)
+    }
+
+    private fun hairline(ds: DsAndroid) = View(context).apply {
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            1,
+        ).apply {
+            topMargin = dp(12)
+            bottomMargin = dp(12)
+        }
+        setBackgroundColor(ds.divider)
     }
 
     private fun dp(value: Int): Int =
