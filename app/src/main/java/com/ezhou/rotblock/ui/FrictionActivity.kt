@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import com.ezhou.rotblock.block.FrictionGate
 import com.ezhou.rotblock.block.Interstitial
 import com.ezhou.rotblock.browser.escapeIntent
+import com.ezhou.rotblock.insights.DiscouragingStatsResult
 import kotlinx.coroutines.delay
 
 /**
@@ -166,7 +167,7 @@ class FrictionActivity : ComponentActivity() {
                         label = label,
                         seconds = seconds,
                         visit = visit,
-                        todayMs = stats?.takeIf { it.hasHistory }?.thisTargetToday,
+                        stats = stats,
                         onServed = { target?.let { FrictionGate.onServed?.invoke(it) } },
                         onContinue = { finish() },
                         onLeave = { leave(browser) },
@@ -208,7 +209,7 @@ private fun FrictionScreen(
     seconds: Int,
     /** Changes whenever the screen is re-entered, which starts the wait over. */
     visit: Int,
-    todayMs: Long?,
+    stats: DiscouragingStatsResult?,
     /** The wait was actually sat through. The only thing that spends it; see [FrictionGate]. */
     onServed: () -> Unit,
     onContinue: () -> Unit,
@@ -269,8 +270,16 @@ private fun FrictionScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(16.dp))
-        HourClocks(todayMs ?: 0L, onDark = isSystemInDarkTheme())
+        val hist = stats?.takeIf { it.hasHistory }
+        if (hist != null) {
+            Spacer(Modifier.height(20.dp))
+            UsageGlance(
+                stats = hist,
+                targetLabel = label,
+                dense = false,
+                onDark = isSystemInDarkTheme(),
+            )
+        }
 
         Spacer(Modifier.height(28.dp))
         Button(
