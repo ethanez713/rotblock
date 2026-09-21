@@ -218,32 +218,25 @@ class BlockOverlay(private val context: Context) {
      * or when there is nothing to show — same as skipping the old two-line string of zeros.
      */
     @SuppressLint("SetTextI18n")
-    fun setStats(stats: DiscouragingStatsResult, targetLabel: String?, forTargetId: String) {
+    fun setStats(stats: DiscouragingStatsResult, forTargetId: String) {
         if (root == null || forTargetId != shownTargetId) return
         val night = dsNight(context)
         val clocks = targetClocks ?: return
         val label = targetLabelView ?: return
         val head = compareHeadView ?: return
-        val sub = compareSubView ?: return
         val allLab = allLabelView ?: return
         val all = allClocks ?: return
         val allHead = allCompareHeadView ?: return
-        val allSub = allCompareSubView ?: return
         val bars = dayBars ?: return
 
-        val name = targetLabel ?: forTargetId.substringAfter(':')
-        label.text = "$name · ${formatHoursMinutes(stats.thisTargetToday)} today"
+        label.text = "${formatHoursMinutes(stats.thisTargetToday)} today"
         clocks.minutesMs = stats.thisTargetToday
-        val color = compareColorInt(stats.thisTargetToday, stats.thisTargetAvg30Ms, onDark = night)
         head.text = compareHead(stats.thisTargetToday, stats.thisTargetAvg30Ms)
-        head.setTextColor(color)
-        sub.setTextColor(color)
+        head.setTextColor(compareColorInt(stats.thisTargetToday, stats.thisTargetAvg30Ms, onDark = night))
         allLab.text = "all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today"
         all.minutesMs = stats.allBlockedToday
-        val allColor = compareColorInt(stats.allBlockedToday, stats.allBlockedAvg30Ms, onDark = night)
         allHead.text = compareHead(stats.allBlockedToday, stats.allBlockedAvg30Ms)
-        allHead.setTextColor(allColor)
-        allSub.setTextColor(allColor)
+        allHead.setTextColor(compareColorInt(stats.allBlockedToday, stats.allBlockedAvg30Ms, onDark = night))
         bars.appMs = stats.thisTargetDailyMs.ifEmpty { List(STATS_DAYS) { 0L } }
         bars.overlayMs = stats.allBlockedDailyMs.ifEmpty { List(STATS_DAYS) { 0L } }
     }
@@ -341,7 +334,7 @@ class BlockOverlay(private val context: Context) {
                 gravity = Gravity.CENTER_HORIZONTAL
                 setPadding(0, dp(18), 0, 0)
 
-                targetLabelView = sectionLabel(ds.heading, monoMed)
+                targetLabelView = sectionLabel(ds.heading, monoMed, 22f)
                 addView(targetLabelView)
                 addView(spacer(dp(6)))
                 targetClocks = HourClocksView(context).apply {
@@ -353,13 +346,13 @@ class BlockOverlay(private val context: Context) {
                 }
                 addView(targetClocks)
                 addView(spacer(dp(6)))
-                val (tHead, tSub) = compareViews(ds, mono, monoMed)
+                val (tHead, tSub) = compareViews(ds, mono, monoMed, 18f)
                 compareHeadView = tHead
                 compareSubView = tSub
                 addView(tHead)
                 addView(tSub)
                 addView(hairline(ds))
-                allLabelView = sectionLabel(ds.heading, monoMed)
+                allLabelView = sectionLabel(ds.heading, monoMed, 18f)
                 addView(allLabelView)
                 addView(spacer(dp(6)))
                 allClocks = HourClocksView(context).apply {
@@ -371,7 +364,7 @@ class BlockOverlay(private val context: Context) {
                 }
                 addView(allClocks)
                 addView(spacer(dp(6)))
-                val (aHead, aSub) = compareViews(ds, mono, monoMed)
+                val (aHead, aSub) = compareViews(ds, mono, monoMed, 15f)
                 allCompareHeadView = aHead
                 allCompareSubView = aSub
                 addView(aHead)
@@ -448,10 +441,10 @@ class BlockOverlay(private val context: Context) {
         }
     }
 
-    private fun sectionLabel(color: Int, typeface: Typeface): TextView = TextView(context).apply {
+    private fun sectionLabel(color: Int, typeface: Typeface, sizeSp: Float): TextView = TextView(context).apply {
         text = " "
         setTextColor(color)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
         this.typeface = typeface
         gravity = Gravity.CENTER
         minHeight = dp(16)
@@ -461,11 +454,11 @@ class BlockOverlay(private val context: Context) {
         )
     }
 
-    private fun compareViews(ds: DsAndroid, mono: Typeface, monoMed: Typeface): Pair<TextView, TextView> {
+    private fun compareViews(ds: DsAndroid, mono: Typeface, monoMed: Typeface, headSizeSp: Float): Pair<TextView, TextView> {
         val head = TextView(context).apply {
             text = " "
             typeface = monoMed
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, headSizeSp)
             minHeight = dp(24)
             gravity = Gravity.CENTER
         }

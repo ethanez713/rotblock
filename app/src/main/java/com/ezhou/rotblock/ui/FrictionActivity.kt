@@ -263,13 +263,6 @@ private fun FrictionScreen(
             style = MaterialTheme.typography.headlineSmall,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Was there something you actually wanted here?",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
         val hist = stats?.takeIf { it.hasHistory }
         if (hist != null) {
             Spacer(Modifier.height(20.dp))
@@ -289,7 +282,7 @@ private fun FrictionScreen(
         ) { Text(if (left > 0) "Wait…" else "Go ahead") }
         Spacer(Modifier.height(4.dp))
         TextButton(onClick = onLeave, modifier = Modifier.fillMaxWidth()) {
-            Text("Not really — take me back")
+            Text("Take me back")
         }
     }
 }

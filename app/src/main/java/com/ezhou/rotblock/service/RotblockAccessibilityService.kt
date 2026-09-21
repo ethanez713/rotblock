@@ -2176,9 +2176,6 @@ class RotblockAccessibilityService : AccessibilityService() {
             targetId = targetId,
         )
         if (firstAppearance && shown && decision.reason != BlockReason.WORKOUT_MODE) {
-            val targetLabel = enabledPoliciesCovering(targetId)
-                .firstOrNull { it.id == targetId }?.label
-                ?: targetId.substringAfter(':')
             scope.launch {
                 runCatching {
                     val settings = Rotblock.settings(this@RotblockAccessibilityService).current()
@@ -2192,7 +2189,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                     )
                     if (stats.hasHistory) {
                         withContext(Dispatchers.Main) {
-                            overlay.setStats(stats, targetLabel, targetId)
+                            overlay.setStats(stats, targetId)
                         }
                     }
                 }

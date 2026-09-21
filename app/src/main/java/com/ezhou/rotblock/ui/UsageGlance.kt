@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -317,7 +318,7 @@ fun DayBars(
 }
 
 @Composable
-fun CompareDelta(todayMs: Long, avgMs: Long, modifier: Modifier = Modifier) {
+fun CompareDelta(todayMs: Long, avgMs: Long, headSize: TextUnit = 18.sp, modifier: Modifier = Modifier) {
     val d = deltaMinutes(todayMs, avgMs)
     val color = when {
         d > 0 -> moreColor()
@@ -334,13 +335,13 @@ fun CompareDelta(todayMs: Long, avgMs: Long, modifier: Modifier = Modifier) {
             head,
             color = color,
             fontFamily = InterstitialMono,
-            fontSize = 20.sp,
+            fontSize = headSize,
             fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
         )
         Text(
             "than your 30-day average",
-            color = color,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontFamily = InterstitialMono,
             fontSize = 12.sp,
             textAlign = TextAlign.Center,
@@ -375,13 +376,13 @@ fun EmergencySkipsGlance(stats: DiscouragingStatsResult, onDark: Boolean, modifi
 }
 
 @Composable
-private fun SectionLabel(text: String) {
+private fun SectionLabel(text: String, fontSize: TextUnit) {
     Text(
         text,
         color = MaterialTheme.colorScheme.onSurface,
         fontFamily = InterstitialMono,
         fontWeight = FontWeight.Medium,
-        fontSize = 13.sp,
+        fontSize = fontSize,
         textAlign = TextAlign.Center,
     )
 }
@@ -407,19 +408,24 @@ fun UsageGlance(
     val allDays = stats.allBlockedDailyMs.ifEmpty { List(STATS_DAYS) { 0L } }
     Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         if (targetLabel != null) {
-            SectionLabel("$targetLabel · ${formatHoursMinutes(stats.thisTargetToday)} today")
+            val thisHead = if (dense) {
+                "$targetLabel · ${formatHoursMinutes(stats.thisTargetToday)} today"
+            } else {
+                "${formatHoursMinutes(stats.thisTargetToday)} today"
+            }
+            SectionLabel(thisHead, fontSize = 22.sp)
             Spacer(Modifier.height(6.dp))
         }
         HourClocks(stats.thisTargetToday, onDark)
         Spacer(Modifier.height(6.dp))
-        CompareDelta(stats.thisTargetToday, stats.thisTargetAvg30Ms)
+        CompareDelta(stats.thisTargetToday, stats.thisTargetAvg30Ms, headSize = 18.sp)
         if (!dense) {
             GlanceHairline()
-            SectionLabel("all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today")
+            SectionLabel("all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today", fontSize = 18.sp)
             Spacer(Modifier.height(6.dp))
             HourClocks(stats.allBlockedToday, onDark)
             Spacer(Modifier.height(6.dp))
-            CompareDelta(stats.allBlockedToday, stats.allBlockedAvg30Ms)
+            CompareDelta(stats.allBlockedToday, stats.allBlockedAvg30Ms, headSize = 15.sp)
             GlanceHairline()
             DayBars(
                 appMs = appDays,
