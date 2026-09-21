@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -374,6 +376,15 @@ fun EmergencySkipsGlance(stats: DiscouragingStatsResult, onDark: Boolean, modifi
 }
 
 @Composable
+private fun GlanceHairline() {
+    HorizontalDivider(
+        modifier = Modifier.padding(vertical = 12.dp),
+        thickness = Dp.Hairline,
+        color = MaterialTheme.colorScheme.outlineVariant,
+    )
+}
+
+@Composable
 fun UsageGlance(
     stats: DiscouragingStatsResult,
     targetLabel: String?,
@@ -398,7 +409,7 @@ fun UsageGlance(
         Spacer(Modifier.height(6.dp))
         CompareDelta(stats.thisTargetToday, stats.thisTargetAvg30Ms)
         if (!dense) {
-            Spacer(Modifier.height(12.dp))
+            GlanceHairline()
             Text(
                 "all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today",
                 style = MaterialTheme.typography.labelSmall,
@@ -408,7 +419,7 @@ fun UsageGlance(
             )
             Spacer(Modifier.height(6.dp))
             HourClocks(stats.allBlockedToday, onDark)
-            Spacer(Modifier.height(14.dp))
+            GlanceHairline()
             DayBars(
                 appMs = appDays,
                 overlayMs = allDays,
