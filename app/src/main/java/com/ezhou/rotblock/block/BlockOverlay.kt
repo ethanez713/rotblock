@@ -233,7 +233,7 @@ class BlockOverlay(private val context: Context) {
         clocks.minutesMs = stats.thisTargetToday
         head.text = compareHead(stats.thisTargetToday, stats.thisTargetAvg30Ms)
         head.setTextColor(compareColorInt(stats.thisTargetToday, stats.thisTargetAvg30Ms, onDark = night))
-        allLab.text = "all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today"
+        allLab.text = "${formatHoursMinutes(stats.allBlockedToday)} today"
         all.minutesMs = stats.allBlockedToday
         allHead.text = compareHead(stats.allBlockedToday, stats.allBlockedAvg30Ms)
         allHead.setTextColor(compareColorInt(stats.allBlockedToday, stats.allBlockedAvg30Ms, onDark = night))
@@ -313,9 +313,9 @@ class BlockOverlay(private val context: Context) {
 
             titleView = TextView(context).apply {
                 text = label
-                setTextColor(ds.body)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-                typeface = body
+                setTextColor(ds.heading)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 25f)
+                typeface = heading
                 gravity = Gravity.CENTER
             }
             addView(titleView)
@@ -332,9 +332,9 @@ class BlockOverlay(private val context: Context) {
             statsColumn = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
-                setPadding(0, dp(18), 0, 0)
+                setPadding(0, dp(10), 0, 0)
 
-                targetLabelView = sectionLabel(ds.heading, monoMed, 22f)
+                targetLabelView = sectionLabel(ds.heading, monoMed, 19f)
                 addView(targetLabelView)
                 addView(spacer(dp(6)))
                 targetClocks = HourClocksView(context).apply {
@@ -346,13 +346,15 @@ class BlockOverlay(private val context: Context) {
                 }
                 addView(targetClocks)
                 addView(spacer(dp(6)))
-                val (tHead, tSub) = compareViews(ds, mono, monoMed, 18f)
+                val (tHead, tSub) = compareViews(ds, mono, monoMed, 17f, 12f)
                 compareHeadView = tHead
                 compareSubView = tSub
                 addView(tHead)
                 addView(tSub)
                 addView(hairline(ds))
-                allLabelView = sectionLabel(ds.heading, monoMed, 18f)
+                addView(sectionLabel(ds.heading, heading, 15f).apply { text = "Total blocked" })
+                addView(spacer(dp(2)))
+                allLabelView = sectionLabel(ds.heading, monoMed, 14f)
                 addView(allLabelView)
                 addView(spacer(dp(6)))
                 allClocks = HourClocksView(context).apply {
@@ -364,7 +366,7 @@ class BlockOverlay(private val context: Context) {
                 }
                 addView(allClocks)
                 addView(spacer(dp(6)))
-                val (aHead, aSub) = compareViews(ds, mono, monoMed, 15f)
+                val (aHead, aSub) = compareViews(ds, mono, monoMed, 13f, 11f)
                 allCompareHeadView = aHead
                 allCompareSubView = aSub
                 addView(aHead)
@@ -454,7 +456,7 @@ class BlockOverlay(private val context: Context) {
         )
     }
 
-    private fun compareViews(ds: DsAndroid, mono: Typeface, monoMed: Typeface, headSizeSp: Float): Pair<TextView, TextView> {
+    private fun compareViews(ds: DsAndroid, mono: Typeface, monoMed: Typeface, headSizeSp: Float, subSizeSp: Float): Pair<TextView, TextView> {
         val head = TextView(context).apply {
             text = " "
             typeface = monoMed
@@ -465,7 +467,7 @@ class BlockOverlay(private val context: Context) {
         val sub = TextView(context).apply {
             text = "than your 30-day average"
             typeface = mono
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, subSizeSp)
             setTextColor(ds.faint)
             gravity = Gravity.CENTER
             setPadding(0, dp(2), 0, 0)
