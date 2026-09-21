@@ -273,13 +273,13 @@ class DayBarsView @JvmOverloads constructor(
 }
 
 private fun clockFracs(minutesMs: Long): List<Float> {
+    if (minutesMs <= 0L) return emptyList()
     val hours = minutesMs / 3_600_000f
     val full = hours.toInt()
     val part = hours - full
     val out = ArrayList<Float>(full + 1)
     repeat(full) { out.add(1f) }
-    if (part > 0.08f) out.add(part)
-    if (out.isEmpty() && minutesMs > 0L) out.add(0.2f)
+    if (part > 0f) out.add(part)
     return out
 }
 
