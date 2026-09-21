@@ -348,6 +348,31 @@ fun CompareDelta(todayMs: Long, avgMs: Long, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * The emergency-skips-used chart: a 30-day bar of skip minutes and how today compares. Quarter-hour
+ * ticks, since a day's worth of skips is minutes, not hours. Shown wherever a skip is on offer.
+ */
+@Composable
+fun EmergencySkipsGlance(stats: DiscouragingStatsResult, onDark: Boolean, modifier: Modifier = Modifier) {
+    Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            "emergency skips · ${formatHoursMinutes(stats.emergencyDailyMs.lastOrNull() ?: 0L)} today",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontFamily = InterstitialMono,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(6.dp))
+        DayBars(
+            appMs = stats.emergencyDailyMs.ifEmpty { List(STATS_DAYS) { 0L } },
+            quarterHour = true,
+            onDark = onDark,
+        )
+        Spacer(Modifier.height(10.dp))
+        CompareDelta(stats.emergencyDailyMs.lastOrNull() ?: 0L, stats.emergencyAvg30Ms)
+    }
+}
+
 @Composable
 fun UsageGlance(
     stats: DiscouragingStatsResult,

@@ -334,6 +334,12 @@ private fun ChooseStep(
         onDark = isSystemInDarkTheme(),
     )
 
+    val stats = discouragingStats
+    if (stats != null && stats.hasEmergencyHistory) {
+        Spacer(Modifier.height(18.dp))
+        EmergencySkipsGlance(stats = stats, onDark = isSystemInDarkTheme())
+    }
+
     Spacer(Modifier.height(28.dp))
     Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
         Text(
