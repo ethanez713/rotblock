@@ -25,6 +25,7 @@ data class DiscouragingStatsResult(
     val thisTargetToday: Long get() = thisTargetDailyMs.lastOrNull() ?: 0L
     val allBlockedToday: Long get() = allBlockedDailyMs.lastOrNull() ?: 0L
     val thisTargetAvg30Ms: Long get() = mean(thisTargetDailyMs)
+    val allBlockedAvg30Ms: Long get() = mean(allBlockedDailyMs)
     val emergencyAvg30Ms: Long get() = mean(emergencyDailyMs)
     val hasHistory: Boolean
         get() = allBlockedDailyMs.any { it > 0 } || thisTargetDailyMs.any { it > 0 }

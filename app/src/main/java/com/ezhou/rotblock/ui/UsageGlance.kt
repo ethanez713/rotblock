@@ -375,6 +375,18 @@ fun EmergencySkipsGlance(stats: DiscouragingStatsResult, onDark: Boolean, modifi
 }
 
 @Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text,
+        color = MaterialTheme.colorScheme.onSurface,
+        fontFamily = InterstitialMono,
+        fontWeight = FontWeight.Medium,
+        fontSize = 13.sp,
+        textAlign = TextAlign.Center,
+    )
+}
+
+@Composable
 private fun GlanceHairline() {
     HorizontalDivider(
         modifier = Modifier.padding(vertical = 12.dp),
@@ -395,13 +407,7 @@ fun UsageGlance(
     val allDays = stats.allBlockedDailyMs.ifEmpty { List(STATS_DAYS) { 0L } }
     Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         if (targetLabel != null) {
-            Text(
-                "$targetLabel · ${formatHoursMinutes(stats.thisTargetToday)} today",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontFamily = InterstitialMono,
-                textAlign = TextAlign.Center,
-            )
+            SectionLabel("$targetLabel · ${formatHoursMinutes(stats.thisTargetToday)} today")
             Spacer(Modifier.height(6.dp))
         }
         HourClocks(stats.thisTargetToday, onDark)
@@ -409,15 +415,11 @@ fun UsageGlance(
         CompareDelta(stats.thisTargetToday, stats.thisTargetAvg30Ms)
         if (!dense) {
             GlanceHairline()
-            Text(
-                "all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontFamily = InterstitialMono,
-                textAlign = TextAlign.Center,
-            )
+            SectionLabel("all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today")
             Spacer(Modifier.height(6.dp))
             HourClocks(stats.allBlockedToday, onDark)
+            Spacer(Modifier.height(6.dp))
+            CompareDelta(stats.allBlockedToday, stats.allBlockedAvg30Ms)
             GlanceHairline()
             DayBars(
                 appMs = appDays,

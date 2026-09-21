@@ -98,6 +98,8 @@ class BlockOverlay(private val context: Context) {
     private var compareSubView: TextView? = null
     private var allLabelView: TextView? = null
     private var allClocks: HourClocksView? = null
+    private var allCompareHeadView: TextView? = null
+    private var allCompareSubView: TextView? = null
     private var dayBars: DayBarsView? = null
     private var liftsAtMs: Long? = null
     private var liftReason: BlockReason? = null
@@ -225,6 +227,8 @@ class BlockOverlay(private val context: Context) {
         val sub = compareSubView ?: return
         val allLab = allLabelView ?: return
         val all = allClocks ?: return
+        val allHead = allCompareHeadView ?: return
+        val allSub = allCompareSubView ?: return
         val bars = dayBars ?: return
 
         val name = targetLabel ?: forTargetId.substringAfter(':')
@@ -236,6 +240,10 @@ class BlockOverlay(private val context: Context) {
         sub.setTextColor(color)
         allLab.text = "all blocked · ${formatHoursMinutes(stats.allBlockedToday)} today"
         all.minutesMs = stats.allBlockedToday
+        val allColor = compareColorInt(stats.allBlockedToday, stats.allBlockedAvg30Ms, onDark = night)
+        allHead.text = compareHead(stats.allBlockedToday, stats.allBlockedAvg30Ms)
+        allHead.setTextColor(allColor)
+        allSub.setTextColor(allColor)
         bars.appMs = stats.thisTargetDailyMs.ifEmpty { List(STATS_DAYS) { 0L } }
         bars.overlayMs = stats.allBlockedDailyMs.ifEmpty { List(STATS_DAYS) { 0L } }
     }
@@ -246,6 +254,7 @@ class BlockOverlay(private val context: Context) {
         compareHeadView?.text = " "
         allLabelView?.text = " "
         allClocks?.minutesMs = 0L
+        allCompareHeadView?.text = " "
         dayBars?.appMs = List(STATS_DAYS) { 0L }
         dayBars?.overlayMs = List(STATS_DAYS) { 0L }
     }
@@ -258,6 +267,8 @@ class BlockOverlay(private val context: Context) {
         compareSubView = null
         allLabelView = null
         allClocks = null
+        allCompareHeadView = null
+        allCompareSubView = null
         dayBars = null
     }
 
@@ -330,7 +341,7 @@ class BlockOverlay(private val context: Context) {
                 gravity = Gravity.CENTER_HORIZONTAL
                 setPadding(0, dp(18), 0, 0)
 
-                targetLabelView = monoLabel(ds.faint, mono)
+                targetLabelView = sectionLabel(ds.heading, monoMed)
                 addView(targetLabelView)
                 addView(spacer(dp(6)))
                 targetClocks = HourClocksView(context).apply {
@@ -342,25 +353,13 @@ class BlockOverlay(private val context: Context) {
                 }
                 addView(targetClocks)
                 addView(spacer(dp(6)))
-                compareHeadView = TextView(context).apply {
-                    text = " "
-                    typeface = monoMed
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
-                    minHeight = dp(24)
-                    gravity = Gravity.CENTER
-                }
-                addView(compareHeadView)
-                compareSubView = TextView(context).apply {
-                    text = "than your 30-day average"
-                    typeface = mono
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                    setTextColor(ds.faint)
-                    gravity = Gravity.CENTER
-                    setPadding(0, dp(2), 0, 0)
-                }
-                addView(compareSubView)
+                val (tHead, tSub) = compareViews(ds, mono, monoMed)
+                compareHeadView = tHead
+                compareSubView = tSub
+                addView(tHead)
+                addView(tSub)
                 addView(hairline(ds))
-                allLabelView = monoLabel(ds.faint, mono)
+                allLabelView = sectionLabel(ds.heading, monoMed)
                 addView(allLabelView)
                 addView(spacer(dp(6)))
                 allClocks = HourClocksView(context).apply {
@@ -371,6 +370,12 @@ class BlockOverlay(private val context: Context) {
                     )
                 }
                 addView(allClocks)
+                addView(spacer(dp(6)))
+                val (aHead, aSub) = compareViews(ds, mono, monoMed)
+                allCompareHeadView = aHead
+                allCompareSubView = aSub
+                addView(aHead)
+                addView(aSub)
                 addView(hairline(ds))
                 dayBars = DayBarsView(context).apply {
                     onDarkSurface = night
@@ -443,17 +448,36 @@ class BlockOverlay(private val context: Context) {
         }
     }
 
-    private fun monoLabel(color: Int, typeface: Typeface): TextView = TextView(context).apply {
+    private fun sectionLabel(color: Int, typeface: Typeface): TextView = TextView(context).apply {
         text = " "
         setTextColor(color)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         this.typeface = typeface
         gravity = Gravity.CENTER
-        minHeight = dp(14)
+        minHeight = dp(16)
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
         )
+    }
+
+    private fun compareViews(ds: DsAndroid, mono: Typeface, monoMed: Typeface): Pair<TextView, TextView> {
+        val head = TextView(context).apply {
+            text = " "
+            typeface = monoMed
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            minHeight = dp(24)
+            gravity = Gravity.CENTER
+        }
+        val sub = TextView(context).apply {
+            text = "than your 30-day average"
+            typeface = mono
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(ds.faint)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(2), 0, 0)
+        }
+        return head to sub
     }
 
     /** A filled, rounded, full-width tap target built by hand -- there is no theme out here. */
