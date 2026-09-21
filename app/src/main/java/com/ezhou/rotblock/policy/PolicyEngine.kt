@@ -186,20 +186,20 @@ object PolicyEngine {
     }
 
     /**
-     * One answer for the target in front, since a target can be covered by more than one policy:
-     * its own individual rule, and every group it belongs to.
+     * One answer folded from every policy covering the target in front, since a target can be
+     * covered by more than one: its own individual rule, and every group it belongs to.
      *
-     * A target with its own rule is governed by *that rule alone* -- its friction, its greyscale,
-     * its block, its countdown. The groups it also belongs to drop to pure accounting: their shared
-     * timers still fill, because the ledger is keyed by target and each group's [chargeable] sums
-     * its members' sessions, so this target still drains every group's cap for the other members --
-     * it simply is not itself held to them. A no-wait app rule inside a group that asks for a wait
-     * therefore keeps its no-wait behaviour rather than inheriting the group's.
+     * The *time budget* is strictest-wins across all of them, which is the only reading that makes a
+     * shared cap mean anything -- a cap a per-target rule could undercut would not be a cap. Any
+     * policy blocking blocks; the block lifts when the *last* of them lets go; the countdown shows
+     * the least time remaining; the ticker arms for the soonest deadline any of them named. So an
+     * app in a group is blocked as soon as *either* its own quota or the group's is spent.
      *
-     * A target *without* its own rule -- a plain group member -- folds strictest-wins across the
-     * groups covering it, which is the only reading that makes a shared cap mean anything: any group
-     * blocking blocks; the block lifts when the last of them lets go; the countdown shows the least
-     * time left; greyscale and friction are the union of the live ones.
+     * The *friction wait* is the exception, and it belongs to the target's own rule: when a target
+     * has an individual rule that wait is authoritative, and a group can neither lengthen nor shorten
+     * it. A no-wait app inside a group that asks for a wait keeps its no wait. See [frictionSource].
+     * Greyscale stays a union across the live rules, like the budget: a group can still drain the
+     * colour on a member that has its own rule.
      *
      * [sessionsFor] is a function rather than a list because a group's usage is the union of its
      * members' -- the ledger is keyed by target and knows nothing about groups, which is exactly
@@ -215,34 +215,13 @@ object PolicyEngine {
     ): Verdict {
         if (policies.isEmpty()) return Verdict(Decision.Allow(), governing = null)
         val judged = policies.map { it to evaluate(it, sessionsFor(it), pausedUntilMs, workoutUntilMs, nowMs, tz) }
+        val recheckAtMs = judged.mapNotNull { it.second.recheckAtMs }.minOrNull()
 
-        // The individual rule for this exact target -- the only non-group policy that can cover it,
-        // since a non-group policy charges only its own id. When present and enabled it governs
-        // alone; a disabled one steps aside and the groups fold as normal. Behaviour and the ticker
-        // both look only at the governing set: a group's deadline cannot change an answer the
-        // group no longer decides, so arming for it would be a wakeup that changes nothing.
-        val behavioral = judged.filter { it.first.kind != TargetKind.GROUP && it.first.enabled }
-            .ifEmpty { judged }
-        val recheckAtMs = behavioral.mapNotNull { it.second.recheckAtMs }.minOrNull()
-        return foldVerdict(behavioral, recheckAtMs)
-    }
-
-    /**
-     * Collapses the governing set into one [Verdict], strictest-wins. For a target with its own
-     * rule this set is that single rule; for a plain group member it is every group covering it.
-     */
-    private fun foldVerdict(judged: List<Pair<Policy, Decision>>, recheckAtMs: Long?): Verdict {
-        // Only a rule that is actually live gets to drain the colour or ask for a wait. One that is
-        // paused, outside its hours, or already blocking is not governing the screen you are looking
-        // at, and a group demanding friction for hours it does not cover is the reverse of what a
-        // schedule means.
+        // Only a rule that is actually live gets to drain the colour. One that is paused, outside its
+        // hours, or already blocking is not governing the screen you are looking at.
         val live = judged.filter { it.second is Decision.Allowed }
         val grayscale = live.any { it.first.grayscale }
-        // The longest wait any live rule asks for, and which one asked -- the countdown is named
-        // after the rule demanding it, which need not be the one with least time left.
-        val frictionFrom = live.map { it.first }
-            .filter { it.frictionSeconds > 0 }
-            .maxByOrNull { it.frictionSeconds }
+        val frictionFrom = frictionSource(judged, live)
         val frictionSeconds = frictionFrom?.frictionSeconds ?: 0
 
         val blocked = judged.filter { it.second is Decision.Blocked }
@@ -285,6 +264,27 @@ object PolicyEngine {
             decision = Decision.Allow(pausedUntilMs = paused, recheckAtMs = recheckAtMs),
             governing = judged.first().first,
         )
+    }
+
+    /**
+     * Which rule's wait to show. The target's own rule owns its friction: when it has a live
+     * individual rule, that rule's configured wait is authoritative -- a group can neither lengthen
+     * it nor add one, so a no-wait app inside a group that demands a wait keeps its no wait. This is
+     * the one dimension the group fold does not touch; the time budget still folds strictest-wins.
+     * With no live individual rule, the wait is the longest any live group asks for, named after the
+     * group that asked -- the plain-member behaviour, unchanged.
+     */
+    private fun frictionSource(
+        judged: List<Pair<Policy, Decision>>,
+        live: List<Pair<Policy, Decision>>,
+    ): Policy? {
+        val own = judged.firstOrNull {
+            it.first.kind != TargetKind.GROUP && it.first.enabled && it.second is Decision.Allowed
+        }
+        if (own != null) return own.first.takeIf { it.frictionSeconds > 0 }
+        return live.map { it.first }
+            .filter { it.frictionSeconds > 0 }
+            .maxByOrNull { it.frictionSeconds }
     }
 
     private fun soonest(a: Long?, b: Long?): Long? = when {
