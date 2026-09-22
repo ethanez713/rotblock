@@ -262,6 +262,18 @@ internal const val KEY_VISIT_FRICTION_SERVED = "visit_friction_served"
 private const val SEED_ATTEMPTS = 20
 private const val SEED_RETRY_MS = 500L
 
+/**
+ * How long after the last window-state event the active window is read to confirm the foreground.
+ *
+ * `notificationTimeout` delivers only the *last* window-state change of each burst, and on One UI
+ * the last one is routinely not the app: the launcher's own change when an app opens from home,
+ * `sidegesturepad` on every navigation swipe, Game Booster's overlay when a game starts. Measured on
+ * device: a quota'd game in front for minutes, the only event delivered for its launch was
+ * `game.gametools`, and a game emits nothing afterwards that could correct it. A second is long
+ * enough for the transition that produced the burst to have finished.
+ */
+private const val FOREGROUND_SETTLE_MS = 1_000L
+
 /** How often the service records that it was still running. */
 private const val HEARTBEAT_MS = 60_000L
 
@@ -821,6 +833,9 @@ class RotblockAccessibilityService : AccessibilityService() {
             when (event.eventType) {
                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                     trace("WSC pkg=$pkg cls=${event.className} current=$currentPackage")
+                    // Every one, including those judged not to be a foreground change below: the
+                    // event that was coalesced away may have been the app switch itself.
+                    scheduleForegroundSettle()
                     if (pkg != currentPackage) {
                         if (isForegroundChange(pkg, event.className?.toString())) {
                             onForegroundChanged(pkg, System.currentTimeMillis())
@@ -1099,7 +1114,7 @@ class RotblockAccessibilityService : AccessibilityService() {
      * before the lock straight away, so a block lands with the screen rather than after a poll --
      * and it is also the branch that seeds from nothing when the service was killed while the
      * screen was off. The second questions that belief, which nothing else does: see
-     * [shouldAdoptUnlockedForeground].
+     * [shouldAdoptActiveWindow].
      *
      * The null case is left to [reEvaluateCurrent] alone rather than run through both, because its
      * [reseed] reads the same window this would and two polls racing for it is one read too many
@@ -1107,7 +1122,19 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     private fun onUnlocked() {
         reEvaluateCurrent()
-        if (currentPackage != null) confirmForegroundFromScreen()
+        if (currentPackage != null) confirmForegroundFromScreen("unlock", SEED_ATTEMPTS)
+    }
+
+    private val settleForeground = Runnable {
+        guard("settleForeground") {
+            if (currentPackage != null && isScreenOn()) confirmForegroundFromScreen("settle", attempts = 1)
+        }
+    }
+
+    /** Main thread. Restarts the wait, so a burst of events costs one read after it ends. */
+    private fun scheduleForegroundSettle() {
+        handler.removeCallbacks(settleForeground)
+        handler.postDelayed(settleForeground, FOREGROUND_SETTLE_MS)
     }
 
     private fun reEvaluateCurrent() {
@@ -1213,8 +1240,8 @@ class RotblockAccessibilityService : AccessibilityService() {
      * the tree coming up, and an unlock races the keyguard going away. It stops at the first
      * readable answer, so the ordinary cost is one read or two rather than [SEED_ATTEMPTS] of them.
      */
-    private suspend fun readActiveWindowPackage(): String? {
-        repeat(SEED_ATTEMPTS) {
+    private suspend fun readActiveWindowPackage(attempts: Int = SEED_ATTEMPTS): String? {
+        repeat(attempts) {
             val pkg = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
             if (pkg != null && pkg !in ignoredPackages) return pkg
             delay(SEED_RETRY_MS)
@@ -1223,20 +1250,23 @@ class RotblockAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * The unlock half of [requestForegroundRecheck]: confirms [currentPackage] against the screen
-     * when no event is going to. See [shouldAdoptUnlockedForeground] for why unlock needs its own
-     * path and why a game leaves no other one.
+     * Confirms [currentPackage] against the screen when no event is going to: after an unlock, and
+     * after a burst of window-state changes whose app switch may have been coalesced away. See
+     * [shouldAdoptActiveWindow] for why a game leaves no other route back.
+     *
+     * [attempts] is one for a settle: our own screens own the active window at exactly the moments
+     * a block goes up, and polling through them concludes nothing the next event will not.
      */
-    private fun confirmForegroundFromScreen() {
+    private fun confirmForegroundFromScreen(label: String, attempts: Int) {
         if (foregroundConfirmJob?.isActive == true) return
         val believedAtRequest = currentPackage
         foregroundConfirmJob = scope.launch {
-            val pkg = readActiveWindowPackage()
+            val pkg = readActiveWindowPackage(attempts)
             withContext(Dispatchers.Main) {
                 guard("confirmForeground") {
-                    if (!shouldAdoptUnlockedForeground(pkg, believedAtRequest, currentPackage)) return@guard
-                    trace("unlock: $currentPackage was stale, active window is $pkg")
-                    EnforcementStatus.note("unlock: $currentPackage was stale, corrected to $pkg")
+                    if (!shouldAdoptActiveWindow(pkg, believedAtRequest, currentPackage)) return@guard
+                    trace("$label: $currentPackage was stale, active window is $pkg")
+                    EnforcementStatus.note("$label: $currentPackage was stale, corrected to $pkg")
                     onForegroundChanged(pkg!!, System.currentTimeMillis())
                 }
             }
@@ -1391,6 +1421,16 @@ class RotblockAccessibilityService : AccessibilityService() {
             if (root.packageName?.toString() != pkg) {
                 trace("read($pkg): active window is ${root.packageName}")
                 EnforcementStatus.note("read $pkg: window belongs to ${root.packageName} (target held)")
+                // Not adopted from here: mid-transition this read still sees the app being left.
+                // A settle waits for the transition to finish and then reads again.
+                val owner = root.packageName?.toString()
+                if (owner != null && owner !in ignoredPackages) {
+                    handler.post {
+                        if (owner != currentPackage && !handler.hasCallbacks(settleForeground)) {
+                            scheduleForegroundSettle()
+                        }
+                    }
+                }
                 return Inspected.Unreadable
             }
 

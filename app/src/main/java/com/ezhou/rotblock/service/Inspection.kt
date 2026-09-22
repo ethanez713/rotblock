@@ -222,10 +222,17 @@ fun shouldRecheckForeground(
 }
 
 /**
- * Whether a package read off the active window after an unlock should replace [believedNow].
+ * Whether a package read off the active window should replace [believedNow], when no event is
+ * going to say so: after an unlock, and after a burst of window-state changes has settled.
  *
- * Unlocking is the one foreground change in this app that arrives with no accessibility event
- * attached to it. `ACTION_SCREEN_OFF` leaves [RotblockAccessibilityService.currentPackage]
+ * The settle exists because the event that *did* arrive is often not the app switch. The
+ * framework's `notificationTimeout` hands over only the last window-state change of a burst, and on
+ * One UI the launcher, the navigation-gesture overlay and Game Booster all post theirs alongside the
+ * app's — so the switch into a game can be dropped outright, and a game rendering into a surface
+ * emits nothing afterwards that would ever correct it.
+ *
+ * Unlocking is the other foreground change that arrives with no accessibility event attached to
+ * it. `ACTION_SCREEN_OFF` leaves [RotblockAccessibilityService.currentPackage]
  * standing, and the phone can come back on a different app entirely -- Android restores the top
  * task, a notification was taken from the lock screen, the launcher is what appears. Nothing in
  * the event stream says so, and for an app that emits no content changes of its own -- a game
@@ -240,7 +247,7 @@ fun shouldRecheckForeground(
  * of one goes on charging its quota from the launcher.
  *
  * Unlike [shouldRecheckForeground] there is no candidate package to weigh here and no throttle to
- * pay for. `rootInActiveWindow` read moments after the keyguard is dismissed is the same
+ * pay for. `rootInActiveWindow` read once the screen has settled is the same
  * structural evidence [RotblockAccessibilityService.seedForegroundFromScreen] already trusts to
  * establish a foreground from nothing; the only difference is that this one is allowed to
  * *correct* one. So the guards are about staleness of the answer rather than strength of it:
@@ -252,7 +259,7 @@ fun shouldRecheckForeground(
  *   `seedForeground` gives an event over its own seed.
  * - Agreeing with what is already believed is not a correction and must not be reported as one.
  */
-fun shouldAdoptUnlockedForeground(
+fun shouldAdoptActiveWindow(
     readPackage: String?,
     believedAtRequest: String?,
     believedNow: String?,
