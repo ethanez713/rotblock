@@ -98,6 +98,7 @@ data class PolicySnapshot(
     val frictionSeconds: Int,
     val grayscale: Boolean,
     val schedule: String,
+    val poolSeconds: Int = 0,
 )
 
 data class AuditEventSnapshot(
@@ -317,6 +318,7 @@ private fun policyJson(p: PolicySnapshot): JSONObject = JSONObject()
     .put("frictionSeconds", p.frictionSeconds)
     .put("grayscale", p.grayscale)
     .put("schedule", p.schedule)
+    .put("poolSeconds", p.poolSeconds)
 
 private fun auditEventJson(e: AuditEventSnapshot): JSONObject = JSONObject()
     .put("id", e.id)

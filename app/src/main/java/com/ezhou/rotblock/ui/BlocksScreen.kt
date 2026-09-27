@@ -749,6 +749,7 @@ private fun Policy.describeRule(): String {
         val amount = if (seconds == 0) "$minutes min" else "$minutes min ${seconds}s"
         "$amount in any ${formatWindowSeconds(windowSeconds)}"
     } ?: "Blocked completely"
-    val base = schedule.describe()?.let { "$allowance · $it" } ?: allowance
+    val pooled = if (poolSeconds > 0) "$allowance · first ${poolSeconds / 60} min free daily" else allowance
+    val base = schedule.describe()?.let { "$pooled · $it" } ?: pooled
     return if (enabled) base else "$base (off)"
 }

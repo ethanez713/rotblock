@@ -380,6 +380,7 @@ class RotblockAccessibilityService : AccessibilityService() {
      */
     @Volatile private var hudEnabled = true
     @Volatile private var hudOpacityPercent = 55
+    @Volatile private var dayStartHour = com.ezhou.rotblock.data.RotblockSettings().dayStartHour
     @Volatile private var hudNotification = false
 
     /** Copied out of the settings flow the same way [hudEnabled] is. See [shouldAttemptReveal]. */
@@ -786,6 +787,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                         pause.refresh()
                         hudEnabled = it.hudEnabled
                         hudOpacityPercent = it.hudOpacityPercent
+                        dayStartHour = it.dayStartHour
                         hudNotification = it.hudNotification
                         hudPositionX = it.hudPositionX
                         hudPositionY = it.hudPositionY
@@ -1996,6 +1998,7 @@ class RotblockAccessibilityService : AccessibilityService() {
             // the browser, which is the app you would have to have allowed.
             WorkoutMode.overrideUntilMs(currentPackage, nowMs),
             nowMs,
+            dayStartHour,
         )
         val decision = verdict.decision
         val policy = verdict.governing ?: return
@@ -2061,7 +2064,9 @@ class RotblockAccessibilityService : AccessibilityService() {
                     // the squircle would otherwise linger next to the ring. It is not a pause any more.
                     hidePauseCountdown()
                     showCountdown(policy.label, decision, nowMs)
-                    EnforcementStatus.note("$targetId: charging")
+                    EnforcementStatus.note(
+                        if (decision.fromPool) "$targetId: charging, on its daily pool" else "$targetId: charging",
+                    )
                 }
                 refreshGrayscale(nowMs, ruleWantsGrayscale = verdict.grayscale)
                 refreshWorkoutReminder(nowMs)
@@ -2895,6 +2900,7 @@ class RotblockAccessibilityService : AccessibilityService() {
                 pause.effectivePauseUntil(id),
                 WorkoutMode.overrideUntilMs(currentPackage, now),
                 now,
+                dayStartHour,
             )
         }
         val decision = verdict?.let { toDecisionSnapshot(it.decision) }

@@ -32,6 +32,8 @@ data class PendingChange(
     val windowSeconds: Int = 3600,
     val frictionSeconds: Int = 0,
     val grayscale: Boolean = false,
+    @ColumnInfo(defaultValue = "0")
+    val poolSeconds: Int = 0,
     @ColumnInfo(defaultValue = "")
     val schedule: Schedule = Schedule.ALWAYS,
     /**
@@ -49,6 +51,7 @@ data class PendingChange(
         windowSeconds = windowSeconds,
         frictionSeconds = frictionSeconds,
         grayscale = grayscale,
+        poolSeconds = poolSeconds,
         schedule = schedule,
         members = members,
         updatedAtMs = nowMs,
@@ -66,6 +69,7 @@ data class PendingChange(
             windowSeconds = target.windowSeconds,
             frictionSeconds = target.frictionSeconds,
             grayscale = target.grayscale,
+            poolSeconds = target.poolSeconds,
             schedule = target.schedule,
             members = target.members,
         )

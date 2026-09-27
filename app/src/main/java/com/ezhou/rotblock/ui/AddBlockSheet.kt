@@ -90,6 +90,8 @@ data class RuleDraft(
     val schedule: Schedule,
     /** Target ids a group rule covers; empty for every other kind. See [Policy.members]. */
     val members: List<String> = emptyList(),
+    /** See [Policy.poolSeconds]; always 0 for a group. */
+    val poolSeconds: Int = 0,
 )
 
 /** What is being configured once a target has been chosen. */
@@ -519,6 +521,9 @@ private val WINDOW_PRESETS = listOf<Pair<String, Int?>>(
     "per day" to 86_400,
 )
 
+private val POOL_PRESETS =
+    listOf<Pair<String, Int?>>("None" to 0, "10 min" to 600, "20 min" to 1_200, "30 min" to 1_800)
+
 private val FRICTION_PRESETS =
     listOf<Pair<String, Int?>>("None" to 0, "5s" to 5, "10s" to 10, "20s" to 20)
 
@@ -551,6 +556,7 @@ private fun RuleEditor(
     var frictionSeconds by remember { mutableStateOf(existing?.frictionSeconds ?: 0) }
     var grayscale by remember { mutableStateOf(existing?.grayscale ?: false) }
     var schedule by remember { mutableStateOf(existing?.schedule ?: Schedule.ALWAYS) }
+    var poolSeconds by remember { mutableStateOf(existing?.poolSeconds ?: 0) }
     // Seeded rather than started empty: a rule already carrying a typed value has to come back into
     // the field it was typed in, or the editor opens with no chip lit at all and reads as if the
     // value were unset while the rule still holds it.
@@ -562,6 +568,9 @@ private fun RuleEditor(
     }
     var frictionCustom by remember {
         mutableStateOf(customTextFor(frictionSeconds, FRICTION_PRESETS, 1))
+    }
+    var poolCustom by remember {
+        mutableStateOf(customTextFor(poolSeconds, POOL_PRESETS, SECONDS_PER_MINUTE))
     }
 
     // Scrollable since the schedule rows landed: with two of them this is taller than a phone, and
@@ -610,6 +619,23 @@ private fun RuleEditor(
             )
             Spacer(Modifier.height(8.dp))
             Hint("Rolling window — time comes back gradually, with no top-of-the-hour refill.")
+        }
+
+        if (chosen.kind != TargetKind.GROUP) {
+            Spacer(Modifier.height(20.dp))
+            Text("Free each day", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(8.dp))
+            DurationChoices(
+                presets = POOL_PRESETS,
+                value = poolSeconds,
+                custom = poolCustom,
+                unit = "min",
+                unitSeconds = SECONDS_PER_MINUTE,
+                maxUnits = MAX_QUOTA_MINUTES,
+                onChange = { seconds, text -> poolSeconds = seconds ?: 0; poolCustom = text },
+            )
+            Spacer(Modifier.height(8.dp))
+            Hint("Nothing blocks the first this-many minutes of the day. They still count toward the limit.")
         }
 
         Spacer(Modifier.height(20.dp))
@@ -679,7 +705,10 @@ private fun RuleEditor(
             Button(
                 onClick = {
                     onConfirm(
-                        RuleDraft(quotaSeconds, windowSeconds, frictionSeconds, grayscale, schedule),
+                        RuleDraft(
+                            quotaSeconds, windowSeconds, frictionSeconds, grayscale, schedule,
+                            poolSeconds = if (chosen.kind == TargetKind.GROUP) 0 else poolSeconds,
+                        ),
                     )
                 },
                 enabled = refusal == null,

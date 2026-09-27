@@ -86,7 +86,8 @@ class PolicyGroupTest {
         pausedUntilMs,
         workoutUntilMs,
         nowMs,
-        UTC,
+        dayStartHour = 4,
+        tz = UTC,
     )
 
     // --- Encoding and identity -------------------------------------------------------------

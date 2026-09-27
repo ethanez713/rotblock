@@ -212,7 +212,7 @@ fun toDecisionSnapshot(d: com.ezhou.rotblock.policy.Decision): DecisionSnapshot 
         recheckAtMs = d.recheckAtMs,
     )
     is com.ezhou.rotblock.policy.Decision.Allowed -> DecisionSnapshot(
-        subtype = "Allowed",
+        subtype = if (d.fromPool) "Allowed (daily pool)" else "Allowed",
         reason = null,
         remainingMs = d.remainingMs,
         usedMs = d.usedMs,
@@ -244,6 +244,7 @@ fun toPolicySnapshot(p: com.ezhou.rotblock.policy.Policy): PolicySnapshot = Poli
     frictionSeconds = p.frictionSeconds,
     grayscale = p.grayscale,
     schedule = p.schedule.encode(),
+    poolSeconds = p.poolSeconds,
 )
 
 fun toAuditEventSnapshot(e: com.ezhou.rotblock.audit.AuditEvent): AuditEventSnapshot = AuditEventSnapshot(

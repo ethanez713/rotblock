@@ -51,9 +51,20 @@ private val MIGRATION_3_4 = object : Migration(3, 4) {
     }
 }
 
+/**
+ * Adds the daily pool. 0 on every existing row and on every queued edit, which is "no pool" --
+ * exactly what those rules already were.
+ */
+private val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE policies ADD COLUMN poolSeconds INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE pending_changes ADD COLUMN poolSeconds INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
 @Database(
     entities = [Policy::class, UsageSessionEntity::class, AuditEvent::class, PendingChange::class],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -75,7 +86,7 @@ abstract class RotblockDatabase : RoomDatabase() {
                 // No destructive migration: the audit log is the one thing in this app that is
                 // genuinely irreplaceable, so a schema mistake should fail loudly at build time
                 // rather than silently wipe months of history on the phone.
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
                 .also { instance = it }
         }

@@ -67,6 +67,7 @@ object PolicyChange {
 
         val weakens = newPerm > oldPerm ||
             new.frictionSeconds < old.frictionSeconds ||
+            new.poolSeconds > old.poolSeconds ||
             (old.grayscale && !new.grayscale) ||
             hoursLost ||
             membersLost
@@ -74,6 +75,7 @@ object PolicyChange {
 
         val strengthens = newPerm < oldPerm ||
             new.frictionSeconds > old.frictionSeconds ||
+            new.poolSeconds < old.poolSeconds ||
             (!old.grayscale && new.grayscale) ||
             hoursGained ||
             membersGained
@@ -94,7 +96,8 @@ object PolicyChange {
         val allowance = policy.quotaSeconds
             ?.let { "${it / 60} min per ${formatWindowSeconds(policy.windowSeconds)}" }
             ?: "a full block"
-        val hours = policy.schedule.describe() ?: return allowance
-        return "$allowance, $hours"
+        val pooled = if (policy.poolSeconds > 0) "$allowance, ${policy.poolSeconds / 60} min free daily" else allowance
+        val hours = policy.schedule.describe() ?: return pooled
+        return "$pooled, $hours"
     }
 }

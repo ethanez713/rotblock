@@ -61,6 +61,17 @@ data class Policy(
     /** Greyscale the display while this target is in front. [PolicyEngine.MergeStrategy.OWN_WINS]. */
     val grayscale: Boolean = false,
     /**
+     * The daily pool: the first this-many seconds of this target's usage each day (rolling over at
+     * `dayStartHour`) that nothing but a workout may block. A spent quota, a group and a hard block
+     * all wait for it. Unlike a pause, the time still counts toward every quota covering the target,
+     * so the rules pick up afterwards knowing what was spent. 0 = no pool.
+     *
+     * Individual rules only: a group never carries one. [PolicyEngine.MergeStrategy.OWN_WINS], with
+     * no group fallback.
+     */
+    @ColumnInfo(defaultValue = "0")
+    val poolSeconds: Int = 0,
+    /**
      * The hours this rule is live for. Empty means always, which is what every rule written before
      * schedules existed decodes to. (Phase 8)
      */
@@ -83,6 +94,7 @@ data class Policy(
 ) {
     val quotaMs: Long? get() = quotaSeconds?.let { it * 1000L }
     val windowMs: Long get() = windowSeconds * 1000L
+    val poolMs: Long get() = poolSeconds * 1000L
 
     /**
      * The target ids whose usage this rule is charged for: its own, or a group's members.

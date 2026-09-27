@@ -1,5 +1,6 @@
 package com.ezhou.rotblock.policy
 
+import com.ezhou.rotblock.pause.dayStartMs
 import com.ezhou.rotblock.quota.RollingQuota
 import com.ezhou.rotblock.quota.UsageSession
 import java.util.TimeZone
@@ -27,12 +28,18 @@ sealed interface Decision {
         override val recheckAtMs: Long? = null,
     ) : Decision
 
-    /** Within quota. [remainingMs] is how much is left before the block lands. */
+    /**
+     * Within quota. [remainingMs] is how much is left before the block lands.
+     *
+     * [fromPool] means the rules alone would block or run out sooner, and the target's daily pool is
+     * what is letting it through; the three numbers then describe the pool. See [Policy.poolSeconds].
+     */
     data class Allowed(
         val remainingMs: Long,
         val usedMs: Long,
         val quotaMs: Long,
         override val recheckAtMs: Long? = null,
+        val fromPool: Boolean = false,
     ) : Decision
 
     /**
@@ -195,7 +202,8 @@ object PolicyEngine {
      *    be a cap. Folded by [foldBudget].
      *  - [OWN_WINS] -- **behaviour**: friction wait, greyscale. The target's own rule decides alone;
      *    the groups apply only as a fallback when there is no live own rule. Folded by [foldBehaviour]
-     *    through [ownElseGroups].
+     *    through [ownElseGroups]. The daily pool is own-wins too, with no fallback because a group
+     *    never carries one; it is applied over the budget by [applyPool].
      *  - [COUNT_ALL] -- **accrual**: a minute is charged to every covering policy at once. Not folded
      *    here -- realised by the ledger being keyed by target plus [Policy.chargedTargets]/[chargeable].
      *
@@ -219,14 +227,23 @@ object PolicyEngine {
         pausedUntilMs: Long,
         workoutUntilMs: Long?,
         nowMs: Long,
+        dayStartHour: Int,
         tz: TimeZone = TimeZone.getDefault(),
     ): Verdict {
         if (policies.isEmpty()) return Verdict(Decision.Allow(), governing = null)
         val judged = policies.map { it to evaluate(it, sessionsFor(it), pausedUntilMs, workoutUntilMs, nowMs, tz) }
         val recheckAtMs = judged.mapNotNull { it.second.recheckAtMs }.minOrNull()
 
-        val budget = foldBudget(judged, recheckAtMs)
-        val behaviour = foldBehaviour(judged)
+        val budget = applyPool(
+            foldBudget(judged, recheckAtMs),
+            policies, sessionsFor, dayStartMs(nowMs, dayStartHour, tz), nowMs,
+        )
+        // A rule the pool is holding open behaves as if it were within quota, so its friction wait
+        // and colour still apply -- the pool lifts the block, not the rest of the rule.
+        val pooled = (budget.decision as? Decision.Allowed)?.fromPool == true
+        val behaviour = foldBehaviour(
+            if (pooled) judged.map { (p, d) -> p to if (d is Decision.Blocked) budget.decision else d } else judged,
+        )
         // A blocked screen is never greyscale: you are not in the app to have its colour drained.
         val grayscale = if (budget.decision is Decision.Blocked) false else behaviour.grayscale
         return Verdict(
@@ -273,6 +290,49 @@ object PolicyEngine {
         val paused = judged.firstNotNullOfOrNull { (it.second as? Decision.Allow)?.pausedUntilMs }
         return BudgetVerdict(Decision.Allow(pausedUntilMs = paused, recheckAtMs = recheckAtMs), judged.first().first)
     }
+
+    /**
+     * The pool's relaxation of the budget: while the target's own rule has pool left today, nothing
+     * but a workout blocks, and the countdown reads whichever of the pool and the rules runs longer.
+     *
+     * Paused or off-hours answers pass through untouched -- nothing is blocking and nothing is
+     * charged, so there is nothing for a pool to do and no reason for it to drain.
+     */
+    private fun applyPool(
+        budget: BudgetVerdict,
+        policies: List<Policy>,
+        sessionsFor: (Policy) -> List<UsageSession>,
+        dayStartMs: Long,
+        nowMs: Long,
+    ): BudgetVerdict {
+        val own = policies.firstOrNull { it.kind != TargetKind.GROUP && it.enabled && it.poolSeconds > 0 }
+            ?: return budget
+        val decision = budget.decision
+        val rulesRemainingMs = when (decision) {
+            is Decision.Allow -> return budget
+            is Decision.Blocked -> if (decision.reason == BlockReason.WORKOUT_MODE) return budget else 0L
+            is Decision.Allowed -> decision.remainingMs
+        }
+        val usedMs = poolUsedMs(sessionsFor(own), dayStartMs, nowMs)
+        val remainingMs = own.poolMs - usedMs
+        if (remainingMs <= rulesRemainingMs) return budget
+        return BudgetVerdict(
+            Decision.Allowed(
+                remainingMs = remainingMs,
+                usedMs = usedMs,
+                quotaMs = own.poolMs,
+                recheckAtMs = soonest(decision.recheckAtMs, nowMs + remainingMs),
+                fromPool = true,
+            ),
+            own,
+        )
+    }
+
+    /** Countable time on the target since the day began: every visit, not only over-quota ones. */
+    fun poolUsedMs(sessions: List<UsageSession>, dayStartMs: Long, nowMs: Long): Long =
+        sessions.filter { it.countsTowardQuota }.sumOf { s ->
+            (minOf(s.endMs, nowMs) - maxOf(s.startMs, dayStartMs)).coerceAtLeast(0L)
+        }
 
     private data class Behaviour(val grayscale: Boolean, val frictionSeconds: Int, val frictionFrom: Policy?)
 

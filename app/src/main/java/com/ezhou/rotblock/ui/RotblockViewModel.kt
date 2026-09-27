@@ -215,6 +215,7 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
                     windowSeconds = draft.windowSeconds,
                     frictionSeconds = draft.frictionSeconds,
                     grayscale = draft.grayscale,
+                    poolSeconds = draft.poolSeconds,
                     schedule = draft.schedule,
                     members = members,
                     createdAtMs = existing?.createdAtMs ?: now,
