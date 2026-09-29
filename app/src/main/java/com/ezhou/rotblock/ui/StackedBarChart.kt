@@ -1,11 +1,15 @@
 package com.ezhou.rotblock.ui
 
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -21,6 +25,7 @@ import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,6 +65,8 @@ fun StackedBarChart(
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
 
+    val currentOnSelect by rememberUpdatedState(onSelect)
+
     val maxTotal = bars.maxOfOrNull { it.total }?.takeIf { it > 0f } ?: 1f
     val niceMax = niceCeiling(maxTotal)
 
@@ -71,19 +78,37 @@ fun StackedBarChart(
                 .pointerInput(bars.size, selectedIndex) {
                     detectTapGestures { offset ->
                         if (bars.isEmpty()) return@detectTapGestures
-                        // Nearest-bar hit testing: the target is the full column, gaps and axis
-                        // label band included, not just the drawn bar. At 30 bars an individual
-                        // bar is only a few dp wide, so anything narrower would be unhittable.
-                        val axisLabelWidth = with(density) { 34.dp.toPx() }
-                        val plotWidth = size.width - axisLabelWidth
-                        val slot = plotWidth / bars.size
-                        val index = ((offset.x - axisLabelWidth) / slot).toInt()
+                        val index = columnAt(offset.x, size.width, bars.size, density)
                         if (index !in bars.indices) {
                             onSelect(null)
                         } else {
                             // Tapping the selected column clears it, so there is a way back out.
                             onSelect(if (index == selectedIndex) null else index)
                         }
+                    }
+                }
+                // Scrubbing selects whatever column the finger is over and never toggles. A
+                // horizontal drag starts it at once without stealing the page's vertical scroll;
+                // holding first lets the finger wander vertically too.
+                .pointerInput(bars.size) {
+                    val scrubTo = { x: Float ->
+                        val index = columnAt(x, size.width, bars.size, density)
+                        if (index in bars.indices) currentOnSelect(index)
+                    }
+                    detectHorizontalDragGestures(
+                        onDragStart = { scrubTo(it.x) },
+                    ) { change, _ -> scrubTo(change.position.x) }
+                }
+                .pointerInput(bars.size) {
+                    val scrubTo = { x: Float ->
+                        val index = columnAt(x, size.width, bars.size, density)
+                        if (index in bars.indices) currentOnSelect(index)
+                    }
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { scrubTo(it.x) },
+                    ) { change, _ ->
+                        change.consume()
+                        scrubTo(change.position.x)
                     }
                 },
         ) {
@@ -200,4 +225,15 @@ internal fun niceCeiling(value: Float): Float {
     var candidate = 720f
     while (candidate < value) candidate += 360f
     return candidate
+}
+
+/**
+ * Nearest-column hit testing: the target is the full column, gaps and axis label band included,
+ * not just the drawn bar. At 30 bars an individual bar is only a few dp wide, so anything narrower
+ * would be unhittable.
+ */
+private fun columnAt(x: Float, width: Int, count: Int, density: Density): Int {
+    val axisLabelWidth = with(density) { 34.dp.toPx() }
+    val slot = (width - axisLabelWidth) / count
+    return ((x - axisLabelWidth) / slot).toInt()
 }
