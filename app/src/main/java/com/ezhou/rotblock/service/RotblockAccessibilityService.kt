@@ -35,6 +35,7 @@ import com.ezhou.rotblock.block.TrackingNotification
 import com.ezhou.rotblock.block.WorkoutReminder
 import com.ezhou.rotblock.browser.AddressBar
 import com.ezhou.rotblock.browser.BrowserRegistry
+import com.ezhou.rotblock.insights.DailyRollup
 import com.ezhou.rotblock.browser.BrowserSpec
 import com.ezhou.rotblock.browser.LinkConsensus
 import com.ezhou.rotblock.browser.LinkCorroboration
@@ -1125,6 +1126,10 @@ class RotblockAccessibilityService : AccessibilityService() {
     private fun onUnlocked() {
         reEvaluateCurrent()
         if (currentPackage != null) confirmForegroundFromScreen("unlock", SEED_ATTEMPTS)
+        // Android prunes usage events after about ten days, and this process can outlive that
+        // without restarting or a tile binding. An unlock is the one daily moment that is always
+        // already awake; the rollup is a single in-memory prefs read unless a day has completed.
+        scope.launch { DailyRollup.catchUp(this@RotblockAccessibilityService) }
     }
 
     private val settleForeground = Runnable {
