@@ -80,12 +80,20 @@ interface AuditDao {
     @Insert
     suspend fun insert(event: AuditEvent): Long
 
-    @Query("SELECT * FROM audit_events ORDER BY tsMs DESC LIMIT :limit")
-    fun observeRecent(limit: Int): Flow<List<AuditEvent>>
-
-    /** One-shot form of [observeRecent], for a diagnostic capture that needs a single read. */
+    /** A single read of the newest [limit] events, for a diagnostic capture. */
     @Query("SELECT * FROM audit_events ORDER BY tsMs DESC LIMIT :limit")
     suspend fun recent(limit: Int): List<AuditEvent>
+
+    /**
+     * One page of the log, newest first. The Insights card holds [limit] rows and asks again
+     * for the next page, so the screen never keeps the whole log in memory. A new event
+     * re-emits the page that contains it.
+     */
+    @Query("SELECT * FROM audit_events ORDER BY tsMs DESC LIMIT :limit OFFSET :offset")
+    fun observePage(limit: Int, offset: Int): Flow<List<AuditEvent>>
+
+    @Query("SELECT COUNT(*) FROM audit_events")
+    fun observeCount(): Flow<Int>
 
     @Query("SELECT * FROM audit_events WHERE tsMs >= :sinceMs ORDER BY tsMs")
     suspend fun since(sinceMs: Long): List<AuditEvent>

@@ -1,12 +1,15 @@
 package com.ezhou.rotblock.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -14,14 +17,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,11 +44,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ezhou.rotblock.audit.AuditEvent
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.block.formatDuration
-import com.ezhou.rotblock.insights.AppCatalog
-import com.ezhou.rotblock.insights.Category
-import com.ezhou.rotblock.insights.Productivity
-import com.ezhou.rotblock.insights.TargetSession
-import com.ezhou.rotblock.insights.classifyTotals
+import com.ezhou.rotblock.insights.SegmentSlot
+import com.ezhou.rotblock.insights.screenTimeSegments
+import com.ezhou.rotblock.insights.seriesSlot
+import com.ezhou.rotblock.insights.splitPercents
+import com.ezhou.rotblock.insights.splitScreenTime
+import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.setup.SettingsScreen
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -51,25 +58,33 @@ import java.util.Locale
 private val DAY_LABEL = SimpleDateFormat("d/M", Locale.getDefault())
 private val TIME_FORMAT = SimpleDateFormat("EEE d MMM · HH:mm", Locale.getDefault())
 
+private const val UNBLOCKED_PREVIEW = 10
+
 /**
- * The accountability view: how much rot got through, and how often you reached for an escape
- * hatch to let it.
+ * Whole-phone screen time, split by whether a current rule covers it, plus how often an escape
+ * hatch was used.
  *
- * The two charts answer different questions and are deliberately not combined onto one pair of
- * axes -- minutes and counts share no scale, and a dual-axis chart would invite comparing two
- * lines that mean nothing to each other.
+ * The two charts stay on separate axes: minutes and counts share no scale, and a dual-axis chart
+ * would invite comparing two marks that mean nothing to each other.
  */
 @Composable
 fun InsightsScreen(viewModel: RotblockViewModel) {
+    // Before the log is collected. LaunchedEffect runs after the first frame, which would paint
+    // the page left over from last time.
+    remember { viewModel.showAuditPage(0) }
     val state by viewModel.insights.collectAsStateWithLifecycle()
-    val events by viewModel.recentEvents.collectAsStateWithLifecycle()
-    var days by remember { mutableStateOf(7) }
-    var selectedDay by remember { mutableStateOf<Int?>(null) }
+    val requestedPage by viewModel.auditPageIndex.collectAsStateWithLifecycle()
+    val audit by viewModel.auditLog.collectAsStateWithLifecycle()
+    val shownAudit = audit?.takeIf { it.page == requestedPage }
 
-    LaunchedEffect(days) {
-        selectedDay = null
-        viewModel.loadInsights(days)
-    }
+    var days by remember { mutableStateOf(7) }
+    var selected by remember(days) { mutableStateOf<Int?>(null) }
+    var historyKey by remember(days) { mutableStateOf<String?>(null) }
+    var unblockedExpanded by remember(days, selected) { mutableStateOf(false) }
+
+    LaunchedEffect(days) { viewModel.loadInsights(days) }
+
+    val ready = state?.takeIf { it.days == days }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -84,60 +99,46 @@ fun InsightsScreen(viewModel: RotblockViewModel) {
             )
         }
 
-        // Filters in one row above the charts.
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(7, 30).forEach { option ->
-                    FilterChip(
-                        selected = days == option,
-                        onClick = { days = option },
-                        label = { Text("Last $option days") },
-                    )
-                }
-            }
+            RangeChips(days = days, onDays = { days = it })
         }
 
-        val current = state
-        if (current == null) {
+        if (ready == null) {
             item { Text("Working it out…", style = MaterialTheme.typography.bodyMedium) }
         } else {
-            item { Scorecard(current) }
-            item { KindSummaryCard(current) }
+            item { Scorecard(ready) }
+            item { WhereTheTimeWent(ready) }
             item {
-                UsageChartCard(
-                    state = current,
-                    selectedDay = selectedDay,
-                    onSelect = { selectedDay = it },
+                ScreenTimeCard(
+                    state = ready,
+                    selected = selected?.takeIf { it in ready.buckets.indices },
+                    onSelect = { selected = it },
+                    historyKey = historyKey,
+                    onHistoryKey = { key -> historyKey = if (historyKey == key) null else key },
+                    unblockedExpanded = unblockedExpanded,
+                    onUnblockedExpanded = { unblockedExpanded = it },
                 )
             }
-            item { EscapeHatchCard(current) }
+            item { EscapeHatchCard(ready) }
         }
 
-        item {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Everything that changed the rules",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                "Append-only. There is no way to edit or delete an entry, including from here.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        item { AuditLogCard(shownAudit, onPage = viewModel::showAuditPage) }
+    }
+}
 
-        if (events.isEmpty()) {
-            item {
-                Text(
-                    "Nothing yet.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+@Composable
+private fun RangeChips(days: Int, onDays: (Int) -> Unit) {
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        listOf(7, 30, 90, 365).forEach { option ->
+            FilterChip(
+                selected = days == option,
+                onClick = { onDays(option) },
+                label = { Text("$option days") },
+            )
         }
-        items(events, key = { it.id }) { event -> EventRow(event) }
     }
 }
 
@@ -159,76 +160,6 @@ private fun Scorecard(state: InsightsState) {
             Modifier.weight(1f),
             emphasis = state.weakeningCount > 0,
         )
-    }
-}
-
-/**
- * Not just per-target: what the time was actually *for*. Unclassified is named rather than folded
- * into "neutral", since an unrecognised app saying nothing about itself is a different fact than
- * one recognised and found harmless.
- */
-@Composable
-private fun KindSummaryCard(state: InsightsState) {
-    val context = LocalContext.current
-    // The asset is read off the main thread, so the first composition classifies nothing. Keying
-    // the fold on this is what makes the card fill in once it lands rather than staying empty --
-    // AppCatalog holds a plain field, and nothing about it would recompose on its own.
-    var catalogLoaded by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        AppCatalog.load(context)
-        catalogLoaded = true
-    }
-
-    // totalsByTarget already collapses each target to one duration over the range; wrapping each
-    // back into a session is the cheapest way to reuse the same fold Aggregation exposes for tests.
-    val totals = remember(state.totalsByTarget, catalogLoaded) {
-        val sessions = state.totalsByTarget.map { (id, ms) -> TargetSession(id, 0L, ms) }
-        classifyTotals(sessions, AppCatalog::classify)
-    }
-
-    val distractingMs = (totals.byProductivity[Productivity.DISTRACTING] ?: 0L) +
-        (totals.byProductivity[Productivity.VERY_DISTRACTING] ?: 0L)
-    val unclassifiedMs = totals.byProductivity[Productivity.UNCLASSIFIED] ?: 0L
-
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(
-                "Where the time went",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                "${formatDuration(state.totalUsageMs)}, of which " +
-                    "${formatDuration(distractingMs)} distracting and " +
-                    "${formatDuration(unclassifiedMs)} unclassified.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            // Slots go to the categories actually present, in order -- not indexed by Category
-            // ordinal. Indexing by ordinal would hand out scattered slots and drop everything past
-            // the sixth into one undifferentiated grey, which is the colourblind-safety property
-            // the palette's slot order exists to provide. The enum's own order decides who is
-            // first so the colours do not reshuffle between refreshes; the rows below are still
-            // ordered by time, since that is what the reader wants to scan.
-            val slots = totals.byCategory.keys.sortedBy { it.ordinal }
-                .withIndex().associate { (slot, category) -> category to slot }
-            val byCategory = totals.byCategory.toList().sortedByDescending { it.second }
-            if (byCategory.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                byCategory.forEach { (category, ms) ->
-                    LegendRow(
-                        color = ChartPalette.series(slots.getValue(category)),
-                        label = category.name.lowercase().replaceFirstChar { it.uppercase() },
-                        value = formatDuration(ms),
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -254,29 +185,111 @@ private fun StatTile(label: String, value: String, modifier: Modifier, emphasis:
     }
 }
 
+/** Total screen time, and how it splits between rotblocked and everything else. */
 @Composable
-private fun UsageChartCard(
-    state: InsightsState,
-    selectedDay: Int?,
-    onSelect: (Int?) -> Unit,
-) {
-    val slots = state.targetOrder.take(ChartPalette.slotCount)
-    val otherColor = ChartPalette.other()
-    val colorFor: @Composable (String) -> Color = { id ->
-        val index = slots.indexOf(id)
-        if (index >= 0) ChartPalette.series(index) else otherColor
+private fun WhereTheTimeWent(state: InsightsState) {
+    val split = remember(state.buckets, state.rotblockedKeys) {
+        splitScreenTime(state.buckets, state.rotblockedKeys)
     }
-
-    val bars = state.buckets.mapIndexed { index, bucket ->
-        val segments = buildList {
-            slots.forEach { id ->
-                val ms = bucket.perTarget[id] ?: 0L
-                if (ms > 0) add(Segment((ms / 60_000f), colorFor(id)))
+    val (rotPct, unPct) = splitPercents(split)
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                "Where the time went",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                formatDuration(split.totalMs),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(8.dp))
+            LegendRow(
+                ChartPalette.warm(0),
+                "Rotblocked",
+                "${formatDuration(split.rotblockedMs)} · $rotPct%",
+            )
+            LegendRow(
+                ChartPalette.cool(0),
+                "Unblocked",
+                "${formatDuration(split.unblockedMs)} · $unPct%",
+            )
+            if (split.totalMs > 0L) {
+                Spacer(Modifier.height(8.dp))
+                ProportionBar(split.rotblockedMs, split.unblockedMs)
             }
-            val otherMs = bucket.perTarget.filterKeys { it !in slots }.values.sum()
-            if (otherMs > 0) add(Segment(otherMs / 60_000f, otherColor))
         }
-        Bar(label = DAY_LABEL.format(Date(state.dayStarts[index])), segments = segments)
+    }
+}
+
+@Composable
+private fun ProportionBar(rotblockedMs: Long, unblockedMs: Long) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(10.dp)
+            .clip(RoundedCornerShape(3.dp)),
+    ) {
+        if (rotblockedMs > 0L) {
+            Box(
+                Modifier
+                    .weight(rotblockedMs.toFloat())
+                    .fillMaxHeight()
+                    .background(ChartPalette.warm(0)),
+            )
+        }
+        if (rotblockedMs > 0L && unblockedMs > 0L) {
+            Spacer(Modifier.width(2.dp).fillMaxHeight())
+        }
+        if (unblockedMs > 0L) {
+            Box(
+                Modifier
+                    .weight(unblockedMs.toFloat())
+                    .fillMaxHeight()
+                    .background(ChartPalette.cool(0)),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScreenTimeCard(
+    state: InsightsState,
+    selected: Int?,
+    onSelect: (Int?) -> Unit,
+    historyKey: String?,
+    onHistoryKey: (String?) -> Unit,
+    unblockedExpanded: Boolean,
+    onUnblockedExpanded: (Boolean) -> Unit,
+) {
+    val context = LocalContext.current
+    val colors = segmentColors()
+    val colorFor: (String) -> Color = { key ->
+        colors.getValue(seriesSlot(key, state.slots, state.rotblockedKeys))
+    }
+    val bars = remember(state.buckets, state.slots, state.rotblockedKeys, colors) {
+        state.buckets.map { bucket ->
+            Bar(
+                label = DAY_LABEL.format(Date(bucket.dayStartMs)),
+                segments = screenTimeSegments(bucket.perTarget, state.slots, state.rotblockedKeys)
+                    .map { part -> Segment(part.ms / 60_000f, colors.getValue(part.slot)) },
+            )
+        }
+    }
+    val rows = remember(state.buckets, state.rotblockedKeys, selected) {
+        val source = if (selected != null) {
+            state.buckets[selected].perTarget.map { it.key to it.value }
+        } else {
+            state.totalsByTarget
+        }
+        source.filter { it.second > 0L }.sortedWith(
+            compareByDescending<Pair<String, Long>> { it.second }.thenBy { it.first },
+        )
     }
 
     Card(
@@ -285,54 +298,258 @@ private fun UsageChartCard(
     ) {
         Column(Modifier.padding(16.dp)) {
             Text(
-                "Minutes on blocked things",
+                "Screen time",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                selectedDay?.let { index ->
-                    val bucket = state.buckets[index]
-                    "${DAY_LABEL.format(Date(state.dayStarts[index]))}: " +
-                        formatDuration(bucket.totalMs)
-                } ?: "${formatDuration(state.totalUsageMs)} over ${state.days} days · tap a bar",
+                screenTimeHeader(state, selected),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (!state.usageAccessGranted) {
+                Text(
+                    "Insights can only show rotblocked time. Open usage access settings.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .padding(top = 6.dp)
+                        .clickable { openSettings(context, SettingsScreen.USAGE_ACCESS) },
+                )
+            }
             Spacer(Modifier.height(12.dp))
 
             StackedBarChart(
                 bars = bars,
-                selectedIndex = selectedDay,
+                selectedIndex = selected,
                 onSelect = onSelect,
-                labelEvery = if (state.days > 10) 5 else 1,
-                formatGridValue = { "${it.toInt()}m" },
+                labelEvery = axisLabelEvery(bars.size),
+                formatGridValue = ::formatAxisMinutes,
             )
 
-            Spacer(Modifier.height(12.dp))
-            // The breakdown doubles as the light-mode relief for the sub-3:1 series colours:
-            // every value is readable as text, not only as a coloured block.
-            val totals = if (selectedDay != null) {
-                state.buckets[selectedDay].perTarget.toList().sortedByDescending { it.second }
-            } else {
-                state.totalsByTarget
+            if (historyKey != null) {
+                Spacer(Modifier.height(12.dp))
+                HistoryCard(
+                    state = state,
+                    targetKey = historyKey,
+                    color = colorFor(historyKey),
+                    onClose = { onHistoryKey(null) },
+                )
             }
-            if (totals.isEmpty()) {
+
+            Spacer(Modifier.height(12.dp))
+            // The breakdown is the light-mode relief for the sub-3:1 series colours: every value
+            // is readable as text, not only as a coloured block.
+            if (rows.isEmpty()) {
                 Text(
                     "Nothing recorded in this range.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                totals.forEach { (id, ms) ->
-                    LegendRow(
-                        color = colorFor(id),
-                        label = state.targetLabels[id] ?: id.substringAfter(':'),
-                        value = formatDuration(ms),
-                    )
-                }
+                TimeSection(
+                    title = "Rotblocked",
+                    rows = rows.filter { it.first in state.rotblockedKeys },
+                    state = state,
+                    colorFor = colorFor,
+                    historyKey = historyKey,
+                    onRow = onHistoryKey,
+                )
+                Spacer(Modifier.height(8.dp))
+                TimeSection(
+                    title = "Unblocked",
+                    rows = rows.filter { it.first !in state.rotblockedKeys },
+                    state = state,
+                    colorFor = colorFor,
+                    historyKey = historyKey,
+                    onRow = onHistoryKey,
+                    collapsible = true,
+                    expanded = unblockedExpanded,
+                    onToggleExpanded = { onUnblockedExpanded(!unblockedExpanded) },
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun segmentColors(): Map<SegmentSlot, Color> = mapOf(
+    SegmentSlot.WARM_0 to ChartPalette.warm(0),
+    SegmentSlot.WARM_1 to ChartPalette.warm(1),
+    SegmentSlot.WARM_2 to ChartPalette.warm(2),
+    SegmentSlot.OTHER_WARM to ChartPalette.otherWarm(),
+    SegmentSlot.COOL_0 to ChartPalette.cool(0),
+    SegmentSlot.COOL_1 to ChartPalette.cool(1),
+    SegmentSlot.COOL_2 to ChartPalette.cool(2),
+    SegmentSlot.OTHER_COOL to ChartPalette.otherCool(),
+)
+
+private fun screenTimeHeader(state: InsightsState, selected: Int?): String {
+    if (selected == null) {
+        return "${formatDuration(state.totalUsageMs)} over ${state.days} days · tap a bar"
+    }
+    val bucket = state.buckets[selected]
+    val split = splitScreenTime(bucket.perTarget, state.rotblockedKeys)
+    val (rotPct, unPct) = splitPercents(split)
+    val whenLabel = bucketLabel(state.weekly, bucket.dayStartMs)
+    return "$whenLabel: ${formatDuration(split.totalMs)} · " +
+        "${formatDuration(split.rotblockedMs)} rotblocked ($rotPct%), " +
+        "${formatDuration(split.unblockedMs)} unblocked ($unPct%)"
+}
+
+private fun bucketLabel(weekly: Boolean, dayStartMs: Long): String {
+    val day = DAY_LABEL.format(Date(dayStartMs))
+    return if (weekly) "Week of $day" else day
+}
+
+@Composable
+private fun HistoryCard(
+    state: InsightsState,
+    targetKey: String,
+    color: Color,
+    onClose: () -> Unit,
+) {
+    val total = remember(state.buckets, targetKey) {
+        state.buckets.sumOf { it.perTarget[targetKey] ?: 0L }
+    }
+    val average = if (state.days <= 0) 0L else total / state.days
+    val bars = remember(state.buckets, targetKey, color) {
+        state.buckets.map { bucket ->
+            val ms = bucket.perTarget[targetKey] ?: 0L
+            Bar(
+                label = DAY_LABEL.format(Date(bucket.dayStartMs)),
+                segments = if (ms > 0L) listOf(Segment(ms / 60_000f, color)) else emptyList(),
+            )
+        }
+    }
+    val label = state.targetLabels[targetKey] ?: targetKey.substringAfter(':', targetKey)
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "${formatDuration(total)} · ${formatDuration(average)} a day",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onClose) { Text("Close") }
+            }
+            Spacer(Modifier.height(8.dp))
+            StackedBarChart(
+                bars = bars,
+                height = 120.dp,
+                labelEvery = axisLabelEvery(bars.size),
+                gridLines = 2,
+                formatGridValue = ::formatAxisMinutes,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TimeSection(
+    title: String,
+    rows: List<Pair<String, Long>>,
+    state: InsightsState,
+    colorFor: (String) -> Color,
+    historyKey: String?,
+    onRow: (String) -> Unit,
+    collapsible: Boolean = false,
+    expanded: Boolean = false,
+    onToggleExpanded: () -> Unit = {},
+) {
+    val subtotal = rows.sumOf { it.second }
+    val visible = if (collapsible && !expanded) rows.take(UNBLOCKED_PREVIEW) else rows
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                formatDuration(subtotal),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        visible.forEach { (key, ms) ->
+            BreakdownRow(
+                label = state.targetLabels[key] ?: key.substringAfter(':', key),
+                value = formatDuration(ms),
+                color = colorFor(key),
+                targetKey = key,
+                selected = key == historyKey,
+                onClick = { onRow(key) },
+            )
+        }
+        if (collapsible && rows.size > UNBLOCKED_PREVIEW) {
+            TextButton(onClick = onToggleExpanded, contentPadding = PaddingValues(0.dp)) {
+                Text(
+                    if (expanded) "Show fewer" else moreAppsLabel(rows.size - UNBLOCKED_PREVIEW),
+                )
+            }
+        }
+    }
+}
+
+private fun moreAppsLabel(count: Int): String =
+    if (count == 1) "1 more app" else "$count more apps"
+
+@Composable
+private fun BreakdownRow(
+    label: String,
+    value: String,
+    color: Color,
+    targetKey: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp, horizontal = 4.dp),
+    ) {
+        Box(Modifier.size(10.dp).clip(RoundedCornerShape(2.dp)).background(color))
+        Spacer(Modifier.width(8.dp))
+        val kind = Policy.kindOf(targetKey)
+        if (kind != null) {
+            TargetAvatar(
+                kind = kind,
+                matcher = targetKey.substringAfter(':'),
+                label = label,
+                size = 28.dp,
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -380,7 +597,7 @@ private fun EscapeHatchCard(state: InsightsState) {
             StackedBarChart(
                 bars = bars,
                 height = 120.dp,
-                labelEvery = if (state.days > 10) 5 else 1,
+                labelEvery = axisLabelEvery(bars.size),
                 gridLines = 2,
                 formatGridValue = { it.toInt().toString() },
             )
@@ -415,48 +632,112 @@ private fun LegendRow(color: Color, label: String, value: String) {
 }
 
 @Composable
-private fun EventRow(event: AuditEvent) {
+private fun AuditLogCard(page: AuditPage?, onPage: (Int) -> Unit) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(Modifier.padding(14.dp)) {
-            Box(
-                Modifier
-                    .padding(top = 5.dp)
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(event.type.tint()),
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                "Everything that changed the rules",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
             )
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    event.detail.ifBlank { event.type.readable() },
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (event.type.isRelaxation()) FontWeight.SemiBold else FontWeight.Normal,
-                )
-                event.userReason?.takeIf { it.isNotBlank() }?.let { reason ->
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        "“$reason”",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "Append-only. There is no way to edit or delete an entry, including from here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LaunchedEffect(page?.page, page?.count, page?.events?.size) {
+                val shown = page ?: return@LaunchedEffect
+                if (shown.page > 0 && shown.events.isEmpty() && shown.count > 0) {
+                    onPage(((shown.count - 1) / AUDIT_PAGE_SIZE).coerceAtLeast(0))
                 }
-                Spacer(Modifier.height(4.dp))
-                Row {
+            }
+            if (page == null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Working it out…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else if (page.count == 0) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Nothing yet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Spacer(Modifier.height(8.dp))
+                page.events.forEachIndexed { index, event ->
+                    if (index > 0) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                    }
+                    EventEntry(event)
+                }
+                Box(Modifier.fillMaxWidth()) {
+                    TextButton(
+                        onClick = { onPage(page.page - 1) },
+                        enabled = page.hasNewer,
+                        modifier = Modifier.align(Alignment.CenterStart),
+                    ) { Text("Newer") }
                     Text(
-                        TIME_FORMAT.format(Date(event.tsMs)),
+                        page.position,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.Center),
                     )
-                    if (event.overBudget) {
-                        Text(
-                            "  ·  over budget",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
+                    TextButton(
+                        onClick = { onPage(page.page + 1) },
+                        enabled = page.hasOlder,
+                        modifier = Modifier.align(Alignment.CenterEnd),
+                    ) { Text("Older") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EventEntry(event: AuditEvent) {
+    Row(Modifier.padding(vertical = 10.dp)) {
+        Box(
+            Modifier
+                .padding(top = 5.dp)
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(event.type.tint()),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                event.detail.ifBlank { event.type.readable() },
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (event.type.isRelaxation()) FontWeight.SemiBold else FontWeight.Normal,
+            )
+            event.userReason?.takeIf { it.isNotBlank() }?.let { reason ->
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "“$reason”",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Row {
+                Text(
+                    TIME_FORMAT.format(Date(event.tsMs)),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (event.overBudget) {
+                    Text(
+                        "  ·  over budget",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }
@@ -499,3 +780,20 @@ private fun AuditType.isRelaxation(): Boolean = when (this) {
 
 private fun AuditType.readable(): String =
     name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
+
+private fun axisLabelEvery(bucketCount: Int): Int = when {
+    bucketCount <= 10 -> 1
+    bucketCount <= 20 -> 2
+    else -> (bucketCount / 6).coerceAtLeast(1)
+}
+
+/** Ticks are whole minutes. Past an hour they read as hours so a week-scale axis still fits. */
+private fun formatAxisMinutes(minutes: Float): String {
+    val whole = minutes.toInt()
+    if (whole < 60) return "${whole}m"
+    val hours = whole / 60
+    val rest = whole % 60
+    if (rest == 0) return "${hours}h"
+    val tenths = (rest * 10) / 60
+    return if (tenths == 0) "${hours}h" else "$hours.${tenths}h"
+}

@@ -7,16 +7,20 @@ import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditEvent
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.browser.WebMatcher
-import com.ezhou.rotblock.insights.DailyRollup
 import com.ezhou.rotblock.insights.DayBucket
 import com.ezhou.rotblock.insights.DiscouragingStatsResult
 import com.ezhou.rotblock.insights.RuleEffect
-import com.ezhou.rotblock.insights.TargetSession
-import com.ezhou.rotblock.insights.bucketByDay
+import com.ezhou.rotblock.insights.ScreenTimeSlots
+import com.ezhou.rotblock.insights.chartIsWeekly
 import com.ezhou.rotblock.insights.countByDay
 import com.ezhou.rotblock.insights.effectOf
+import com.ezhou.rotblock.insights.foldBucketsIntoWeeks
+import com.ezhou.rotblock.insights.foldCountsIntoWeeks
 import com.ezhou.rotblock.insights.loadDiscouragingStats
+import com.ezhou.rotblock.insights.loadScreenTime
 import com.ezhou.rotblock.insights.recentDayStarts
+import com.ezhou.rotblock.insights.rotblockedKeys
+import com.ezhou.rotblock.insights.screenTimeSlots
 import com.ezhou.rotblock.data.PendingChange
 import com.ezhou.rotblock.data.PendingChangeQueue
 import com.ezhou.rotblock.data.RotblockSettings
@@ -30,22 +34,53 @@ import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.RollingQuota
 import com.ezhou.rotblock.quota.USAGE_RETENTION_MS
 import com.ezhou.rotblock.workout.WorkoutMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-/** Everything the Insights screen renders, assembled in one pass. */
+/** One page of the audit log. [page] is zero for the newest rows. */
+const val AUDIT_PAGE_SIZE = 5
+
+data class AuditPage(
+    val events: List<AuditEvent>,
+    val count: Int,
+    val page: Int,
+) {
+    val from: Int get() = if (events.isEmpty()) 0 else page * AUDIT_PAGE_SIZE + 1
+    val to: Int get() = if (events.isEmpty()) 0 else page * AUDIT_PAGE_SIZE + events.size
+
+    /** "11–15 of 212". */
+    val position: String get() = if (count == 0 || events.isEmpty()) "" else "$from–$to of $count"
+    val hasNewer: Boolean get() = page > 0
+    val hasOlder: Boolean get() = to < count
+}
+
+/**
+ * Everything the Insights screen renders for one range, folded once.
+ *
+ * [slots] belong to this load. The screen reads them; it does not re-rank when a bar is tapped,
+ * because that would move colours that were assigned for the whole range.
+ */
 data class InsightsState(
     val days: Int,
+    val weekly: Boolean,
+    /** Start of each chart bucket: a budget-day, or the oldest day of a week. */
     val dayStarts: List<Long>,
     val buckets: List<DayBucket>,
     val targetLabels: Map<String, String>,
-    /** Stable series order: creation order, so a colour keeps meaning the same target. */
-    val targetOrder: List<String>,
+    val rotblockedKeys: Set<String>,
+    val slots: ScreenTimeSlots,
+    val usageAccessGranted: Boolean,
     val pauseCounts: List<Int>,
     val emergencyCounts: List<Int>,
     val totalPauseMinutes: Int,
@@ -103,8 +138,32 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
         .map { true }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
-    val recentEvents: StateFlow<List<AuditEvent>> = db.auditDao().observeRecent(300)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private val _auditPageIndex = MutableStateFlow(0)
+
+    /** The page the screen asked for. Compared with [AuditPage.page] so a stale page is not shown. */
+    val auditPageIndex: StateFlow<Int> = _auditPageIndex.asStateFlow()
+
+    /**
+     * Five rows and a count. Collected only while Insights is on screen: [SharingStarted.WhileSubscribed]
+     * drops the query once the tab is left. The page index resets to the newest rows on entry.
+     */
+    val auditLog: StateFlow<AuditPage?> = _auditPageIndex
+        .flatMapLatest { page ->
+            combine(
+                db.auditDao().observePage(AUDIT_PAGE_SIZE, page * AUDIT_PAGE_SIZE),
+                db.auditDao().observeCount(),
+            ) { events, count ->
+                AuditPage(events = events, count = count, page = page)
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
+
+    fun showAuditPage(page: Int) {
+        _auditPageIndex.value = page.coerceAtLeast(0)
+    }
+
+    /** Package labels for `app:` keys that are not themselves a policy. Kept for the ViewModel's life. */
+    private val applicationLabels = HashMap<String, String>()
 
     private val _usage = MutableStateFlow<Map<String, PolicyUsage>>(emptyMap())
     val usage: StateFlow<Map<String, PolicyUsage>> = _usage.asStateFlow()
@@ -269,52 +328,85 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
     private val _insights = MutableStateFlow<InsightsState?>(null)
     val insights: StateFlow<InsightsState?> = _insights.asStateFlow()
 
+    private var insightsLoad: Job? = null
+
     /**
-     * Builds everything the Insights screen shows in one pass.
+     * One pass for the range Insights is showing. A chip change cancels the previous pass so a
+     * slow 365-day read cannot land on top of the range asked for afterwards.
      *
-     * Series slots are assigned by the order policies were created, never by how much time each
-     * one used -- a colour has to keep meaning the same target between refreshes, or the chart
-     * repaints itself every time the ranking shifts.
+     * [loadScreenTime] rolls completed days up before it reads. Slots are ranked here, once, over
+     * that whole range.
      */
     fun loadInsights(days: Int) {
-        viewModelScope.launch {
-            // Before the screen reads anything: a day that ended since the last roll is written
-            // here, from a process that is already awake. One prefs read unless that is true.
-            runCatching { DailyRollup.catchUp(getApplication()) }
-            val now = System.currentTimeMillis()
-            val settings = settingsRepo.current()
-            val dayStarts = recentDayStarts(now, settings.dayStartHour, days)
-            val from = dayStarts.first()
-
-            val sessions = db.usageDao().since(from)
-                .map { TargetSession(it.targetId, it.startMs, it.endMs) }
-            val buckets = bucketByDay(sessions, dayStarts, now)
-
-            val allPolicies = db.policyDao().getAll().sortedBy { it.createdAtMs }
-            val labels = allPolicies.associate { it.id to it.label }
-            val seen = buckets.flatMap { it.perTarget.keys }.toSet()
-            val order = (allPolicies.map { it.id } + seen.sorted()).distinct().filter { it in seen }
-
-            val events = db.auditDao().since(from)
-            val pauses = events.filter { it.type == AuditType.PAUSE_STARTED }
-            val emergencies = events.filter { it.type == AuditType.EMERGENCY_SKIP }
-
-            _insights.value = InsightsState(
-                days = days,
-                dayStarts = dayStarts,
-                buckets = buckets,
-                targetLabels = labels,
-                targetOrder = order,
-                pauseCounts = countByDay(pauses.map { it.tsMs }, dayStarts, now),
-                emergencyCounts = countByDay(emergencies.map { it.tsMs }, dayStarts, now),
-                totalPauseMinutes = pauses.sumOf { (it.durationSeconds ?: 0) } / 60,
-                emergencyCount = emergencies.size,
-                pauseCount = pauses.size,
-                weakeningCount = events.count {
-                    it.type == AuditType.WEAKENING_QUEUED || it.type == AuditType.POLICY_DELETED
-                },
-            )
+        insightsLoad?.cancel()
+        insightsLoad = viewModelScope.launch {
+            val built = assembleInsights(days)
+            ensureActive()
+            _insights.value = built
         }
+    }
+
+    private suspend fun assembleInsights(days: Int): InsightsState = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val settings = settingsRepo.current()
+        val dayStarts = recentDayStarts(now, settings.dayStartHour, days)
+        val from = dayStarts.first()
+        val screen = loadScreenTime(getApplication(), dayStarts, now)
+        val policies = db.policyDao().getAll()
+        val events = db.auditDao().since(from)
+        val pauses = events.filter { it.type == AuditType.PAUSE_STARTED }
+        val emergencies = events.filter { it.type == AuditType.EMERGENCY_SKIP }
+        val weekly = chartIsWeekly(days)
+        val chartBuckets = if (weekly) foldBucketsIntoWeeks(screen.buckets) else screen.buckets
+        val pauseByDay = countByDay(pauses.map { it.tsMs }, dayStarts, now)
+        val emergencyByDay = countByDay(emergencies.map { it.tsMs }, dayStarts, now)
+        val rotblocked = rotblockedKeys(policies)
+        val keys = screen.buckets.flatMapTo(HashSet()) { it.perTarget.keys }
+        InsightsState(
+            days = days,
+            weekly = weekly,
+            dayStarts = chartBuckets.map { it.dayStartMs },
+            buckets = chartBuckets,
+            targetLabels = labelsFor(keys, policies),
+            rotblockedKeys = rotblocked,
+            slots = screenTimeSlots(chartBuckets, rotblocked),
+            usageAccessGranted = screen.usageAccessGranted,
+            pauseCounts = if (weekly) foldCountsIntoWeeks(pauseByDay) else pauseByDay,
+            emergencyCounts = if (weekly) foldCountsIntoWeeks(emergencyByDay) else emergencyByDay,
+            totalPauseMinutes = pauses.sumOf { (it.durationSeconds ?: 0) } / 60,
+            emergencyCount = emergencies.size,
+            pauseCount = pauses.size,
+            weakeningCount = events.count {
+                it.type == AuditType.WEAKENING_QUEUED || it.type == AuditType.POLICY_DELETED
+            },
+        )
+    }
+
+    /**
+     * A policy's own label when its id is the key. Otherwise the installed app's label for an
+     * `app:` key, and the matcher for anything else. A package outside what this app can see
+     * resolves to the package name, and that miss is cached too so the next range does not ask again.
+     */
+    private fun labelsFor(keys: Set<String>, policies: List<Policy>): Map<String, String> {
+        val byId = policies.associate { it.id to it.label }
+        return keys.associateWith { key ->
+            byId[key]?.takeIf { it.isNotBlank() } ?: if (key.startsWith("app:")) {
+                applicationLabel(key.removePrefix("app:"))
+            } else {
+                key.substringAfter(':', key)
+            }
+        }
+    }
+
+    private fun applicationLabel(pkg: String): String = synchronized(applicationLabels) {
+        applicationLabels[pkg]?.let { return it }
+        val resolved = runCatching {
+            val pm = getApplication<Application>().packageManager
+            @Suppress("DEPRECATION")
+            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: pkg
+        applicationLabels[pkg] = resolved
+        resolved
     }
 
     suspend fun startPause(minutes: Int, scope: PauseScope, emergency: Boolean, reason: String?): PauseResult =

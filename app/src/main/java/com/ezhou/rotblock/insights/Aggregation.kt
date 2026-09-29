@@ -1,9 +1,10 @@
 package com.ezhou.rotblock.insights
 
-import com.ezhou.rotblock.block.FeedRegistry
 import com.ezhou.rotblock.pause.dayStartMs
+import com.ezhou.rotblock.policy.Policy
 import java.util.Calendar
 import java.util.TimeZone
+import kotlin.math.roundToInt
 
 /** A usage session tagged with what it was spent on. */
 data class TargetSession(val targetId: String, val startMs: Long, val endMs: Long)
@@ -74,42 +75,164 @@ fun countByDay(timestamps: List<Long>, dayStarts: List<Long>, endMs: Long): List
     }
 }
 
-/** Milliseconds spent per [Category] and per [Productivity], over a set of sessions. */
-data class KindTotals(val byCategory: Map<Category, Long>, val byProductivity: Map<Productivity, Long>)
+/**
+ * 90 and 365 days are about a pixel per bar, so those ranges draw one bar per week. 7 and 30
+ * stay one bar per day.
+ */
+fun chartIsWeekly(days: Int): Boolean = days == 90 || days == 365
 
 /**
- * The package behind a target id, when one can be read off the id itself with no device lookup.
+ * Groups ascending [days] into buckets of [weekLength] consecutive entries, aligned so the newest
+ * bucket is a full week ending on the last day. The oldest bucket keeps the remainder and may be
+ * shorter.
  *
- * An app target's matcher already is the package. A feed target's matcher is a [FeedRegistry] key,
- * which does resolve to a package. A website target's matcher is a bare host -- resolving that to
- * an installed app needs [android.content.pm.PackageManager] (see `TargetIcon.kt`), which this pure
- * fold has no access to and must not reach for, so it stays unresolved rather than guessing.
+ * A week here is that many rotblock budget-days in a row, not a calendar week. A calendar week
+ * would park today in the middle of a bar, and the last bar has to be the day the range ends on.
  */
-private fun packageFor(targetId: String): String? {
-    val kind = targetId.substringBefore(':', "")
-    val matcher = targetId.substringAfter(':', "")
-    return when (kind) {
-        "app" -> matcher
-        "feed" -> FeedRegistry.specs.firstOrNull { it.key == matcher }?.packageName
-        else -> null
+fun <T> foldIntoWeeks(days: List<T>, weekLength: Int = 7, combine: (List<T>) -> T): List<T> {
+    if (days.isEmpty()) return emptyList()
+    val out = ArrayList<T>((days.size + weekLength - 1) / weekLength)
+    var index = days.size % weekLength
+    if (index != 0) out.add(combine(days.subList(0, index)))
+    while (index < days.size) {
+        val end = index + weekLength
+        out.add(combine(days.subList(index, end)))
+        index = end
+    }
+    return out
+}
+
+/** Sums per-target time. The bucket's [DayBucket.dayStartMs] is its oldest day. */
+fun foldBucketsIntoWeeks(buckets: List<DayBucket>, weekLength: Int = 7): List<DayBucket> =
+    foldIntoWeeks(buckets, weekLength) { days ->
+        val totals = HashMap<String, Long>()
+        for (day in days) {
+            for ((key, ms) in day.perTarget) {
+                if (ms > 0L) totals[key] = (totals[key] ?: 0L) + ms
+            }
+        }
+        DayBucket(days.first().dayStartMs, totals)
+    }
+
+/** The same cut as [foldBucketsIntoWeeks], for the escape-hatch counts that share its bars. */
+fun foldCountsIntoWeeks(counts: List<Int>, weekLength: Int = 7): List<Int> =
+    foldIntoWeeks(counts, weekLength) { slice -> slice.sum() }
+
+/**
+ * Target ids any current rule covers, enabled or not, including a group's members.
+ *
+ * Today's rules colour every day in the range. A disabled rule still counts: switching one off
+ * must not repaint its history as time nothing covers.
+ */
+fun rotblockedKeys(policies: List<Policy>): Set<String> =
+    policies.flatMap { it.chargedTargets }.toSet()
+
+/**
+ * The named series for one loaded range: the three rotblocked keys with the most time, then the
+ * three unblocked ones. Everyone else shares that side's "other" colour.
+ *
+ * Rank is over the whole of [buckets], with the key as a tiebreak. Re-running this on a single
+ * tapped day would move the colours under the finger, so the caller holds the result for as long
+ * as the range stays on screen.
+ */
+fun screenTimeSlots(buckets: List<DayBucket>, rotblocked: Set<String>, named: Int = 3): ScreenTimeSlots {
+    val totals = HashMap<String, Long>()
+    for (bucket in buckets) {
+        for ((key, ms) in bucket.perTarget) {
+            if (ms > 0L) totals[key] = (totals[key] ?: 0L) + ms
+        }
+    }
+    val ranked = totals.entries.sortedWith(
+        compareByDescending<Map.Entry<String, Long>> { it.value }.thenBy { it.key },
+    )
+    return ScreenTimeSlots(
+        warm = ranked.asSequence().map { it.key }.filter { it in rotblocked }.take(named).toList(),
+        cool = ranked.asSequence().map { it.key }.filter { it !in rotblocked }.take(named).toList(),
+    )
+}
+
+data class ScreenTimeSlots(val warm: List<String>, val cool: List<String>)
+
+/**
+ * Bands of one bar, baseline first.
+ *
+ * This order — warm slots, other warm, cool slots, other cool — is the adjacency the warm/cool
+ * palette was checked for. [seriesSlot] keeps a key in its named slot even on a day when a later
+ * slot is taller; sorting a bar by height would put hues next to each other that were never checked.
+ * The chart paints the first of these on the baseline and stacks upward, so the list order is the
+ * order on screen.
+ */
+enum class SegmentSlot {
+    WARM_0, WARM_1, WARM_2, OTHER_WARM, COOL_0, COOL_1, COOL_2, OTHER_COOL,
+}
+
+data class ScreenSegment(val slot: SegmentSlot, val ms: Long)
+
+private val WARM_NAMED = listOf(SegmentSlot.WARM_0, SegmentSlot.WARM_1, SegmentSlot.WARM_2)
+private val COOL_NAMED = listOf(SegmentSlot.COOL_0, SegmentSlot.COOL_1, SegmentSlot.COOL_2)
+
+/**
+ * Which band [key] keeps for a range whose named slots are [slots].
+ *
+ * A ranked key keeps its slot. Any other rotblocked key is other-warm, and whatever is left is
+ * other-cool. Rotblocked is checked before the cool slots, so a key a rule covers cannot be drawn
+ * as unblocked just because a stale slot list still names it there.
+ */
+fun seriesSlot(key: String, slots: ScreenTimeSlots, rotblocked: Set<String>): SegmentSlot {
+    val warmAt = slots.warm.indexOf(key)
+    if (warmAt in WARM_NAMED.indices) return WARM_NAMED[warmAt]
+    if (key in rotblocked) return SegmentSlot.OTHER_WARM
+    val coolAt = slots.cool.indexOf(key)
+    if (coolAt in COOL_NAMED.indices) return COOL_NAMED[coolAt]
+    return SegmentSlot.OTHER_COOL
+}
+
+fun screenTimeSegments(
+    perTarget: Map<String, Long>,
+    slots: ScreenTimeSlots,
+    rotblocked: Set<String>,
+): List<ScreenSegment> {
+    val totals = LongArray(SegmentSlot.entries.size)
+    for ((key, ms) in perTarget) {
+        if (ms <= 0L) continue
+        totals[seriesSlot(key, slots, rotblocked).ordinal] += ms
+    }
+    return SegmentSlot.entries.mapNotNull { slot ->
+        val ms = totals[slot.ordinal]
+        if (ms > 0L) ScreenSegment(slot, ms) else null
     }
 }
 
-/**
- * Folds sessions into totals by kind, so Insights can report "of which N distracting" alongside
- * the per-target breakdown. [classify] is injected rather than read from [AppCatalog] directly so
- * this stays testable with no bundled asset involved.
- */
-fun classifyTotals(sessions: List<TargetSession>, classify: (String) -> Classification): KindTotals {
-    val byCategory = HashMap<Category, Long>()
-    val byProductivity = HashMap<Productivity, Long>()
-    for (session in sessions) {
-        val durationMs = session.endMs - session.startMs
-        if (durationMs <= 0) continue
-        val classification = packageFor(session.targetId)?.let(classify) ?: Classification()
-        byCategory[classification.category] = (byCategory[classification.category] ?: 0L) + durationMs
-        byProductivity[classification.productivity] =
-            (byProductivity[classification.productivity] ?: 0L) + durationMs
+/** Rotblocked and unblocked totals over the same keys the chart stacks. */
+data class TimeSplit(val rotblockedMs: Long, val unblockedMs: Long) {
+    val totalMs: Long get() = rotblockedMs + unblockedMs
+}
+
+fun splitScreenTime(buckets: List<DayBucket>, rotblocked: Set<String>): TimeSplit {
+    var warm = 0L
+    var cool = 0L
+    for (bucket in buckets) {
+        for ((key, ms) in bucket.perTarget) {
+            if (ms <= 0L) continue
+            if (key in rotblocked) warm += ms else cool += ms
+        }
     }
-    return KindTotals(byCategory, byProductivity)
+    return TimeSplit(warm, cool)
+}
+
+fun splitScreenTime(perTarget: Map<String, Long>, rotblocked: Set<String>): TimeSplit =
+    splitScreenTime(listOf(DayBucket(0L, perTarget)), rotblocked)
+
+/**
+ * Whole percentages that add to 100 whenever there is any time. A side that has time does not
+ * round down to 0%: the bar would still show it, and a label of 0% next to a visible sliver is
+ * the readout lying.
+ */
+fun splitPercents(split: TimeSplit): Pair<Int, Int> {
+    val total = split.totalMs
+    if (total <= 0L) return 0 to 0
+    if (split.rotblockedMs <= 0L) return 0 to 100
+    if (split.unblockedMs <= 0L) return 100 to 0
+    val rot = ((split.rotblockedMs * 100.0) / total).roundToInt().coerceIn(1, 99)
+    return rot to (100 - rot)
 }

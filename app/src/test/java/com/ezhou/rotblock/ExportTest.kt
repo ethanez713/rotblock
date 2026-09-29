@@ -57,8 +57,9 @@ class ExportTest {
 
         override fun auditDao() = object : AuditDao {
             override suspend fun insert(event: AuditEvent) = error("unused in export")
-            override fun observeRecent(limit: Int): Flow<List<AuditEvent>> = error("unused in export")
             override suspend fun recent(limit: Int) = error("unused in export")
+            override fun observePage(limit: Int, offset: Int): Flow<List<AuditEvent>> = error("unused in export")
+            override fun observeCount(): Flow<Int> = error("unused in export")
             override suspend fun since(sinceMs: Long) = events
             override suspend fun lastTimestampOf(type: String): Long? = error("unused in export")
             override suspend fun prune(beforeMs: Long) = error("unused in export")

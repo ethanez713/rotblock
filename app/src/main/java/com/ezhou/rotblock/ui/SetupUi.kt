@@ -243,7 +243,7 @@ private fun actionLabel(screen: SettingsScreen): String = when (screen) {
     SettingsScreen.USAGE_ACCESS -> "Open usage access settings"
 }
 
-private fun openSettings(context: Context, screen: SettingsScreen) {
+internal fun openSettings(context: Context, screen: SettingsScreen) {
     val intent = settingsIntentFor(context, screen) ?: return
     // A phone that has no such screen must not take the app down with it.
     runCatching { context.startActivity(intent) }

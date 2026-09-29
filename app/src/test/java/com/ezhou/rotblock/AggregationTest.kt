@@ -1,14 +1,26 @@
 package com.ezhou.rotblock
 
-import com.ezhou.rotblock.insights.Category
-import com.ezhou.rotblock.insights.Classification
-import com.ezhou.rotblock.insights.Productivity
+import com.ezhou.rotblock.insights.DayBucket
+import com.ezhou.rotblock.insights.ScreenSegment
+import com.ezhou.rotblock.insights.ScreenTimeSlots
+import com.ezhou.rotblock.insights.SegmentSlot
 import com.ezhou.rotblock.insights.TargetSession
+import com.ezhou.rotblock.insights.TimeSplit
 import com.ezhou.rotblock.insights.bucketByDay
-import com.ezhou.rotblock.insights.classifyTotals
+import com.ezhou.rotblock.insights.chartIsWeekly
 import com.ezhou.rotblock.insights.countByDay
+import com.ezhou.rotblock.insights.foldBucketsIntoWeeks
+import com.ezhou.rotblock.insights.foldCountsIntoWeeks
 import com.ezhou.rotblock.insights.recentDayStarts
+import com.ezhou.rotblock.insights.rotblockedKeys
+import com.ezhou.rotblock.insights.screenTimeSegments
+import com.ezhou.rotblock.insights.screenTimeSlots
+import com.ezhou.rotblock.insights.splitPercents
+import com.ezhou.rotblock.policy.Policy
+import com.ezhou.rotblock.policy.TargetKind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Calendar
 import java.util.TimeZone
@@ -115,70 +127,205 @@ class CountByDayTest {
     }
 }
 
-class ClassifyTotalsTest {
-
-    private val socialDistracting =
-        Classification(Category.SOCIAL, Productivity.VERY_DISTRACTING)
-    private val classify: (String) -> Classification =
-        { pkg -> if (pkg == "com.reddit.frontpage") socialDistracting else Classification() }
+class WeekFoldTest {
 
     @Test
-    fun `an app target classifies by its own package`() {
-        val sessions = listOf(TargetSession("app:com.reddit.frontpage", 0, 10 * MIN))
-        val totals = classifyTotals(sessions, classify)
-        assertEquals(10 * MIN, totals.byCategory[Category.SOCIAL])
-        assertEquals(10 * MIN, totals.byProductivity[Productivity.VERY_DISTRACTING])
+    fun `only the 90 and 365 ranges draw weeks`() {
+        assertFalse(chartIsWeekly(7))
+        assertFalse(chartIsWeekly(30))
+        assertTrue(chartIsWeekly(90))
+        assertTrue(chartIsWeekly(365))
     }
 
     @Test
-    fun `a feed target classifies by the app it lives inside`() {
-        // youtube_shorts is registered against com.google.android.youtube in FeedRegistry.
-        val classifyYoutube: (String) -> Classification =
-            { pkg -> if (pkg == "com.google.android.youtube") Classification(Category.VIDEO, Productivity.DISTRACTING) else Classification() }
-        val sessions = listOf(TargetSession("feed:youtube_shorts", 0, 5 * MIN))
-        val totals = classifyTotals(sessions, classifyYoutube)
-        assertEquals(5 * MIN, totals.byCategory[Category.VIDEO])
-        assertEquals(5 * MIN, totals.byProductivity[Productivity.DISTRACTING])
+    fun `the newest bucket is the last seven days and the oldest keeps the remainder`() {
+        val counts = (1..8).toList()
+        assertEquals(listOf(1, 2 + 3 + 4 + 5 + 6 + 7 + 8), foldCountsIntoWeeks(counts))
     }
 
     @Test
-    fun `a website target has no offline package lookup and stays unclassified`() {
-        // The classifier would answer for this host if it were ever asked -- it must not be.
-        val classifyAnything: (String) -> Classification = { socialDistracting }
-        val sessions = listOf(TargetSession("web:reddit.com", 0, 10 * MIN))
-        val totals = classifyTotals(sessions, classifyAnything)
-        assertEquals(10 * MIN, totals.byCategory[Category.UNKNOWN])
-        assertEquals(10 * MIN, totals.byProductivity[Productivity.UNCLASSIFIED])
+    fun `an exact multiple of seven has no partial bucket`() {
+        assertEquals(listOf(7, 7), foldCountsIntoWeeks(List(14) { 1 }))
     }
 
     @Test
-    fun `sessions with no matching catalog entry accumulate as unclassified`() {
-        val sessions = listOf(TargetSession("app:com.unknown.thing", 0, 3 * MIN))
-        val totals = classifyTotals(sessions, classify)
-        assertEquals(3 * MIN, totals.byCategory[Category.UNKNOWN])
-        assertEquals(3 * MIN, totals.byProductivity[Productivity.UNCLASSIFIED])
+    fun `fewer than seven days is one partial bucket`() {
+        assertEquals(listOf(6), foldCountsIntoWeeks(List(3) { 2 }))
     }
 
     @Test
-    fun `zero and negative duration sessions contribute nothing`() {
-        val sessions = listOf(
-            TargetSession("app:com.reddit.frontpage", 10, 10),
-            TargetSession("app:com.reddit.frontpage", 20, 10),
+    fun `an empty range stays empty`() {
+        assertEquals(emptyList<Int>(), foldCountsIntoWeeks(emptyList()))
+        assertEquals(emptyList<DayBucket>(), foldBucketsIntoWeeks(emptyList()))
+    }
+
+    @Test
+    fun `ninety and three hundred sixty five days end on a full week`() {
+        val ninety = foldCountsIntoWeeks(List(90) { 1 })
+        assertEquals(13, ninety.size)
+        assertEquals(6, ninety.first())
+        assertEquals(7, ninety.last())
+        assertEquals(90, ninety.sum())
+
+        val year = foldCountsIntoWeeks(List(365) { 1 })
+        assertEquals(53, year.size)
+        assertEquals(1, year.first())
+        assertEquals(7, year.last())
+        assertEquals(365, year.sum())
+    }
+
+    @Test
+    fun `a week sums its days and is labelled by its oldest day`() {
+        val days = (0 until 8).map { index ->
+            DayBucket(
+                dayStartMs = index.toLong(),
+                perTarget = buildMap {
+                    put("app:a", 10L)
+                    if (index == 0) put("app:b", 5L)
+                },
+            )
+        }
+        val weeks = foldBucketsIntoWeeks(days)
+        val counts = foldCountsIntoWeeks(List(days.size) { 1 })
+
+        assertEquals(counts.size, weeks.size)
+        assertEquals(0L, weeks[0].dayStartMs)
+        assertEquals(10L, weeks[0].perTarget["app:a"])
+        assertEquals(5L, weeks[0].perTarget["app:b"])
+        assertEquals(1L, weeks[1].dayStartMs)
+        assertEquals(70L, weeks[1].perTarget["app:a"])
+        assertEquals(null, weeks[1].perTarget["app:b"])
+    }
+}
+
+class RotblockedKeysTest {
+
+    @Test
+    fun `every policy counts, including a disabled one and a group's members`() {
+        val disabled = Policy(
+            id = "app:com.reddit.frontpage",
+            kind = TargetKind.APP,
+            matcher = "com.reddit.frontpage",
+            label = "Reddit",
+            enabled = false,
         )
-        val totals = classifyTotals(sessions, classify)
-        assertEquals(emptyMap<Category, Long>(), totals.byCategory)
-        assertEquals(emptyMap<Productivity, Long>(), totals.byProductivity)
+        val group = Policy(
+            id = "group:rot",
+            kind = TargetKind.GROUP,
+            matcher = "rot",
+            label = "Rot",
+            members = listOf("app:a", "web:b"),
+        )
+        assertEquals(
+            setOf("app:com.reddit.frontpage", "app:a", "web:b"),
+            rotblockedKeys(listOf(disabled, group)),
+        )
     }
 
     @Test
-    fun `multiple targets of different kinds accumulate separately`() {
-        val sessions = listOf(
-            TargetSession("app:com.reddit.frontpage", 0, 10 * MIN),
-            TargetSession("app:com.unknown.thing", 0, 4 * MIN),
+    fun `no policies covers nothing`() {
+        assertEquals(emptySet<String>(), rotblockedKeys(emptyList()))
+    }
+}
+
+class ScreenTimeSlotsTest {
+
+    @Test
+    fun `the top three on each side keep slots and ties break by key`() {
+        val buckets = listOf(
+            DayBucket(0, mapOf("app:a" to 10, "app:b" to 50, "app:c" to 30, "app:d" to 5, "app:e" to 100)),
+            DayBucket(1, mapOf("app:a" to 10, "app:g" to 40, "app:f" to 1)),
         )
-        val totals = classifyTotals(sessions, classify)
-        assertEquals(10 * MIN, totals.byCategory[Category.SOCIAL])
-        assertEquals(4 * MIN, totals.byCategory[Category.UNKNOWN])
-        assertEquals(14 * MIN, totals.byCategory.values.sum())
+        val slots = screenTimeSlots(
+            buckets,
+            rotblocked = setOf("app:a", "app:b", "app:c", "app:d"),
+        )
+        // a = 20, b = 50, c = 30, d = 5. e = 100, g = 40, f = 1.
+        assertEquals(listOf("app:b", "app:c", "app:a"), slots.warm)
+        assertEquals(listOf("app:e", "app:g", "app:f"), slots.cool)
+    }
+
+    @Test
+    fun `equal totals keep the earlier key in the earlier slot`() {
+        val buckets = listOf(DayBucket(0, mapOf("app:b" to 10, "app:a" to 10, "app:c" to 10)))
+        val slots = screenTimeSlots(buckets, rotblocked = setOf("app:a", "app:b", "app:c"))
+        assertEquals(listOf("app:a", "app:b", "app:c"), slots.warm)
+        assertEquals(emptyList<String>(), slots.cool)
+    }
+
+    @Test
+    fun `a zero total takes no slot`() {
+        val slots = screenTimeSlots(listOf(DayBucket(0, mapOf("app:a" to 0))), setOf("app:a"))
+        assertEquals(emptyList<String>(), slots.warm)
+    }
+}
+
+class ScreenTimeSegmentsTest {
+
+    @Test
+    fun `slot order is the validated stack, baseline first`() {
+        assertEquals(
+            listOf(
+                SegmentSlot.WARM_0,
+                SegmentSlot.WARM_1,
+                SegmentSlot.WARM_2,
+                SegmentSlot.OTHER_WARM,
+                SegmentSlot.COOL_0,
+                SegmentSlot.COOL_1,
+                SegmentSlot.COOL_2,
+                SegmentSlot.OTHER_COOL,
+            ),
+            SegmentSlot.entries,
+        )
+    }
+
+    @Test
+    fun `a taller later slot stays above the smaller one on the baseline`() {
+        val slots = ScreenTimeSlots(
+            warm = listOf("a", "b", "c"),
+            cool = listOf("d", "e", "f"),
+        )
+        val rotblocked = setOf("a", "b", "c", "z", "z2")
+        val segments = screenTimeSegments(
+            mapOf("c" to 100, "a" to 1, "z" to 4, "z2" to 3, "e" to 50, "d" to 4, "x" to 9, "b" to 0),
+            slots,
+            rotblocked,
+        )
+        assertEquals(
+            listOf(
+                ScreenSegment(SegmentSlot.WARM_0, 1),
+                ScreenSegment(SegmentSlot.WARM_2, 100),
+                ScreenSegment(SegmentSlot.OTHER_WARM, 7),
+                ScreenSegment(SegmentSlot.COOL_0, 4),
+                ScreenSegment(SegmentSlot.COOL_1, 50),
+                ScreenSegment(SegmentSlot.OTHER_COOL, 9),
+            ),
+            segments,
+        )
+    }
+
+    @Test
+    fun `a rotblocked key stays warm even when a slot list names it as cool`() {
+        val slots = ScreenTimeSlots(warm = emptyList(), cool = listOf("app:ruled"))
+        val segments = screenTimeSegments(
+            mapOf("app:ruled" to 5),
+            slots,
+            rotblocked = setOf("app:ruled"),
+        )
+        assertEquals(listOf(ScreenSegment(SegmentSlot.OTHER_WARM, 5)), segments)
+    }
+}
+
+class SplitPercentsTest {
+
+    @Test
+    fun `percentages add to 100 and a sliver stays visible`() {
+        assertEquals(0 to 0, splitPercents(TimeSplit(0, 0)))
+        assertEquals(100 to 0, splitPercents(TimeSplit(5, 0)))
+        assertEquals(0 to 100, splitPercents(TimeSplit(0, 5)))
+        assertEquals(40 to 60, splitPercents(TimeSplit(2, 3)))
+        val sliver = splitPercents(TimeSplit(1, 10_000))
+        assertEquals(100, sliver.first + sliver.second)
+        assertTrue(sliver.first >= 1)
     }
 }
