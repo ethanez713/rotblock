@@ -44,6 +44,51 @@ object ChartPalette {
     private val lightOther = Color(0xFF898781)
     private val darkOther = Color(0xFF898781)
 
+    /**
+     * The screen-time split: warm for rotblocked, cool for everything else, each with its own
+     * "other". Validated as ONE stack in exactly this order — warm slots, other-warm, cool slots,
+     * other-cool — because that is the order the segments sit in a bar, so it is the adjacency
+     * the CVD check has to hold for:
+     *   light — CVD ΔE 12.5, normal-vision ΔE 15.9
+     *   dark  — CVD ΔE 9.3, normal-vision ΔE 15.1
+     * The two "other" swatches fail the chroma floor on purpose: like [other], they are meant to
+     * recede. Light mode carries sub-3:1 warnings, so the breakdown table stays required relief.
+     */
+    private val lightWarm = listOf(Color(0xFFD9482B), Color(0xFFEDA100), Color(0xFFE87BA4))
+    private val lightCool = listOf(Color(0xFF2A78D6), Color(0xFF1BAF7A), Color(0xFF6E5BD0))
+    private val darkWarm = listOf(Color(0xFFBD3B27), Color(0xFFC98500), Color(0xFFC9609A))
+    private val darkCool = listOf(Color(0xFF3987E5), Color(0xFF199E70), Color(0xFF8272E6))
+    private val lightOtherWarm = Color(0xFF8E6E60)
+    private val lightOtherCool = Color(0xFF9AAABB)
+    private val darkOtherWarm = Color(0xFF8A6B5D)
+    private val darkOtherCool = Color(0xFF8593A3)
+
+    val splitSlotCount: Int get() = lightWarm.size
+
+    @Composable
+    @ReadOnlyComposable
+    fun warm(index: Int): Color = if (isSystemInDarkTheme()) {
+        darkWarm.getOrElse(index) { darkOtherWarm }
+    } else {
+        lightWarm.getOrElse(index) { lightOtherWarm }
+    }
+
+    @Composable
+    @ReadOnlyComposable
+    fun cool(index: Int): Color = if (isSystemInDarkTheme()) {
+        darkCool.getOrElse(index) { darkOtherCool }
+    } else {
+        lightCool.getOrElse(index) { lightOtherCool }
+    }
+
+    @Composable
+    @ReadOnlyComposable
+    fun otherWarm(): Color = if (isSystemInDarkTheme()) darkOtherWarm else lightOtherWarm
+
+    @Composable
+    @ReadOnlyComposable
+    fun otherCool(): Color = if (isSystemInDarkTheme()) darkOtherCool else lightOtherCool
+
     /** Reserved status colour. Only ever used for emergency skips, never as a series. */
     val critical = Color(0xFFD03B3B)
 
