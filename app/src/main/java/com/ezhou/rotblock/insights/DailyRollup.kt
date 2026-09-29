@@ -28,12 +28,12 @@ object DailyRollup {
      * Soonest a roll may follow the day it stored.
      *
      * The marker is the start of the last completed day written. The next one is not finished until
-     * the day after *that* begins, which is two budget-days later — 48h, or 49h when one of them is
-     * the 25h day a DST fallback produces. Waiting out 49h is what keeps this check from rolling a
-     * day that is still in progress; the cost is noticing an ordinary boundary an hour late.
-     * [daysToRoll] is the real decision once the check has passed, and it never includes today.
+     * the day after *that* begins, which is two budget-days later — 48h, or 47h when one of them is
+     * the 23h day a DST spring-forward produces. This is only a cheap pre-check, so it takes the
+     * shortest gap: [daysToRoll] is the real decision and never includes today, while a longer gap
+     * would leave yesterday reading as empty for the first hour after the rollover.
      */
-    const val ROLL_EARLIEST_GAP_MS = 49L * 60 * 60 * 1000
+    const val ROLL_EARLIEST_GAP_MS = 47L * 60 * 60 * 1000
 
     private const val PREFS = "daily_rollup"
     private const val KEY_LAST_ROLLED_DAY = "last_rolled_day_start"

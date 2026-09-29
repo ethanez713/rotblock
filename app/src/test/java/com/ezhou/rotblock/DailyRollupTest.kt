@@ -104,9 +104,9 @@ class RollDueTest {
     }
 
     @Test
-    fun `a roll is not due until forty-nine hours after the marker`() {
+    fun `a roll is due the moment the next day completes, not an hour later`() {
         assertFalse(DailyRollup.rollDue(at(26, 10), markerMs = at(25, 4)))
-        assertFalse(DailyRollup.rollDue(at(27, 4), markerMs = at(25, 4)))
-        assertTrue(DailyRollup.rollDue(at(27, 5), markerMs = at(25, 4)))
+        assertFalse(DailyRollup.rollDue(at(27, 2), markerMs = at(25, 4)))
+        assertTrue(DailyRollup.rollDue(at(27, 4), markerMs = at(25, 4)))
     }
 }
