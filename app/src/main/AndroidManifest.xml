@@ -20,6 +20,15 @@
         tools:ignore="ProtectedPermissions" />
 
     <!--
+      Whole-phone screen time for Insights. An app-op, not a runtime permission: granted in
+      Settings → Usage access, or `appops set … GET_USAGE_STATS allow`. Absence is handled —
+      Insights falls back to rotblock's own ledger, and rules do not use this at all.
+    -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!--
       Package visibility, scoped rather than broad.
 
       QUERY_ALL_PACKAGES is what this used to ask for, and Play refuses it outright when a scoped
@@ -52,6 +61,14 @@
             <action android:name="android.intent.action.VIEW" />
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="http" />
+        </intent>
+        <!--
+          The default launcher, so its package can be left out of screen time. Home-screen time
+          is not app use, and without this query a CATEGORY_HOME resolve comes back empty.
+        -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
         </intent>
     </queries>
 

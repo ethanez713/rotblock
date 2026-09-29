@@ -1,8 +1,11 @@
 package com.ezhou.rotblock.diag
 
 import android.service.quicksettings.TileService
+import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.block.formatDuration
+import com.ezhou.rotblock.insights.DailyRollup
 import com.ezhou.rotblock.setup.AccessibilityEnrolment
+import kotlinx.coroutines.launch
 
 /**
  * One tap from the shade to a diagnostic capture, modelled on
@@ -20,6 +23,7 @@ class CaptureTileService : TileService() {
         // Same reasoning as PauseTileService: this is a moment rotblock is reliably running, and
         // it costs no wakeup of its own.
         runCatching { AccessibilityEnrolment.restoreIfDropped(this) }
+        runCatching { Rotblock.scope.launch { DailyRollup.catchUp(this@CaptureTileService) } }
         refreshTile()
     }
 

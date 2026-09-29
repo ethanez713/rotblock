@@ -1,6 +1,7 @@
 package com.ezhou.rotblock.setup
 
 import android.Manifest
+import android.app.AppOpsManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -8,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.os.Process
 import android.provider.Settings
 import android.text.TextUtils
 import androidx.core.app.NotificationManagerCompat
@@ -59,6 +61,7 @@ fun gatherSetupFacts(
     workoutModeWanted = settings.workoutModeEnabled,
     notificationListenerGranted = hasNotificationListenerAccess(context),
     notificationListenerConnected = WorkoutMode.listenerConnected,
+    usageAccessGranted = hasUsageAccess(context),
 )
 
 /**
@@ -98,6 +101,23 @@ fun isAccessibilityEnabled(context: Context): Boolean {
     }
     return false
 }
+
+/**
+ * Usage access, the app-op behind [android.app.usage.UsageStatsManager].
+ *
+ * Not a runtime permission: [Context.checkSelfPermission] stays denied after the user has allowed
+ * it, so the app-op is the check. The API 36 rename of this call is not on minSdk 29. A failure
+ * reads as not granted, which is the ledger-only path.
+ */
+@Suppress("DEPRECATION")
+fun hasUsageAccess(context: Context): Boolean = runCatching {
+    val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+    appOps.unsafeCheckOpNoThrow(
+        AppOpsManager.OPSTR_GET_USAGE_STATS,
+        Process.myUid(),
+        context.packageName,
+    ) == AppOpsManager.MODE_ALLOWED
+}.getOrDefault(false)
 
 /** Notification-listener access, which is a separate grant from ordinary notification posting. */
 private fun hasNotificationListenerAccess(context: Context): Boolean = runCatching {
@@ -158,4 +178,7 @@ fun settingsIntentFor(context: Context, screen: SettingsScreen): Intent? = when 
 
     SettingsScreen.NOTIFICATION_LISTENER ->
         Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+
+    SettingsScreen.USAGE_ACCESS ->
+        Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
 }?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

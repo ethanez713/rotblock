@@ -7,6 +7,7 @@ import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.block.formatDuration
+import com.ezhou.rotblock.insights.DailyRollup
 import com.ezhou.rotblock.setup.AccessibilityEnrolment
 import com.ezhou.rotblock.ui.PauseRequestActivity
 import kotlinx.coroutines.launch
@@ -27,6 +28,7 @@ class PauseTileService : TileService() {
         // app is reliably running to notice it has been dropped from Android's accessibility list.
         // Opening rotblock does it too, but a blocker nobody opens is exactly the one that needs it.
         runCatching { AccessibilityEnrolment.restoreIfDropped(this) }
+        runCatching { Rotblock.scope.launch { DailyRollup.catchUp(this@PauseTileService) } }
         refreshTile()
     }
 

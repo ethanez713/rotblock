@@ -62,9 +62,31 @@ private val MIGRATION_4_5 = object : Migration(4, 5) {
     }
 }
 
+/**
+ * Whole-phone per-day usage. Empty on upgrade: there is nothing to backfill from, and a day that
+ * was never rolled is the same gap as one Android had already pruned.
+ */
+private val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `daily_usage` (" +
+                "`dayStartMs` INTEGER NOT NULL, " +
+                "`key` TEXT NOT NULL, " +
+                "`ms` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`dayStartMs`, `key`))",
+        )
+    }
+}
+
 @Database(
-    entities = [Policy::class, UsageSessionEntity::class, AuditEvent::class, PendingChange::class],
-    version = 5,
+    entities = [
+        Policy::class,
+        UsageSessionEntity::class,
+        AuditEvent::class,
+        PendingChange::class,
+        DailyUsage::class,
+    ],
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -73,6 +95,7 @@ abstract class RotblockDatabase : RoomDatabase() {
     abstract fun usageDao(): UsageDao
     abstract fun auditDao(): AuditDao
     abstract fun pendingChangeDao(): PendingChangeDao
+    abstract fun dailyUsageDao(): DailyUsageDao
 
     companion object {
         @Volatile private var instance: RotblockDatabase? = null
@@ -86,7 +109,7 @@ abstract class RotblockDatabase : RoomDatabase() {
                 // No destructive migration: the audit log is the one thing in this app that is
                 // genuinely irreplaceable, so a schema mistake should fail loudly at build time
                 // rather than silently wipe months of history on the phone.
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
                 .also { instance = it }
         }

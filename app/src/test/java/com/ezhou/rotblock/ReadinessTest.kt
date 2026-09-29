@@ -11,6 +11,7 @@ import com.ezhou.rotblock.setup.blocking
 import com.ezhou.rotblock.setup.requirementsFor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -45,6 +46,7 @@ class ReadinessTest {
         workoutModeWanted: Boolean = false,
         notificationListenerGranted: Boolean = false,
         notificationListenerConnected: Boolean = false,
+        usageAccessGranted: Boolean = false,
     ) = SetupFacts(
         accessibilityEnabled = accessibilityEnabled,
         serviceConnected = serviceConnected,
@@ -65,6 +67,7 @@ class ReadinessTest {
         workoutModeWanted = workoutModeWanted,
         notificationListenerGranted = notificationListenerGranted,
         notificationListenerConnected = notificationListenerConnected,
+        usageAccessGranted = usageAccessGranted,
     )
 
     private fun List<com.ezhou.rotblock.setup.Requirement>.byId(id: RequirementId) =
@@ -362,12 +365,30 @@ class ReadinessTest {
             greyscaleRuleCount = 1,
         )
         val requirements = requirementsFor(everythingWrong)
-        assertEquals(5, requirements.size)
+        assertEquals(6, requirements.size)
         for (requirement in requirements) {
             assertFalse(requirement.isReady)
             assertTrue("${requirement.id} has no fix", requirement.fix.isNotBlank())
             assertTrue("${requirement.id} has no action", requirement.action != null)
             assertTrue("${requirement.id} has no consequence", requirement.consequence.isNotBlank())
         }
+    }
+
+    @Test
+    fun `usage access is optional and does not raise the banner`() {
+        val missing = requirementsFor(facts())
+        val usage = missing.byId(RequirementId.USAGE_ACCESS)!!
+        assertEquals(Need.OPTIONAL, usage.need)
+        assertEquals(Status.MISSING, usage.status)
+        assertEquals("Insights can only show rotblocked time.", usage.consequence)
+        assertEquals(Fix.OpenSettings(SettingsScreen.USAGE_ACCESS), usage.action)
+        assertTrue(usage.fix.contains("GET_USAGE_STATS"))
+        assertFalse(missing.blocking.any { it.id == RequirementId.USAGE_ACCESS })
+
+        val granted = requirementsFor(facts(usageAccessGranted = true))
+        val ready = granted.byId(RequirementId.USAGE_ACCESS)!!
+        assertEquals(Status.READY, ready.status)
+        assertNotEquals("Insights can only show rotblocked time.", ready.consequence)
+        assertFalse(granted.blocking.any { it.id == RequirementId.USAGE_ACCESS })
     }
 }

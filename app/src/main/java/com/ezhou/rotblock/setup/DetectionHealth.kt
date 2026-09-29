@@ -12,9 +12,9 @@ import com.ezhou.rotblock.block.FeedSpec
  *
  * The signal is **"we looked and never found"**, counted where the looking already happens. Note
  * what it deliberately is not built from: rotblock's own usage ledger only records targets that have
- * an enabled policy, and there is no `UsageStatsManager` integration, so "the host app was used a
- * lot" is not a fact this app has access to. `looks` is the denominator instead, and it is a real
- * one because a feed spec names its host package.
+ * an enabled policy, and whole-phone usage — even when its optional grant is there — still cannot
+ * see which screen inside an app was the feed, so "the host app was used a lot" is not the signal.
+ * `looks` is the denominator instead, and it is a real one because a feed spec names its host package.
  *
  * Pure and Android-free for the same reason [requirementsFor] is: the interesting part is which
  * combination of counts means rot rather than disuse, and that should be testable without a device.

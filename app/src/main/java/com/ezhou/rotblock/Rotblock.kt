@@ -9,6 +9,7 @@ import com.ezhou.rotblock.data.RotblockDatabase
 import com.ezhou.rotblock.data.SettingsRepository
 import com.ezhou.rotblock.pause.PauseController
 import com.ezhou.rotblock.quota.UsageLedger
+import com.ezhou.rotblock.insights.DailyRollup
 import com.ezhou.rotblock.setup.AccessibilityEnrolment
 import com.ezhou.rotblock.setup.EnforcementRevival
 import com.ezhou.rotblock.workout.WorkoutMode
@@ -108,6 +109,9 @@ class RotblockApp : Application() {
         // the app is what puts enforcement back. Heavily fenced -- see [shouldRestoreEnrolment] --
         // so it can only ever restore something that was already running, never switch it on.
         runCatching { AccessibilityEnrolment.restoreIfDropped(this) }
+        // Same moment, same reason: the process is already awake, so yesterday's screen time can
+        // be folded without a wakeup of its own. The common path is one prefs read.
+        runCatching { Rotblock.scope.launch { DailyRollup.catchUp(this@RotblockApp) } }
 
         // Open the database now so the first accessibility event, which must stay fast, is not
         // the thing that pays for it.

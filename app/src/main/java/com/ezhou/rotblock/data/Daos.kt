@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Upsert
 import com.ezhou.rotblock.audit.AuditEvent
 import com.ezhou.rotblock.policy.Policy
@@ -44,6 +45,32 @@ interface UsageDao {
     suspend fun updateEnd(id: Long, endMs: Long)
 
     @Query("DELETE FROM usage_sessions WHERE endMs < :beforeMs")
+    suspend fun prune(beforeMs: Long)
+}
+
+/** Rolled-up whole-phone days. Written by [com.ezhou.rotblock.insights.DailyRollup], never by hand. */
+@Dao
+interface DailyUsageDao {
+    @Query("SELECT * FROM daily_usage WHERE dayStartMs IN (:dayStarts)")
+    suspend fun forDays(dayStarts: List<Long>): List<DailyUsage>
+
+    @Query("DELETE FROM daily_usage WHERE dayStartMs IN (:dayStarts)")
+    suspend fun deleteDays(dayStarts: List<Long>)
+
+    @Upsert
+    suspend fun upsertAll(rows: List<DailyUsage>)
+
+    /**
+     * One day is replaced whole. A crash between the delete and the insert would otherwise leave
+     * yesterday's keys mixed with today's, and the marker would not have moved to stop a retry.
+     */
+    @Transaction
+    suspend fun replaceDays(dayStarts: List<Long>, rows: List<DailyUsage>) {
+        deleteDays(dayStarts)
+        if (rows.isNotEmpty()) upsertAll(rows)
+    }
+
+    @Query("DELETE FROM daily_usage WHERE dayStartMs < :beforeMs")
     suspend fun prune(beforeMs: Long)
 }
 

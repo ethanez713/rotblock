@@ -7,6 +7,7 @@ import com.ezhou.rotblock.Rotblock
 import com.ezhou.rotblock.audit.AuditEvent
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.browser.WebMatcher
+import com.ezhou.rotblock.insights.DailyRollup
 import com.ezhou.rotblock.insights.DayBucket
 import com.ezhou.rotblock.insights.DiscouragingStatsResult
 import com.ezhou.rotblock.insights.RuleEffect
@@ -277,6 +278,9 @@ class RotblockViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun loadInsights(days: Int) {
         viewModelScope.launch {
+            // Before the screen reads anything: a day that ended since the last roll is written
+            // here, from a process that is already awake. One prefs read unless that is true.
+            runCatching { DailyRollup.catchUp(getApplication()) }
             val now = System.currentTimeMillis()
             val settings = settingsRepo.current()
             val dayStarts = recentDayStarts(now, settings.dayStartHour, days)

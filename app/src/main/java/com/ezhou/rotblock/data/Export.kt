@@ -16,6 +16,8 @@ suspend fun buildExport(db: RotblockDatabase, settings: RotblockSettings, nowMs:
     val policies = db.policyDao().getAll()
     // endMs and tsMs are epoch milliseconds, always positive, so sinceMs = 0 is every row ever
     // written -- there is no getAll() on these DAOs because nothing but export needs one.
+    // daily_usage is not here: those rows are re-folded from UsageStats and the ledger, so a
+    // frozen copy would be a second source for something the table itself does not treat as one.
     val usageSessions = db.usageDao().since(0L)
     val auditEvents = db.auditDao().since(0L)
 

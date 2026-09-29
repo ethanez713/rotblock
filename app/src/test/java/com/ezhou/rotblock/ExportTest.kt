@@ -6,6 +6,7 @@ import androidx.sqlite.db.SupportSQLiteOpenHelper
 import com.ezhou.rotblock.audit.AuditEvent
 import com.ezhou.rotblock.audit.AuditType
 import com.ezhou.rotblock.data.AuditDao
+import com.ezhou.rotblock.data.DailyUsageDao
 import com.ezhou.rotblock.data.PendingChange
 import com.ezhou.rotblock.data.PendingChangeDao
 import com.ezhou.rotblock.data.PolicyDao
@@ -62,6 +63,8 @@ class ExportTest {
             override suspend fun lastTimestampOf(type: String): Long? = error("unused in export")
             override suspend fun prune(beforeMs: Long) = error("unused in export")
         }
+
+        override fun dailyUsageDao(): DailyUsageDao = error("unused in export")
 
         override fun pendingChangeDao() = object : PendingChangeDao {
             override fun observeAll(): Flow<List<PendingChange>> = error("unused in export")

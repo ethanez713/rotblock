@@ -11,6 +11,21 @@ import com.ezhou.rotblock.policy.Schedule
 import com.ezhou.rotblock.policy.TargetKind
 import com.ezhou.rotblock.quota.UsageSession
 
+/**
+ * One target's foreground time on one budget-day, after site and feed time has been taken out of
+ * the browser or host app it was measured inside.
+ *
+ * Derived, and rebuilt by [com.ezhou.rotblock.insights.DailyRollup]. Export and diagnostic
+ * captures leave the table out: a frozen copy of something that can be re-folded is not a source
+ * of truth, and a capture has nothing to ask it.
+ */
+@Entity(tableName = "daily_usage", primaryKeys = ["dayStartMs", "key"])
+data class DailyUsage(
+    val dayStartMs: Long,
+    val key: String,
+    val ms: Long,
+)
+
 /** A closed interval of foreground time, persisted so quotas survive a restart. */
 @Entity(tableName = "usage_sessions", indices = [Index("targetId"), Index("endMs")])
 data class UsageSessionEntity(

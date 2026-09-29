@@ -74,10 +74,13 @@ sealed interface Fix {
     data class RunOverAdb(val command: String) : Fix
 }
 
-enum class SettingsScreen { ACCESSIBILITY, OVERLAY, BATTERY, APP_NOTIFICATIONS, NOTIFICATION_LISTENER }
+enum class SettingsScreen {
+    ACCESSIBILITY, OVERLAY, BATTERY, APP_NOTIFICATIONS, NOTIFICATION_LISTENER, USAGE_ACCESS,
+}
 
 enum class RequirementId {
-    ENFORCEMENT, BLOCK_SCREEN, BATTERY, NOTIFICATIONS, GREYSCALE, DETECTION, WORKOUT_DETECTION
+    ENFORCEMENT, BLOCK_SCREEN, BATTERY, NOTIFICATIONS, GREYSCALE, DETECTION, WORKOUT_DETECTION,
+    USAGE_ACCESS,
 }
 
 data class Requirement(
@@ -141,6 +144,8 @@ data class SetupFacts(
     val notificationListenerGranted: Boolean = false,
     /** The listener is bound right now. Meaningless while [notificationListenerGranted] is false. */
     val notificationListenerConnected: Boolean = false,
+    /** Usage access, so Insights can read every app's foreground time. Rules do not need it. */
+    val usageAccessGranted: Boolean = false,
 )
 
 /**
@@ -180,6 +185,7 @@ fun requirementsFor(facts: SetupFacts): List<Requirement> = buildList {
     if (facts.greyscaleRuleCount > 0) add(greyscale(facts))
     if (facts.rottedFeeds.isNotEmpty()) add(detection(facts))
     if (facts.workoutModeWanted) add(workoutDetection(facts))
+    add(usageAccess(facts))
 }
 
 /** The ones that mean nothing is being enforced right now. Drives the banner. */
@@ -432,5 +438,33 @@ private fun workoutDetection(facts: SetupFacts): Requirement {
                     "battery usage to unrestricted."
         },
         action = Fix.OpenSettings(SettingsScreen.NOTIFICATION_LISTENER),
+    )
+}
+
+/**
+ * Whole-phone screen time. Rules keep working either way — this only decides whether Insights can
+ * see apps that have no rule — so, like [workoutDetection], it is optional and never raises the
+ * Blocks banner.
+ */
+private fun usageAccess(facts: SetupFacts): Requirement {
+    val granted = facts.usageAccessGranted
+    return Requirement(
+        id = RequirementId.USAGE_ACCESS,
+        title = "Usage access",
+        status = if (granted) Status.READY else Status.MISSING,
+        need = Need.OPTIONAL,
+        consequence = if (granted) {
+            "Insights can show time spent in every app, alongside rotblocked sites and feeds."
+        } else {
+            "Insights can only show rotblocked time."
+        },
+        fix = if (granted) {
+            ""
+        } else {
+            "Settings → Apps → Special app access → Usage access, and turn rotblock on. Over " +
+                "ADB, this does the same thing: adb shell appops set ${facts.packageName} " +
+                "GET_USAGE_STATS allow"
+        },
+        action = Fix.OpenSettings(SettingsScreen.USAGE_ACCESS),
     )
 }
