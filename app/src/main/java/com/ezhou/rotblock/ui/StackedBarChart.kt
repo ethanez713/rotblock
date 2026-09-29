@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -30,13 +31,20 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
+import kotlin.math.ceil
 
 /** One segment of one bar. */
 data class Segment(val value: Float, val color: Color)
 
-/** One bar: a stack of segments plus its axis label. */
-data class Bar(val label: String, val segments: List<Segment>) {
+/**
+ * One bar: a stack of segments plus its axis label.
+ *
+ * [below] grows downward from the same baseline, for a quantity that must never be read as part of
+ * the stack above it. Both lists are ordered from the baseline outward.
+ */
+data class Bar(val label: String, val segments: List<Segment>, val below: List<Segment> = emptyList()) {
     val total: Float get() = segments.sumOf { it.value.toDouble() }.toFloat()
+    val belowTotal: Float get() = below.sumOf { it.value.toDouble() }.toFloat()
 }
 
 /**
@@ -60,15 +68,14 @@ fun StackedBarChart(
 ) {
     val surface = MaterialTheme.colorScheme.surfaceVariant
     val grid = ChartPalette.grid()
-    val axis = ChartPalette.axis()
+    val axisColor = ChartPalette.axis()
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
 
     val currentOnSelect by rememberUpdatedState(onSelect)
 
-    val maxTotal = bars.maxOfOrNull { it.total }?.takeIf { it > 0f } ?: 1f
-    val niceMax = niceCeiling(maxTotal)
+    val axis = remember(bars, gridLines) { AxisSplit.of(bars, gridLines) }
 
     Box(modifier.fillMaxWidth().height(height)) {
         Canvas(
@@ -120,14 +127,17 @@ fun StackedBarChart(
             val segmentGap = 2.dp.toPx()
             val corner = 4.dp.toPx()
 
+            val unit = plotHeight / axis.span
+            val baselineY = axis.stepsAbove * axis.step * unit
+
             drawGrid(
-                gridLines = gridLines,
-                niceMax = niceMax,
+                axis = axis,
+                unit = unit,
+                baselineY = baselineY,
                 plotLeft = plotLeft,
                 plotWidth = plotWidth,
-                plotHeight = plotHeight,
                 grid = grid,
-                axis = axis,
+                axisColor = axisColor,
                 measurer = measurer,
                 muted = muted,
                 format = formatGridValue,
@@ -143,39 +153,8 @@ fun StackedBarChart(
                 val left = centerX - barWidth / 2f
                 val dimmed = selectedIndex != null && selectedIndex != index
 
-                var cursorY = plotHeight
-                val visible = bar.segments.filter { it.value > 0f }
-                visible.forEachIndexed { segIndex, segment ->
-                    val rawHeight = (segment.value / niceMax) * plotHeight
-                    if (rawHeight <= 0f) return@forEachIndexed
-                    val top = cursorY - rawHeight
-                    val isTop = segIndex == visible.lastIndex
-                    val color = if (dimmed) segment.color.copy(alpha = 0.28f) else segment.color
-
-                    if (isTop) {
-                        // Round only the data end; the baseline stays square so bars sit flat.
-                        val path = Path().apply {
-                            addRoundRect(
-                                RoundRect(
-                                    rect = Rect(Offset(left, top), Size(barWidth, rawHeight)),
-                                    topLeft = CornerRadius(corner, corner),
-                                    topRight = CornerRadius(corner, corner),
-                                    bottomLeft = CornerRadius.Zero,
-                                    bottomRight = CornerRadius.Zero,
-                                ),
-                            )
-                        }
-                        drawPath(path, color)
-                    } else {
-                        drawRect(color, Offset(left, top), Size(barWidth, rawHeight))
-                    }
-
-                    // Surface-coloured spacer so neighbouring fills never blend into one block.
-                    if (!isTop && rawHeight > segmentGap) {
-                        drawRect(surface, Offset(left, top), Size(barWidth, segmentGap))
-                    }
-                    cursorY = top
-                }
+                drawStack(bar.segments, upward = true, left, barWidth, baselineY, unit, dimmed, corner, segmentGap, surface)
+                drawStack(bar.below, upward = false, left, barWidth, baselineY, unit, dimmed, corner, segmentGap, surface)
 
                 if (index % labelEvery == 0) {
                     val layout = measurer.measure(bar.label, TextStyle(fontSize = 9.sp, color = muted))
@@ -192,29 +171,100 @@ fun StackedBarChart(
     }
 }
 
+/**
+ * One scale for both directions: a shared tick step, with as many steps on each side of the baseline
+ * as that side needs. Two independently rounded halves would put different minutes under the same
+ * pixel height, which is a dual axis wearing a disguise.
+ */
+private class AxisSplit(val step: Float, val stepsAbove: Int, val stepsBelow: Int) {
+    val span: Float get() = step * (stepsAbove + stepsBelow)
+
+    companion object {
+        fun of(bars: List<Bar>, gridLines: Int): AxisSplit {
+            val above = bars.maxOfOrNull { it.total } ?: 0f
+            val below = bars.maxOfOrNull { it.belowTotal } ?: 0f
+            if (below <= 0f) {
+                return AxisSplit(niceCeiling(above.takeIf { it > 0f } ?: 1f) / gridLines, gridLines, 0)
+            }
+            val step = niceCeiling(maxOf(above, below)) / gridLines
+            return AxisSplit(
+                step = step,
+                stepsAbove = ceil(above / step).toInt().coerceAtLeast(1),
+                stepsBelow = ceil(below / step).toInt().coerceAtLeast(1),
+            )
+        }
+    }
+}
+
+private fun DrawScope.drawStack(
+    segments: List<Segment>,
+    upward: Boolean,
+    left: Float,
+    barWidth: Float,
+    baselineY: Float,
+    unit: Float,
+    dimmed: Boolean,
+    corner: Float,
+    segmentGap: Float,
+    surface: Color,
+) {
+    val visible = segments.filter { it.value > 0f }
+    var cursorY = baselineY
+    visible.forEachIndexed { segIndex, segment ->
+        val height = segment.value * unit
+        if (height <= 0f) return@forEachIndexed
+        val top = if (upward) cursorY - height else cursorY
+        val isEnd = segIndex == visible.lastIndex
+        val color = if (dimmed) segment.color.copy(alpha = 0.28f) else segment.color
+
+        if (isEnd) {
+            // Round only the data end; the baseline stays square so bars sit flat against it.
+            val rounded = CornerRadius(corner, corner)
+            val path = Path().apply {
+                addRoundRect(
+                    RoundRect(
+                        rect = Rect(Offset(left, top), Size(barWidth, height)),
+                        topLeft = if (upward) rounded else CornerRadius.Zero,
+                        topRight = if (upward) rounded else CornerRadius.Zero,
+                        bottomLeft = if (upward) CornerRadius.Zero else rounded,
+                        bottomRight = if (upward) CornerRadius.Zero else rounded,
+                    ),
+                )
+            }
+            drawPath(path, color)
+        } else {
+            drawRect(color, Offset(left, top), Size(barWidth, height))
+        }
+
+        // Surface-coloured spacer on the outward edge, so neighbouring fills never blend.
+        if (!isEnd && height > segmentGap) {
+            val gapY = if (upward) top else top + height - segmentGap
+            drawRect(surface, Offset(left, gapY), Size(barWidth, segmentGap))
+        }
+        cursorY = if (upward) top else top + height
+    }
+}
+
 private fun DrawScope.drawGrid(
-    gridLines: Int,
-    niceMax: Float,
+    axis: AxisSplit,
+    unit: Float,
+    baselineY: Float,
     plotLeft: Float,
     plotWidth: Float,
-    plotHeight: Float,
     grid: Color,
-    axis: Color,
+    axisColor: Color,
     measurer: TextMeasurer,
     muted: Color,
     format: (Float) -> String,
 ) {
-    for (i in 1..gridLines) {
-        val fraction = i.toFloat() / gridLines
-        val y = plotHeight - plotHeight * fraction
+    val lines = (1..axis.stepsAbove).map { baselineY - it * axis.step * unit to it * axis.step } +
+        (1..axis.stepsBelow).map { baselineY + it * axis.step * unit to it * axis.step }
+    for ((y, value) in lines) {
         drawLine(grid, Offset(plotLeft, y), Offset(plotLeft + plotWidth, y), strokeWidth = 1f)
-        val layout = measurer.measure(
-            format(niceMax * fraction),
-            TextStyle(fontSize = 9.sp, color = muted),
-        )
+        val layout = measurer.measure(format(value), TextStyle(fontSize = 9.sp, color = muted))
         drawText(layout, topLeft = Offset(plotLeft - layout.size.width - 6f, y - layout.size.height / 2f))
     }
-    drawLine(axis, Offset(plotLeft, plotHeight), Offset(plotLeft + plotWidth, plotHeight), strokeWidth = 2f)
+    drawLine(axisColor, Offset(plotLeft, baselineY), Offset(plotLeft + plotWidth, baselineY), strokeWidth = 2f)
 }
 
 /** Rounds the axis top up to something that reads well as a tick value. */

@@ -46,10 +46,10 @@ object ChartPalette {
 
     /**
      * The screen-time split: warm for rotblocked, cool for everything else, each with its own
-     * "other". Validated as ONE stack in exactly this order — warm slots, other-warm, cool slots,
-     * other-cool — because that is the order the segments sit in a bar, so it is the adjacency
-     * the CVD check has to hold for:
-     *   light — CVD ΔE 12.5, normal-vision ΔE 15.9
+     * "other". Validated as ONE column in exactly its on-screen order, top to bottom — other-cool,
+     * cool 2, 1, 0, then across the baseline warm 0, 1, 2, other-warm — because that is the
+     * adjacency the CVD check has to hold for:
+     *   light — CVD ΔE 12.5, normal-vision ΔE 18.9
      *   dark  — CVD ΔE 9.3, normal-vision ΔE 15.1
      * The two "other" swatches fail the chroma floor on purpose: like [other], they are meant to
      * recede. Light mode carries sub-3:1 warnings, so the breakdown table stays required relief.

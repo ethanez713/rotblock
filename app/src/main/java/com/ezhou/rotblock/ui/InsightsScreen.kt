@@ -274,10 +274,14 @@ private fun ScreenTimeCard(
     }
     val bars = remember(state.buckets, state.slots, state.rotblockedKeys, colors) {
         state.buckets.map { bucket ->
+            val (rotblocked, unblocked) =
+                screenTimeSegments(bucket.perTarget, state.slots, state.rotblockedKeys)
+                    .map { part -> part.slot to Segment(part.ms / 60_000f, colors.getValue(part.slot)) }
+                    .partition { (slot, _) -> slot.rotblocked }
             Bar(
                 label = DAY_LABEL.format(Date(bucket.dayStartMs)),
-                segments = screenTimeSegments(bucket.perTarget, state.slots, state.rotblockedKeys)
-                    .map { part -> Segment(part.ms / 60_000f, colors.getValue(part.slot)) },
+                segments = unblocked.map { it.second },
+                below = rotblocked.map { it.second },
             )
         }
     }
@@ -319,9 +323,16 @@ private fun ScreenTimeCard(
                 )
             }
             Spacer(Modifier.height(12.dp))
+            Text(
+                "Unblocked above the line · rotblocked below",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(6.dp))
 
             StackedBarChart(
                 bars = bars,
+                height = 220.dp,
                 selectedIndex = selected,
                 onSelect = onSelect,
                 labelEvery = axisLabelEvery(bars.size),

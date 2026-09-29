@@ -154,16 +154,15 @@ fun screenTimeSlots(buckets: List<DayBucket>, rotblocked: Set<String>, named: In
 data class ScreenTimeSlots(val warm: List<String>, val cool: List<String>)
 
 /**
- * Bands of one bar, baseline first.
- *
- * This order — warm slots, other warm, cool slots, other cool — is the adjacency the warm/cool
- * palette was checked for. [seriesSlot] keeps a key in its named slot even on a day when a later
- * slot is taller; sorting a bar by height would put hues next to each other that were never checked.
- * The chart paints the first of these on the baseline and stacks upward, so the list order is the
- * order on screen.
+ * Bands of one bar. Rotblocked slots hang below the chart's baseline and unblocked ones rise above
+ * it, each side ordered from the line outward, so warm 0 and cool 0 meet across it. That on-screen
+ * order is the adjacency the split palette was checked for. [seriesSlot] keeps a key in its named
+ * slot even on a day when a later slot is taller; sorting a bar by height would put hues next to
+ * each other that were never checked.
  */
-enum class SegmentSlot {
-    WARM_0, WARM_1, WARM_2, OTHER_WARM, COOL_0, COOL_1, COOL_2, OTHER_COOL,
+enum class SegmentSlot(val rotblocked: Boolean) {
+    WARM_0(true), WARM_1(true), WARM_2(true), OTHER_WARM(true),
+    COOL_0(false), COOL_1(false), COOL_2(false), OTHER_COOL(false),
 }
 
 data class ScreenSegment(val slot: SegmentSlot, val ms: Long)
