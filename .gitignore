@@ -24,3 +24,4 @@ token.json
 # Local plans and sketches: kept on disk, not published
 docs/plans/
 design-sketches/
+CLAUDE.local.md
