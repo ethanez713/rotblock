@@ -24,8 +24,4 @@ jobs:
           java-version: 17
           cache: gradle
 
-      # GitHub-hosted runners do not ship an Android SDK. Licenses are accepted here;
-      # AGP downloads platform 36 while the test task compiles.
-      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
-
       - run: ./gradlew --no-daemon testDebugUnitTest
