@@ -20,3 +20,7 @@ captures/
 token.json
 .claude/settings.local.json
 .claude/RESUME.md
+
+# Local plans and sketches: kept on disk, not published
+docs/plans/
+design-sketches/
