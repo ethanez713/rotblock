@@ -69,8 +69,8 @@ object SearchEngines {
      *
      * This is the fallback for [isSearchHost] on the page that broke it: a Samsung Internet search
      * results page with no google.* host anywhere in its own links, because the results all pointed
-     * to reddit.com, youtube.com and other third parties. `"how do magnets work - Google
-     * Search"` was the measured title. A results page still carries its own title even with the
+     * to reddit.com, youtube.com and other third parties. The measured title had the shape
+     * `"<query> - Google Search"`. A results page still carries its own title even with the
      * address bar scrolled away, so this is evidence [LinkConsensus] can reach when the per-link
      * veto has nothing to look at.
      *
