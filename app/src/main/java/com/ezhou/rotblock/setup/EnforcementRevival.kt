@@ -13,8 +13,8 @@ import com.ezhou.rotblock.service.RotblockAccessibilityService
  * go to Settings → Accessibility and toggle the switch. Worth having because that state is common
  * on One UI and the advice is a trip out of the app for something the app could try itself.
  *
- * Not an Android `Service` and not a receiver. A blocker that fires this from a boot receiver wraps it in a
- * `Service` only because it fires from a boot receiver; this app has none and must not gain one —
+ * Not an Android `Service` and not a receiver. A blocker that fires this from a boot receiver has to
+ * wrap it in a `Service`; this app has none and must not gain one —
  * see `CLAUDE.md`, "No alarms, no `WorkManager`, no wakelocks, no foreground service, no boot
  * receiver."
  */
