@@ -18,3 +18,5 @@ captures/
 .secrets
 *secret*.json
 token.json
+.claude/settings.local.json
+.claude/RESUME.md
