@@ -26,6 +26,31 @@ way to send them anywhere.
 - **Pauses** with a cooldown and a daily budget, and an audit log of every one you took.
 - **Insights**: where the time actually went.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/blocks.png" alt="Blocks"></td>
+    <td width="33%"><img src="docs/screenshots/rules.png" alt="Rules"></td>
+    <td width="33%"><img src="docs/screenshots/insights.png" alt="Insights"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>Blocks.</b> Pauses left today, workout mode, and a loosening change waiting out its delay before it applies. It can still be cancelled.</td>
+    <td valign="top"><b>Rules.</b> A group sharing one quota across apps and sites, rolling quotas such as 3 minutes in any hour, a weekday 9–6 schedule, and how often each rule has blocked.</td>
+    <td valign="top"><b>Insights.</b> Where the time went, rotblocked against unblocked, with each day's screen time split above and below the line.</td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/add-website.png" alt="Add a website"></td>
+    <td width="33%"><img src="docs/screenshots/add-feed.png" alt="Add a feed"></td>
+    <td width="33%"><img src="docs/screenshots/setup.png" alt="Setup"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>Add a website</b> by domain, by path such as <code>youtube.com/shorts</code>, or by keyword.</td>
+    <td valign="top"><b>Add a feed.</b> Block Shorts or Reels inside an app and keep the rest of it.</td>
+    <td valign="top"><b>Setup</b> checks each permission and the block screen itself, so a silently broken enforcement path shows up.</td>
+  </tr>
+</table>
+
 ## The design constraint everything follows from
 
 **Nothing fails open.** Every relaxation — a pause, a quota, a queued policy edit — is a *deadline
