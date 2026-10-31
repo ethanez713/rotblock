@@ -161,7 +161,7 @@ a crash or a false block. The opposite mistake — treating "I could not see" as
 screen" — drops a live target, which is a fail-open. Those two outcomes stay distinct. The
 trade-off is that a target acquired and then scrolled stays held until a real read says you left.
 
-[`CLAUDE.md`](CLAUDE.md) is the full design record: the invariants, what breaks them, and the bugs
+[`CLAUDE.md`](CLAUDE.md) and [`.claude/rules/`](.claude/rules/) are the full design record: the invariants, what breaks them, and the bugs
 found on a real device.
 
 ## Build
