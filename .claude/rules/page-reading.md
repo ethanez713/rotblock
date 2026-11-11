@@ -72,7 +72,7 @@ evidence than the bar and is fenced in accordingly:
   one sample, and this is the acquisition route with the weakest evidence behind it. A scan naming a
   different host, or naming none, replaces what was pending rather than being ignored, so agreement
   always comes from the two most recent scans.
-- **Only a read that actually looked may vote, or clear a pending vote.** `harvestPageSignals`
+- **Only a read that actually looked may vote, or clear a pending vote.** `PageInspector.harvestPageSignals`
   answers null rather than an empty result when `MIN_PAGE_SCAN_INTERVAL_MS` has not elapsed, and the
   distinction is load-bearing: reads land once a second and scans once every three, so two of every
   three reads on a scrolled page did not look at all. Letting those offer "no consensus" erased the
@@ -155,7 +155,7 @@ disagrees on host, which holds equally either way. The acquire-only gate stays f
 common case — scrolling a page recognised long ago — still never pays for a scan.
 
 The other half of that flap is the same "not looking is not the same as finding nothing" that
-`harvestPageSignals` already draws for the link vote, one layer up. Reads land about once a second
+`PageInspector.harvestPageSignals` already draws for the link vote, one layer up. Reads land about once a second
 and the walk runs once every three, so two reads in three carry no signature evidence at all;
 answering `AppOnly` on those cleared the target between every pair of real scans. So
 `signatureScanned` distinguishes them, and only on a host `PageSignature.couldRefine` recognises: a

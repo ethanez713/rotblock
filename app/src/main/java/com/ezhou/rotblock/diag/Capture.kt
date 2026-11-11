@@ -127,7 +127,7 @@ data class NodeSnapshot(
 
 /**
  * The accessibility tree of the screen the capture was taken over, plus rotblock's own reading of
- * it -- see `RotblockAccessibilityService.buildNodeDump`. [status] is `"ok"`, `"unavailable"` (the
+ * it -- see `DiagnosticsCapture.buildNodeDump`. [status] is `"ok"`, `"unavailable"` (the
  * 15s poll never found a readable window), or `"no service"` (the capture was taken without a
  * bound service, so no node tree could ever be read).
  */

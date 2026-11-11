@@ -37,7 +37,7 @@ private const val WINDOW_MS = 1_000L
  *
  * Pure and Android-free, like [com.ezhou.rotblock.block.FrictionGate] and [LinkCorroboration], so
  * the interesting part -- which rate means a storm and how one is bracketed -- is testable off
- * device. The service owns the instance and the clock; main thread only.
+ * device. DetectionJournal owns the instance and the clock; main thread only.
  */
 class EvaluationRate(private val thresholdPerSecond: Int = STORM_EVALUATIONS_PER_SECOND) {
 

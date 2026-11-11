@@ -115,7 +115,7 @@ paths:
   address" toast, stayed on the blocked page, and `startActivity` still returned normally — one tap
   bought unlimited browsing on a site that had just run out of time. So the destination is
   `BrowserRegistry.ESCAPE_URL` (loopback: every browser accepts it as a URL, it reads back as a
-  host no rule matches, and it never leaves the device), and `verifyEscaped` re-blocks if the
+  host no rule matches, and it never leaves the device), and `EscapeController.verifyEscaped` re-blocks if the
   target is still current a few seconds later. Anything that hides a block on the strength of an
   action succeeding has to carry its own proof, because nothing else will notice.
 
@@ -123,7 +123,7 @@ paths:
   escape is positive evidence that page is stale — without clearing it, the next re-entry resumes
   the exact site the user just paid to leave. Declining the friction countdown counts as an escape
   for the same reason and reports back through `FrictionGate.onDeclined`, since it moves the browser
-  too. What neither of them touches is `currentTargetId`: `verifyEscaped` reads it to decide whether
+  too. What neither of them touches is `currentTargetId`: `EscapeController.verifyEscaped` reads it to decide whether
   the escape actually took, and that proof must not be disturbed by the thing that triggers it.
 
 - **The daily pool is a relaxation folded from the ledger, not a deadline.** `Policy.poolSeconds`

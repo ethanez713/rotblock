@@ -72,7 +72,7 @@ Ground rules, which are mostly about what is absent:
   readable window, and it earns the exception on every count that matters: a user just tapped a
   Quick Settings tile, so the screen is on by construction; it is bounded by a deadline like
   everything else here; it runs once per capture rather than on a schedule; and it exists to notice
-  the shade closing, which emits no accessibility event of its own. `requestInspect` cannot stand in
+  the shade closing, which emits no accessibility event of its own. `PageInspector.requestInspect` cannot stand in
   for it, because that channel only queues reads for browsers and feed apps and a capture has to
   work for a plain app target too.
 - All work is gated on the screen being on and a policy target being in the foreground. Screen-off

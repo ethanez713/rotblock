@@ -33,7 +33,7 @@ paths:
    Leaving the phone monochrome is still the worst bug this app can have.
 6. **A stale `currentPackage` is indistinguishable from a correct one, so it needs its own way
    back.** Observed on device, twice in one morning: the service alive and receiving events —
-   `beat()` piggy-backs on them and its heartbeat was two seconds old — with the last screen read 22
+   `OutageJournal.beat()` piggy-backs on them and its heartbeat was two seconds old — with the last screen read 22
    minutes stale, the trail silent for 19, `currentPackage` stuck on the launcher, and the capture's
    node dump showing Samsung Internet in front on a reddit page. Nothing enforced, nothing charged,
    no symptom anywhere. A total fail-open.
@@ -66,7 +66,7 @@ paths:
    launcher is what appears. No accessibility event says so.
 
    Rule 6's recovery cannot reach this. `shouldRecheckForeground` is driven by
-   `TYPE_WINDOW_CONTENT_CHANGED`, and `requestInspect` returns immediately for a package that is not
+   `TYPE_WINDOW_CONTENT_CHANGED`, and `PageInspector.requestInspect` returns immediately for a package that is not
    a browser or feed app — so an app that emits no content changes of its own, which is every game
    rendering into a surface, has **no** route back at all. Reported from device: unlocked straight
    into a blocked game, nothing enforced, nothing charged, and nothing that would ever have noticed.
@@ -84,7 +84,7 @@ paths:
 
 8. **The ticker is the only thing that re-evaluates a plain app target, so nothing may stop it
    without something starting it again.** A browser or feed app has the inspection loop, which ends
-   in `applyTarget` on every read. `requestInspect` declines everything else, so once a game is the
+   in `applyTarget` on every read. `PageInspector.requestInspect` declines everything else, so once a game is the
    established foreground, every event it emits reaches `pkg == currentPackage` and stops there —
    no other line in the event path calls `evaluateAndEnforce` at all.
 

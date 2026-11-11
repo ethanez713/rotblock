@@ -335,7 +335,7 @@ enum class EscapeVerdict { ESCAPED, REFUSED, UNCONFIRMED }
  * the loopback URL the whole time -- the escape had worked every single time.
  *
  * [lastWindowReadAtMs] is the timestamp of the last read that got far enough to inspect the
- * package's own window -- see [RotblockAccessibilityService.resolveInspectedTarget] -- as opposed
+ * package's own window -- see [PageInspector.resolveInspectedTarget] -- as opposed
  * to one that bounced off a null or foreign `rootInActiveWindow`. Only that counts as evidence:
  *
  * - The target having moved is conclusive on its own, however stale the read clock is: `ESCAPED`.

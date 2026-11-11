@@ -101,7 +101,7 @@ object AccessibilityEnrolment {
  * The two are told apart by something already on disk. A deliberate switch-off unbinds the service,
  * which runs `teardown` and stamps [KEY_DOWN_SINCE]. A force-stop, a crash, or a reboot kills the
  * process with no callback at all, so that stamp is absent while [KEY_LAST_ALIVE] still holds a
- * heartbeat. The same distinction `reportPreviousOutage` already relies on to decide what to write
+ * heartbeat. The same distinction `OutageJournal.reportPreviousOutage` already relies on to decide what to write
  * in the log. So: heard from, never told to stop, and not in the list — that is a drop, not a
  * decision.
  *

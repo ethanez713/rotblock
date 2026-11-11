@@ -38,7 +38,7 @@ X that appears at the bottom of the screen and let go. It remembers where it was
 show/hide cycle of a visit and across a process restart — because a resting spot is a preference,
 not enforcement state, and losing it is merely annoying. A dismissal is a different kind of fact
 and is handled differently on purpose: it is **never persisted**. It lasts only until the accrual
-session in progress ends (`hudDismissedThisSession` in the service, cleared everywhere a session
+session in progress ends (`hudDismissedThisSession` in `EnforcementUi`, cleared everywhere a session
 closes), and the very next target to start accruing gets the ring back. If a drag could turn the
 ring off for good, its absence would stop meaning "nothing is being counted" and start meaning "or
 you swiped it away once, weeks ago, and forgot" — the exact ambiguity this whole section exists to

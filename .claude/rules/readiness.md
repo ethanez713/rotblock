@@ -39,7 +39,7 @@ The care goes into *when*, not the write. Being absent has two causes that look 
 would be the app fighting its owner, which is not what this app is. They are told apart by state
 already on disk: a deliberate switch-off unbinds the service, which stamps `down_since`, while a
 force-stop kills the process with no callback and leaves only a heartbeat. The same signal
-`reportPreviousOutage` uses. Heard from, never told to stop, no longer listed: that is a drop, not a
+`OutageJournal.reportPreviousOutage` uses. Heard from, never told to stop, no longer listed: that is a drop, not a
 decision. A phone where enforcement has never run is left alone too, so a fresh install cannot
 switch on its own accessibility service before the disclosure has been shown — it only ever puts
 back what was already running. And the merge may only ever *add* rotblock: a list already containing

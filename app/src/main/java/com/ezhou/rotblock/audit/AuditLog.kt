@@ -75,7 +75,7 @@ class AuditLog(
      *
      * Note this also collects anything stamped at or near the epoch, which is "infinitely old" to
      * a cutoff. That is the right answer for a retention rule -- and the bug that produced such
-     * rows is fixed in `reportPreviousOutage`, so it is a one-off sweep of records that rendered
+     * rows is fixed in `OutageJournal.reportPreviousOutage`, so it is a one-off sweep of records that rendered
      * as 1969 and could never have been read anyway.
      */
     fun prune(nowMs: Long = clock()) {
